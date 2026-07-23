@@ -13,6 +13,7 @@ import { loadConfig } from './src/config.js';
 import { startWeeklyDraftCron } from './src/cron/weeklyDraft.js';
 
 import { router as channels } from './src/routes/channels.js';
+import { router as series } from './src/routes/series.js';
 import { router as showtypes } from './src/routes/showtypes.js';
 import { router as resources } from './src/routes/resources.js';
 import { router as media } from './src/routes/media.js';
@@ -27,6 +28,7 @@ const app = express();
 app.use(express.json());
 
 app.use('/api/channels', channels);
+app.use('/api/channels', series); // /:id/series* endpoints
 app.use('/api/showtypes', showtypes);
 app.use('/api/resources', resources);
 app.use('/api/media', media);

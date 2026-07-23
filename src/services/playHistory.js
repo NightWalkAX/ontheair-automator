@@ -42,6 +42,32 @@ export function nextSequential(channelId, subject) {
 }
 
 /**
+ * Series progression cursor. Returns the chapter number a serial series should
+ * play next on a channel, as of a given date. It is `1 + MAX(chapter)` over BOTH
+ * what has already aired (PlayHistory) AND what is already scheduled in blocks
+ * dated strictly before `beforeDate`. Considering already-scheduled earlier days
+ * is what lets a whole week of drafts roll a series forward day by day, since
+ * PlayHistory isn't written until content actually airs. Using MAX() makes it
+ * naturally idempotent to mirrored/duplicated airings on the same earlier day.
+ */
+export function nextChapter(channelId, subject, beforeDate) {
+  const row = db.prepare(`
+    SELECT MAX(chapter) AS last FROM (
+      SELECT r.chapter AS chapter
+        FROM PlayHistory ph JOIN Resource r ON r.id = ph.resource_id
+        WHERE ph.channel_id = ? AND r.subject = ?
+      UNION ALL
+      SELECT r.chapter AS chapter
+        FROM ScheduleItem si
+        JOIN ScheduledBlock sb ON sb.id = si.block_id
+        JOIN Resource r ON r.id = si.resource_id
+        WHERE r.channel_id = ? AND r.subject = ? AND sb.target_date < ?
+    )
+  `).get(channelId, subject, channelId, subject, beforeDate);
+  return (row?.last ?? 0) + 1;
+}
+
+/**
  * Movies — random pick honouring a dynamic cooldown.
  * cooldownDays = floor(total candidate movies / 2). A movie is eligible if it
  * has never played on this channel, or last played more than cooldownDays ago.

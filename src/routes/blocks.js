@@ -13,14 +13,20 @@ export const router = Router();
 // (0s overrun ceiling) and is not more than maxUnderrun seconds short.
 function validateBlock(blockId) {
   const block = db.prepare(`
-    SELECT sb.*, bt.start_time, bt.end_time, bt.name AS template_name, bt.channel_id
-    FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id
+    SELECT sb.*,
+           COALESCE(s.start_time, bt.start_time) AS start_time,
+           COALESCE(s.end_time, bt.end_time)     AS end_time,
+           s.slot_order AS slot_order,
+           bt.name AS template_name, bt.channel_id
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
     WHERE sb.id = ?
   `).get(blockId);
   if (!block) return null;
 
   const items = db.prepare(`
-    SELECT si.*, r.name, r.duration, r.is_filler
+    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.chapter
     FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
     WHERE si.block_id = ? ORDER BY si.play_order
   `).all(blockId);
@@ -36,36 +42,121 @@ function validateBlock(blockId) {
 }
 
 // ---- BlockTemplate CRUD ----------------------------------------------------
+
+// Normalize weekdays to a CSV string from an array or a string.
+function toWeekdaysCsv(v) {
+  if (Array.isArray(v)) return v.map((s) => String(s).trim()).filter(Boolean).join(',');
+  return String(v || '').split(',').map((s) => s.trim()).filter(Boolean).join(',');
+}
+
+// Replace a template's time slots. `slots` is [{ start_time, end_time }]; the
+// first is the primary airing (slot_order 0), the rest mirror it.
+function setSlots(templateId, slots) {
+  db.prepare('DELETE FROM BlockTemplateSlot WHERE template_id = ?').run(templateId);
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order) VALUES (?, ?, ?, ?)'
+  );
+  slots.forEach((s, idx) => ins.run(templateId, s.start_time, s.end_time, idx));
+}
+
+// Replace a template's assigned series. `series` is an ordered list of subject
+// strings (or { subject } objects).
+function setSeries(templateId, series) {
+  db.prepare('DELETE FROM BlockTemplateSeries WHERE template_id = ?').run(templateId);
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO BlockTemplateSeries (template_id, subject, play_order) VALUES (?, ?, ?)'
+  );
+  series.forEach((s, idx) => ins.run(templateId, typeof s === 'string' ? s : s.subject, idx));
+}
+
+function templateWithDetails(t) {
+  return {
+    ...t,
+    slots: db.prepare('SELECT id, start_time, end_time, slot_order FROM BlockTemplateSlot WHERE template_id = ? ORDER BY slot_order').all(t.id),
+    series: db.prepare('SELECT subject, play_order FROM BlockTemplateSeries WHERE template_id = ? ORDER BY play_order').all(t.id),
+  };
+}
+
 router.get('/templates', (req, res) => {
-  res.json(db.prepare('SELECT * FROM BlockTemplate ORDER BY channel_id, weekday, start_time').all());
+  const rows = db.prepare('SELECT * FROM BlockTemplate ORDER BY channel_id, name').all();
+  res.json(rows.map(templateWithDetails));
 });
 
 router.post('/templates', (req, res) => {
-  const { channel_id, name, weekday, start_time, end_time, target_subject_id, target_subject, content_type = 'movie' } = req.body || {};
-  if (!channel_id || !name || !weekday || !start_time || !end_time) {
-    return res.status(400).json({ error: 'channel_id, name, weekday, start_time, end_time are required' });
+  const b = req.body || {};
+  const weekdays = toWeekdaysCsv(b.weekdays ?? b.weekday);
+  const slots = Array.isArray(b.slots) && b.slots.length
+    ? b.slots
+    : (b.start_time && b.end_time ? [{ start_time: b.start_time, end_time: b.end_time }] : []);
+  if (!b.channel_id || !b.name || !weekdays || !slots.length) {
+    return res.status(400).json({ error: 'channel_id, name, weekdays and at least one time slot are required' });
   }
+  const primary = slots[0];
+  const firstWeekday = weekdays.split(',')[0];
   const info = db.prepare(`
-    INSERT INTO BlockTemplate (channel_id, name, weekday, start_time, end_time, target_subject_id, target_subject, content_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(channel_id, name, weekday, start_time, end_time, target_subject_id ?? null, target_subject || null, content_type);
-  res.status(201).json({ id: info.lastInsertRowid });
+    INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(b.channel_id, b.name, firstWeekday, weekdays, primary.start_time, primary.end_time,
+         b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie');
+  const id = info.lastInsertRowid;
+  setSlots(id, slots);
+  if (Array.isArray(b.series)) setSeries(id, b.series);
+  res.status(201).json({ id });
 });
 
 router.put('/templates/:id', (req, res) => {
   const id = Number(req.params.id);
   const cur = db.prepare('SELECT * FROM BlockTemplate WHERE id = ?').get(id);
   if (!cur) return res.status(404).json({ error: 'not found' });
-  const m = { ...cur, ...req.body };
+  const b = req.body || {};
+  const weekdays = b.weekdays !== undefined || b.weekday !== undefined
+    ? toWeekdaysCsv(b.weekdays ?? b.weekday) : cur.weekdays;
+  const slots = Array.isArray(b.slots) && b.slots.length ? b.slots : null;
+  const primary = slots ? slots[0] : { start_time: b.start_time ?? cur.start_time, end_time: b.end_time ?? cur.end_time };
   db.prepare(`
-    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?
+    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, weekdays=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?
     WHERE id=?
-  `).run(m.channel_id, m.name, m.weekday, m.start_time, m.end_time, m.target_subject_id, m.target_subject, m.content_type, id);
+  `).run(
+    b.channel_id ?? cur.channel_id, b.name ?? cur.name,
+    (weekdays || '').split(',')[0] || cur.weekday, weekdays,
+    primary.start_time, primary.end_time,
+    b.target_subject_id ?? cur.target_subject_id, b.target_subject ?? cur.target_subject,
+    b.content_type ?? cur.content_type, id
+  );
+  if (slots) setSlots(id, slots);
+  if (Array.isArray(b.series)) setSeries(id, b.series);
   res.json({ ok: true });
 });
 
 router.delete('/templates/:id', (req, res) => {
   db.prepare('DELETE FROM BlockTemplate WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ---- Template series & slots sub-resources ---------------------------------
+router.get('/templates/:id/series', (req, res) => {
+  res.json(db.prepare(
+    'SELECT subject, play_order FROM BlockTemplateSeries WHERE template_id = ? ORDER BY play_order'
+  ).all(Number(req.params.id)));
+});
+
+router.put('/templates/:id/series', (req, res) => {
+  const list = Array.isArray(req.body?.series) ? req.body.series : null;
+  if (!list) return res.status(400).json({ error: 'series array is required' });
+  setSeries(Number(req.params.id), list);
+  res.json({ ok: true });
+});
+
+router.get('/templates/:id/slots', (req, res) => {
+  res.json(db.prepare(
+    'SELECT id, start_time, end_time, slot_order FROM BlockTemplateSlot WHERE template_id = ? ORDER BY slot_order'
+  ).all(Number(req.params.id)));
+});
+
+router.put('/templates/:id/slots', (req, res) => {
+  const list = Array.isArray(req.body?.slots) ? req.body.slots : null;
+  if (!list || !list.length) return res.status(400).json({ error: 'slots array is required' });
+  setSlots(Number(req.params.id), list);
   res.json({ ok: true });
 });
 
@@ -99,20 +190,24 @@ router.get('/', (req, res) => {
     dates.push(d.toISOString().slice(0, 10));
   }
   const rows = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, bt.name AS template_name,
-           bt.channel_id, bt.weekday, bt.start_time, bt.end_time, bt.content_type,
+    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, bt.name AS template_name,
+           bt.channel_id, bt.weekday, bt.content_type,
+           COALESCE(s.start_time, bt.start_time) AS start_time,
+           COALESCE(s.end_time, bt.end_time)     AS end_time,
+           COALESCE(s.slot_order, 0)             AS slot_order,
            c.name AS channel_name
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     JOIN ChannelType   c  ON c.id = bt.channel_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
     WHERE sb.target_date BETWEEN ? AND ?
-    ORDER BY sb.target_date, c.name, bt.start_time
+    ORDER BY sb.target_date, c.name, start_time
   `).all(dates[0], dates[6]);
 
   // Attach validation summary so the UI can render tolerance badges directly.
   const blocks = rows.map((r) => {
     const v = validateBlock(r.id);
-    return { ...r, blockSeconds: v.blockSeconds, totalSeconds: v.totalSeconds, diff: v.diff, fits: v.fits };
+    return { ...r, is_mirror: r.slot_order > 0, blockSeconds: v.blockSeconds, totalSeconds: v.totalSeconds, diff: v.diff, fits: v.fits };
   });
   res.json({ week: dates, blocks });
 });
@@ -128,8 +223,15 @@ router.get('/:id', (req, res) => {
 // Body: { items: [{ resource_id, is_manual_override? }] } in play order.
 router.put('/:id/items', (req, res) => {
   const id = Number(req.params.id);
-  const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(id);
+  const block = db.prepare(`
+    SELECT sb.*, COALESCE(s.slot_order, 0) AS slot_order
+    FROM ScheduledBlock sb LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE sb.id = ?
+  `).get(id);
   if (!block) return res.status(404).json({ error: 'not found' });
+  if (block.slot_order > 0) {
+    return res.status(409).json({ error: 'this is a mirrored airing — edit its primary airing instead' });
+  }
   const items = Array.isArray(req.body?.items) ? req.body.items : null;
   if (!items) return res.status(400).json({ error: 'items array is required' });
 

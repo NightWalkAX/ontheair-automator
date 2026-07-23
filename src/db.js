@@ -47,7 +47,13 @@ export function initSchema() {
     CREATE TABLE IF NOT EXISTS ShowType (
       id             INTEGER PRIMARY KEY,
       name           TEXT NOT NULL,
-      is_educational INTEGER NOT NULL DEFAULT 0
+      is_educational INTEGER NOT NULL DEFAULT 0,
+      -- Fixed catalogue of 5 show types (Movies, Documentaries, TV Shows,
+      -- Lessons, Fillers), seeded below and non-deletable via the API. "code"
+      -- is the stable identity the engine/ingestion branch on; "is_filler"
+      -- marks the reserved Fillers type (its resources auto-set Resource.is_filler).
+      code           TEXT,
+      is_filler      INTEGER NOT NULL DEFAULT 0
       -- NOTE: SEED.md's ShowType.paths (JSON array) is intentionally removed.
       -- Media roots are per-channel + per-showtype, so they live in the
       -- MediaRoot table below rather than as a flat array here.
@@ -89,15 +95,54 @@ export function initSchema() {
       -- label directly here. Null = draw from the whole channel pool.
       target_subject    TEXT,
       -- Refinement: tells the population engine which rule set to apply.
-      content_type      TEXT NOT NULL DEFAULT 'movie'  -- 'lesson_series'|'movie'|'tv_episode'
+      content_type      TEXT NOT NULL DEFAULT 'movie'  -- DEPRECATED: rule now derived per series
+    );
+
+    -- Per-channel registry of the series (a series = a distinct Resource.subject)
+    -- that channel plays, with reproduction order and per-series scheduling flags.
+    -- Auto-populated by ingestion; ordered/toggled by the admin.
+    CREATE TABLE IF NOT EXISTS ChannelSeries (
+      id           INTEGER PRIMARY KEY,
+      channel_id   INTEGER NOT NULL REFERENCES ChannelType(id) ON DELETE CASCADE,
+      subject      TEXT NOT NULL,
+      show_type_id INTEGER REFERENCES ShowType(id) ON DELETE SET NULL,
+      is_serial    INTEGER NOT NULL DEFAULT 0,   -- 1 = sequential chapter progression
+      is_active    INTEGER NOT NULL DEFAULT 1,
+      play_order   INTEGER NOT NULL DEFAULT 0,   -- channel-level order (UI default when adding to a block)
+      UNIQUE (channel_id, subject)
+    );
+
+    -- The subset of series assigned to a block template, in the order the engine
+    -- cycles them when populating the block.
+    CREATE TABLE IF NOT EXISTS BlockTemplateSeries (
+      id          INTEGER PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      subject     TEXT NOT NULL,
+      play_order  INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (template_id, subject)
+    );
+
+    -- Time slots (airings) of a template. slot_order 0 is the primary airing
+    -- that picks fresh content; higher slot_order airings strict-mirror it.
+    CREATE TABLE IF NOT EXISTS BlockTemplateSlot (
+      id          INTEGER PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      start_time  TEXT NOT NULL,   -- 'HH:MM'
+      end_time    TEXT NOT NULL,
+      slot_order  INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (template_id, start_time)
     );
 
     CREATE TABLE IF NOT EXISTS ScheduledBlock (
       id          INTEGER PRIMARY KEY,
       template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      -- Which airing (time slot) of the template this block is. A template can
+      -- air the same content at several hours a day; slot_order 0 is the
+      -- primary (picks fresh content), the rest strict-mirror it.
+      slot_id     INTEGER REFERENCES BlockTemplateSlot(id) ON DELETE CASCADE,
       target_date TEXT NOT NULL,              -- 'YYYY-MM-DD'
       status      TEXT NOT NULL DEFAULT 'draft', -- 'draft'|'approved'|'exported'
-      UNIQUE (template_id, target_date)
+      UNIQUE (template_id, slot_id, target_date)
     );
 
     CREATE TABLE IF NOT EXISTS ScheduleItem (
@@ -120,6 +165,9 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_playhistory_lookup ON PlayHistory(channel_id, resource_id, played_at);
     CREATE INDEX IF NOT EXISTS idx_scheduleitem_block ON ScheduleItem(block_id, play_order);
     CREATE INDEX IF NOT EXISTS idx_scheduledblock_date ON ScheduledBlock(target_date, status);
+    CREATE INDEX IF NOT EXISTS idx_channelseries_order ON ChannelSeries(channel_id, play_order);
+    CREATE INDEX IF NOT EXISTS idx_bts_template ON BlockTemplateSeries(template_id, play_order);
+    CREATE INDEX IF NOT EXISTS idx_btslot_template ON BlockTemplateSlot(template_id, slot_order);
   `);
 
   // Lightweight migrations for DBs created before a column was added. Each is
@@ -128,6 +176,98 @@ export function initSchema() {
   addColumnIfMissing('ChannelType', 'api_username', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_password', 'TEXT');
   addColumnIfMissing('BlockTemplate', 'target_subject', 'TEXT');
+  // content_type is retained for backward compatibility but no longer read by
+  // the engine (the scheduling rule is derived per series). Kept so old DBs and
+  // the CRUD layer don't break.
+  addColumnIfMissing('BlockTemplate', 'content_type', "TEXT NOT NULL DEFAULT 'movie'");
+  addColumnIfMissing('BlockTemplate', 'weekdays', 'TEXT'); // CSV, e.g. 'Mon,Tue,Wed'
+  addColumnIfMissing('ShowType', 'code', 'TEXT');
+  addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
+  // These Resource columns predate this migration helper — guard them for DBs
+  // created from the very first SEED-era schema.
+  addColumnIfMissing('Resource', 'channel_id', 'INTEGER');
+  addColumnIfMissing('Resource', 'show_type_id', 'INTEGER');
+  addColumnIfMissing('Resource', 'added_at', 'TEXT');
+
+  seedShowTypes();
+  backfillWeekdays();
+  backfillPrimarySlots();
+  rebuildScheduledBlockForSlots();
+}
+
+// The fixed, non-deletable catalogue of show types. Seeded by `code` so names
+// can be localised later without breaking engine/ingestion branching.
+export const FIXED_SHOW_TYPES = [
+  { code: 'movies',        name: 'Movies',        is_educational: 0, is_filler: 0 },
+  { code: 'documentaries', name: 'Documentaries', is_educational: 0, is_filler: 0 },
+  { code: 'tv_shows',      name: 'TV Shows',      is_educational: 0, is_filler: 0 },
+  { code: 'lessons',       name: 'Lessons',       is_educational: 1, is_filler: 0 },
+  { code: 'fillers',       name: 'Fillers',       is_educational: 0, is_filler: 1 },
+];
+
+function seedShowTypes() {
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO ShowType (code, name, is_educational, is_filler) VALUES (?, ?, ?, ?)'
+  );
+  const byCode = db.prepare('SELECT id FROM ShowType WHERE code = ?');
+  const byName = db.prepare('SELECT id FROM ShowType WHERE name = ? AND code IS NULL');
+  const setCode = db.prepare('UPDATE ShowType SET code = ?, is_filler = ?, is_educational = ? WHERE id = ?');
+  for (const t of FIXED_SHOW_TYPES) {
+    if (byCode.get(t.code)) continue;
+    // Adopt a pre-existing free-form row with the same name rather than duplicate it.
+    const existing = byName.get(t.name);
+    if (existing) setCode.run(t.code, t.is_filler, t.is_educational, existing.id);
+    else insert.run(t.code, t.name, t.is_educational, t.is_filler);
+  }
+}
+
+// Backfill the multi-weekday column from the legacy single `weekday`.
+function backfillWeekdays() {
+  db.exec("UPDATE BlockTemplate SET weekdays = weekday WHERE weekdays IS NULL OR weekdays = ''");
+}
+
+// Ensure every template has at least a primary time slot mirroring its legacy
+// start_time/end_time columns.
+function backfillPrimarySlots() {
+  const templates = db.prepare(`
+    SELECT bt.id, bt.start_time, bt.end_time FROM BlockTemplate bt
+    WHERE NOT EXISTS (SELECT 1 FROM BlockTemplateSlot s WHERE s.template_id = bt.id)
+  `).all();
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order) VALUES (?, ?, ?, 0)'
+  );
+  for (const t of templates) insert.run(t.id, t.start_time, t.end_time);
+}
+
+// One-time rebuild of ScheduledBlock for DBs whose table predates `slot_id`.
+// SQLite can't drop the old UNIQUE(template_id, target_date) constraint in
+// place, so recreate the table, preserving ids (ScheduleItem.block_id FKs) and
+// pointing each existing row at its template's primary slot.
+function rebuildScheduledBlockForSlots() {
+  const cols = db.prepare('PRAGMA table_info(ScheduledBlock)').all();
+  if (cols.some((c) => c.name === 'slot_id')) return; // already migrated
+
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE ScheduledBlock_new (
+      id          INTEGER PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      slot_id     INTEGER REFERENCES BlockTemplateSlot(id) ON DELETE CASCADE,
+      target_date TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'draft',
+      UNIQUE (template_id, slot_id, target_date)
+    );
+    INSERT INTO ScheduledBlock_new (id, template_id, slot_id, target_date, status)
+      SELECT sb.id, sb.template_id,
+             (SELECT s.id FROM BlockTemplateSlot s
+               WHERE s.template_id = sb.template_id ORDER BY s.slot_order LIMIT 1),
+             sb.target_date, sb.status
+      FROM ScheduledBlock sb;
+    DROP TABLE ScheduledBlock;
+    ALTER TABLE ScheduledBlock_new RENAME TO ScheduledBlock;
+    CREATE INDEX IF NOT EXISTS idx_scheduledblock_date ON ScheduledBlock(target_date, status);
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
 }
 
 function addColumnIfMissing(table, column, type) {

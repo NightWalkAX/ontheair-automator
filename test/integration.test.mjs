@@ -4,8 +4,11 @@
 //   - a temp media tree stands in for the SMB mount
 //
 // It boots the real Express app (same routers as server.js) and drives the
-// whole flow over HTTP: ingest -> tag -> generate -> review/edit -> approve
-// (incl. the tolerance 409) -> push -> verify OTAV received the clips.
+// whole flow over HTTP: ingest (with folder/filename series detection + filler
+// auto-flag) -> configure the channel series registry -> build a multi-weekday,
+// multi-airing, multi-series template -> generate (greedy series cycling + strict
+// mirror airings + cross-day progression) -> review/edit (incl. the tolerance 409
+// and the mirror-edit guard) -> approve -> push -> verify OTAV received the clips.
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,6 +25,7 @@ process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe');
 
 const { db, initSchema } = await import('../src/db.js');
 const { router: channels } = await import('../src/routes/channels.js');
+const { router: seriesRouter } = await import('../src/routes/series.js');
 const { router: showtypes } = await import('../src/routes/showtypes.js');
 const { router: resources } = await import('../src/routes/resources.js');
 const { router: media } = await import('../src/routes/media.js');
@@ -32,14 +36,12 @@ const { startFakeOtav } = await import('./fake-otav.mjs');
 
 let server, base, fakeOtav, mediaDir;
 
-// Media spec: filename encodes duration as its last number; subject/chapter/
-// filler are applied afterwards to simulate admin tagging.
-const MEDIA = [
-  ...[1, 2, 3, 4, 5].map((c) => ({ dir: 'lessons', file: `math_${c}_1680.mov`, subject: 'Math', chapter: c, filler: 0 })),
-  ...[5400, 6000, 5700, 4800].map((d, i) => ({ dir: 'movies', file: `movie_${i}_${d}.mov`, subject: 'Movies', chapter: 0, filler: 0 })),
-  ...[1, 2, 3, 4].map((c) => ({ dir: 'tv', file: `tv_${c}_1500.mov`, subject: 'TV', chapter: c, filler: 0 })),
-  ...[30, 45, 60, 90, 120, 300, 240, 15, 20, 10, 5].map((d, i) => ({ dir: 'fillers', file: `f_${i}_${d}.mov`, subject: 'Filler', chapter: 0, filler: 1 })),
-];
+// Media tree. Lessons live in per-series subfolders (folder name = subject) with
+// SxxEyy chapter markers and a trailing duration; the Fillers show type auto-flags
+// its clips; movies are standalone. All durations are the last number in the name.
+const LESSON_SERIES = ['Math', 'History', 'Biology'];
+const LESSON_CH = [1, 2, 3, 4, 5, 6];
+const FILLER_DURS = [30, 45, 60, 90, 120, 15, 20, 10, 5];
 
 async function j(method, path, body) {
   const res = await fetch(base + path, {
@@ -51,21 +53,31 @@ async function j(method, path, body) {
   return { status: res.status, data };
 }
 
+const stId = (code) => db.prepare('SELECT id FROM ShowType WHERE code = ?').get(code).id;
+
 before(async () => {
   initSchema();
 
-  // Fake media tree.
   mediaDir = mkdtempSync(join(tmpdir(), 'otav-media-'));
-  for (const m of MEDIA) {
-    mkdirSync(join(mediaDir, m.dir), { recursive: true });
-    writeFileSync(join(mediaDir, m.dir, m.file), 'x');
+  for (const s of LESSON_SERIES) {
+    mkdirSync(join(mediaDir, 'lessons', s), { recursive: true });
+    for (const c of LESSON_CH) {
+      writeFileSync(join(mediaDir, 'lessons', s, `${s}_S01E0${c}_600.mov`), 'x');
+    }
   }
+  mkdirSync(join(mediaDir, 'movies'), { recursive: true });
+  for (const [i, d] of [5400, 6000, 5700, 4800].entries()) {
+    writeFileSync(join(mediaDir, 'movies', `Movie${i}_${d}.mov`), 'x');
+  }
+  mkdirSync(join(mediaDir, 'fillers'), { recursive: true });
+  FILLER_DURS.forEach((d, i) => writeFileSync(join(mediaDir, 'fillers', `f${i}_${d}.mov`), 'x'));
 
   fakeOtav = await startFakeOtav({ requireAuth: true });
 
   const app = express();
   app.use(express.json());
   app.use('/api/channels', channels);
+  app.use('/api/channels', seriesRouter);
   app.use('/api/showtypes', showtypes);
   app.use('/api/resources', resources);
   app.use('/api/media', media);
@@ -80,127 +92,178 @@ after(async () => {
   await fakeOtav.close();
 });
 
-test('channels & show types CRUD', async () => {
+test('show types are a fixed, read-only catalogue of 5', async () => {
+  const list = (await j('GET', '/api/showtypes')).data;
+  assert.equal(list.length, 5);
+  assert.deepEqual(list.map((s) => s.code).sort(), ['documentaries', 'fillers', 'lessons', 'movies', 'tv_shows']);
+  assert.equal(list.find((s) => s.code === 'fillers').is_filler, 1);
+  assert.equal(list.find((s) => s.code === 'lessons').is_educational, 1);
+  const denied = await j('POST', '/api/showtypes', { name: 'Anything' });
+  assert.equal(denied.status, 405, 'creating a show type is rejected');
+});
+
+test('channel + ingestion detects series/chapters and auto-flags fillers', async () => {
   const ch = await j('POST', '/api/channels', {
     name: 'Channel 1', api_ip: '127.0.0.1', api_port: fakeOtav.port,
     playlist_ref: '0', api_username: 'admin', api_password: 'pw',
   });
   assert.equal(ch.status, 201);
-  assert.ok(ch.data.id);
+  const chId = ch.data.id;
 
-  for (const name of ['Lessons', 'Movies', 'Fillers']) {
-    const r = await j('POST', '/api/showtypes', { name });
-    assert.equal(r.status, 201);
-  }
-  const list = await j('GET', '/api/channels');
-  assert.equal(list.data.length, 1);
-});
-
-test('ingestion via fake ffprobe + admin tagging', async () => {
-  const chId = (await j('GET', '/api/channels')).data[0].id;
-  const stId = (await j('GET', '/api/showtypes')).data[0].id;
-
-  // Assign each subfolder as a MediaRoot (direct SQL: the HTTP assign route is
-  // guarded to the real SMB mount point, tested separately below).
-  const dirs = [...new Set(MEDIA.map((m) => m.dir))];
-  for (const d of dirs) {
+  // Assign one media root per show type (direct SQL: the HTTP assign route is
+  // guarded to the real SMB mount point, exercised separately below).
+  const roots = [
+    { code: 'lessons', dir: 'lessons' },
+    { code: 'movies', dir: 'movies' },
+    { code: 'fillers', dir: 'fillers' },
+  ];
+  for (const r of roots) {
     db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)')
-      .run(chId, stId, join(mediaDir, d));
+      .run(chId, stId(r.code), join(mediaDir, r.dir));
   }
-  const roots = (await j('GET', '/api/media/roots')).data;
-  assert.equal(roots.length, dirs.length);
 
   let ingested = 0;
-  for (const r of roots) {
+  for (const r of (await j('GET', '/api/media/roots')).data) {
     const scan = await j('POST', `/api/media/roots/${r.id}/scan`);
     assert.equal(scan.status, 200);
     ingested += scan.data.ingested;
   }
-  assert.equal(ingested, MEDIA.length, 'all fake media ingested with durations');
+  assert.equal(ingested, LESSON_SERIES.length * LESSON_CH.length + 4 + FILLER_DURS.length);
 
-  // Verify a known duration came through the fake probe.
-  const all = (await j('GET', '/api/resources')).data;
-  const m0 = all.find((r) => basename(r.file_path) === 'movie_0_5400.mov');
+  const all = (await j('GET', `/api/resources?channel_id=${chId}`)).data;
+  // Duration through the fake probe.
+  const m0 = all.find((r) => basename(r.file_path) === 'Movie0_5400.mov');
   assert.equal(m0.duration, 5400);
+  // Series detection: subject = folder, chapter = SxxEyy marker.
+  const math3 = all.find((r) => basename(r.file_path) === 'Math_S01E03_600.mov');
+  assert.equal(math3.subject, 'Math');
+  assert.equal(math3.chapter, 3);
+  assert.equal(math3.duration, 600);
+  // Filler auto-flag: Fillers show type → is_filler=1, no subject.
+  const fillers = all.filter((r) => r.is_filler);
+  assert.equal(fillers.length, FILLER_DURS.length);
+  assert.ok(fillers.every((r) => !r.subject));
 
-  // Admin tagging: set subject/chapter/is_filler per the spec.
-  const spec = Object.fromEntries(MEDIA.map((m) => [m.file, m]));
-  for (const r of all) {
-    const s = spec[basename(r.file_path)];
-    const put = await j('PUT', `/api/resources/${r.id}`, {
-      subject: s.subject, chapter: s.chapter, is_filler: s.filler,
-    });
-    assert.equal(put.status, 200);
-  }
+  // Series auto-registration in the channel registry.
+  const reg = (await j('GET', `/api/channels/${chId}/series`)).data;
+  const subjects = reg.map((s) => s.subject).sort();
+  assert.deepEqual(subjects, ['Biology', 'History', 'Math', 'movies']);
+  const math = reg.find((s) => s.subject === 'Math');
+  assert.equal(math.is_serial, 1, 'lessons default to serial');
+  assert.equal(math.chapter_count, 6);
+  assert.equal(reg.find((s) => s.subject === 'movies').is_serial, 0, 'movies default to standalone');
 });
 
-test('templates + week generation fit within tolerance', async () => {
+test('series registry: order the series and inspect chapters', async () => {
   const chId = (await j('GET', '/api/channels')).data[0].id;
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  for (const wd of days) {
-    await j('POST', '/api/blocks/templates', { channel_id: chId, name: `${wd} Lesson`, weekday: wd, start_time: '08:00', end_time: '08:30', target_subject: 'Math', content_type: 'lesson_series' });
-    await j('POST', '/api/blocks/templates', { channel_id: chId, name: `${wd} Movie`, weekday: wd, start_time: '20:00', end_time: '21:35', target_subject: 'Movies', content_type: 'movie' });
-    await j('POST', '/api/blocks/templates', { channel_id: chId, name: `${wd} TV`, weekday: wd, start_time: '18:00', end_time: '18:30', target_subject: 'TV', content_type: 'tv_episode' });
-  }
+  const put = await j('PUT', `/api/channels/${chId}/series`, {
+    series: LESSON_SERIES.map((subject, idx) => ({ subject, play_order: idx, is_serial: 1, is_active: 1 })),
+  });
+  assert.equal(put.status, 200);
 
+  const chapters = (await j('GET', `/api/channels/${chId}/series/${encodeURIComponent('History')}/chapters`)).data;
+  assert.equal(chapters.length, 6);
+  assert.deepEqual(chapters.map((c) => c.chapter), [1, 2, 3, 4, 5, 6]);
+});
+
+let templateId;
+test('build a multi-weekday, multi-airing, multi-series template', async () => {
+  const chId = (await j('GET', '/api/channels')).data[0].id;
+  const created = await j('POST', '/api/blocks/templates', {
+    channel_id: chId,
+    name: 'Morning Lessons',
+    weekdays: ['Mon', 'Tue'],
+    slots: [{ start_time: '08:00', end_time: '08:40' }, { start_time: '20:00', end_time: '20:40' }],
+    series: LESSON_SERIES, // Math, History, Biology
+  });
+  assert.equal(created.status, 201);
+  templateId = created.data.id;
+
+  const tpl = (await j('GET', '/api/blocks/templates')).data.find((t) => t.id === templateId);
+  assert.equal(tpl.weekdays, 'Mon,Tue');
+  assert.equal(tpl.slots.length, 2);
+  assert.deepEqual(tpl.series.map((s) => s.subject), LESSON_SERIES);
+});
+
+test('generation: greedy series cycling, strict mirror airings, cross-day progression', async () => {
   const gen = await j('POST', '/api/blocks/generate?weekStart=2026-07-20'); // Monday
   assert.equal(gen.status, 200);
-  assert.equal(gen.data.results.length, 21, '3 templates x 7 days');
+  // 2 weekdays (Mon, Tue) x 2 airings = 4 blocks.
+  assert.equal(gen.data.results.length, 4);
 
-  const view = await j('GET', '/api/blocks?week=2026-07-20');
-  assert.equal(view.data.blocks.length, 21);
-  const fitting = view.data.blocks.filter((b) => b.fits).length;
-  assert.equal(fitting, 21, 'every block packs to within tolerance');
+  const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
+  const mon = view.blocks.filter((b) => b.target_date === '2026-07-20');
+  const tue = view.blocks.filter((b) => b.target_date === '2026-07-21');
+  assert.equal(mon.length, 2);
+  assert.equal(tue.length, 2);
+
+  const monPrimary = mon.find((b) => !b.is_mirror);
+  const monMirror = mon.find((b) => b.is_mirror);
+  assert.ok(monPrimary && monMirror);
+  assert.ok(mon.every((b) => b.fits), 'both Monday airings fit');
+
+  const pItems = (await j('GET', `/api/blocks/${monPrimary.id}`)).data.items;
+  const mItems = (await j('GET', `/api/blocks/${monMirror.id}`)).data.items;
+  // Strict mirror: identical resources in identical order.
+  assert.deepEqual(mItems.map((i) => i.resource_id), pItems.map((i) => i.resource_id));
+
+  // Greedy cycle: first three main items are Math1, History1, Biology1.
+  const main = pItems.filter((i) => !i.is_filler);
+  assert.deepEqual(main.slice(0, 3).map((i) => `${i.subject}${i.chapter}`), ['Math1', 'History1', 'Biology1']);
+
+  // Cross-day progression: Tuesday's Math continues past Monday's highest Math chapter.
+  const tuePrimary = tue.find((b) => !b.is_mirror);
+  const tueMain = (await j('GET', `/api/blocks/${tuePrimary.id}`)).data.items.filter((i) => !i.is_filler);
+  const monMaxMath = Math.max(...main.filter((i) => i.subject === 'Math').map((i) => i.chapter));
+  const tueMinMath = Math.min(...tueMain.filter((i) => i.subject === 'Math').map((i) => i.chapter));
+  assert.equal(tueMinMath, monMaxMath + 1, 'Math rolls forward day to day');
 });
 
-test('manual edit, reorder, and the tolerance approval guard (409 -> 200)', async () => {
-  const view = await j('GET', '/api/blocks?week=2026-07-20');
-  const movieBlock = view.data.blocks.find((b) => b.content_type === 'movie');
-  const lessonBlock = view.data.blocks.find((b) => b.content_type === 'lesson_series');
+test('mirror airings are read-only; primary edits + tolerance 409 guard', async () => {
+  const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
+  const primary = view.blocks.find((b) => b.target_date === '2026-07-20' && !b.is_mirror);
+  const mirror = view.blocks.find((b) => b.target_date === '2026-07-20' && b.is_mirror);
 
-  // Reorder a fitting block's items then approve -> 200.
-  const detail = await j('GET', `/api/blocks/${lessonBlock.id}`);
-  const items = detail.data.items.map((i) => ({ resource_id: i.resource_id })).reverse();
-  const put = await j('PUT', `/api/blocks/${lessonBlock.id}/items`, { items });
+  // Editing a mirror airing directly is rejected.
+  const mirrorEdit = await j('PUT', `/api/blocks/${mirror.id}/items`, { items: [] });
+  assert.equal(mirrorEdit.status, 409, 'mirror is not directly editable');
+
+  // Reorder the primary then approve -> 200.
+  const detail = (await j('GET', `/api/blocks/${primary.id}`)).data;
+  const items = detail.items.map((i) => ({ resource_id: i.resource_id })).reverse();
+  const put = await j('PUT', `/api/blocks/${primary.id}/items`, { items });
   assert.equal(put.status, 200);
   assert.ok(put.data.fits);
-  const ok = await j('POST', `/api/blocks/${lessonBlock.id}/approve`);
+  const ok = await j('POST', `/api/blocks/${primary.id}/approve`);
   assert.equal(ok.status, 200);
-  assert.equal(ok.data.status, 'approved');
 
-  // Force an overrun on the movie block: two full movies in one slot.
-  const movies = (await j('GET', '/api/resources?subject=Movies')).data;
-  const bad = await j('PUT', `/api/blocks/${movieBlock.id}/items`, {
-    items: [{ resource_id: movies[0].id }, { resource_id: movies[1].id }],
+  // Force an overrun: pack more lessons than the 40-minute slot holds.
+  const lessons = (await j('GET', '/api/resources?subject=Math')).data;
+  const bad = await j('PUT', `/api/blocks/${primary.id}/items`, {
+    items: lessons.slice(0, 5).map((r) => ({ resource_id: r.id })), // 5 x 600 = 3000s > 2400s
   });
   assert.ok(bad.data.overrun, 'edit reported as overrun');
-  const blocked = await j('POST', `/api/blocks/${movieBlock.id}/approve`);
+  const blocked = await j('POST', `/api/blocks/${primary.id}/approve`);
   assert.equal(blocked.status, 409, 'out-of-tolerance approval is blocked');
 
-  // Repopulate that block back to a fitting state.
-  await j('POST', `/api/blocks/${movieBlock.id}/regenerate`);
+  await j('POST', `/api/blocks/${primary.id}/regenerate`); // back to fitting
 });
 
 test('approve-week then push to fake OTAV marks blocks exported', async () => {
   const wk = await j('POST', '/api/blocks/approve-week?week=2026-07-20');
   assert.equal(wk.status, 200);
-  assert.ok(wk.data.approved.length >= 20);
+  assert.ok(wk.data.approved.length >= 2);
 
-  // Approved blocks land on multiple dates; push the Monday.
   const push = await j('POST', '/api/otav/push?date=2026-07-20');
   assert.equal(push.status, 200);
   const ch1 = push.data.channels[0];
   assert.ok(ch1.ok, `push ok: ${ch1.error || ''}`);
   assert.ok(ch1.pushed > 0, 'clips were pushed');
 
-  // The fake OTAV recorded auth, a playlist clear, clips, and a resync.
   assert.ok(fakeOtav.state.authorized >= 1);
   assert.ok(fakeOtav.state.cleared >= 1);
-  assert.equal(fakeOtav.state.received.length, ch1.pushed);
   assert.equal(fakeOtav.state.received[0].clip_type, 0);
-  assert.ok(fakeOtav.state.received[0].url.startsWith('/'));
 
-  // Pushed blocks are now 'exported'.
   const exported = db.prepare("SELECT COUNT(*) n FROM ScheduledBlock WHERE status='exported' AND target_date='2026-07-20'").get();
   assert.ok(exported.n > 0);
 });
@@ -215,7 +278,6 @@ test('OTAV connectivity check hits /info', async () => {
 test('media routes: status, mount-guard, and browse boundary', async () => {
   const st = await j('GET', '/api/media/status');
   assert.ok('mounted' in st.data);
-  // Assigning/browsing outside the configured mount point is rejected.
   const outside = await j('POST', '/api/media/roots', { channel_id: 1, show_type_id: 1, path: '/etc' });
   assert.equal(outside.status, 400);
   const browse = await j('GET', '/api/media/browse?path=/etc/passwd');

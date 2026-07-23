@@ -507,3 +507,17 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* ---- Series manager & template editor -------------------------------------- */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > select, .field > input { max-width: 320px; }
+.weekday-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.chk { display: inline-flex; align-items: center; gap: 3px; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.chk input { margin: 0; }
+.slot-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.slot-row .idx { min-width: 58px; }
+.slot-row input { width: 64px; }
+.items.compact li { padding: 4px 8px; }
+#seriesChapters { margin-top: 10px; max-height: 200px; overflow-y: auto; }
+#seriesList .chk, #tplmSeries .chk { margin-left: 6px; }
+.panel-head { margin-bottom: 10px; }

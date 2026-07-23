@@ -96,7 +96,7 @@
     <div class="split">
       <div class="panel">
         <h3>📺 Channels</h3>
-        <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Playlist</th><th>Active</th></tr></thead><tbody></tbody></table>
+        <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Playlist</th><th>Active</th><th></th></tr></thead><tbody></tbody></table>
         <form id="channelForm" class="stack">
           <div class="form-title">Add channel</div>
           <input name="name" placeholder="Channel name" required />
@@ -105,37 +105,17 @@
           <input name="playlist_ref" placeholder="Playlist ref (index or unique_id, default 0)" />
           <button type="submit">Add channel</button>
         </form>
+
+        <h3>🎬 Show types</h3>
+        <p class="muted" style="margin:0 0 8px">Fixed catalogue — assign media roots to these on the Media tab.</p>
+        <table id="showTypesTable"><thead><tr><th>Name</th><th>Educational</th><th>Filler</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="panel">
-        <h3>🎬 Show types</h3>
-        <table id="showTypesTable"><thead><tr><th>Name</th><th>Educational</th></tr></thead><tbody></tbody></table>
-        <form id="showTypeForm" class="stack">
-          <div class="form-title">Add show type</div>
-          <input name="name" placeholder="Show type (e.g. Movies, Lessons)" required />
-          <label><input type="checkbox" name="is_educational" /> Educational</label>
-          <button type="submit">Add show type</button>
-        </form>
-
-        <h3>🗓 Block templates</h3>
-        <table id="templatesTable"><thead><tr><th>Channel</th><th>Name</th><th>Day</th><th>Time</th><th>Type</th></tr></thead><tbody></tbody></table>
-        <form id="templateForm" class="stack">
-          <div class="form-title">Add block template</div>
-          <select name="channel_id" id="tplChannel" required></select>
-          <input name="name" placeholder="Template name" required />
-          <select name="weekday">
-            <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option>
-            <option>Fri</option><option>Sat</option><option>Sun</option>
-          </select>
-          <input name="start_time" placeholder="Start HH:MM" value="18:00" />
-          <input name="end_time" placeholder="End HH:MM" value="20:00" />
-          <input name="target_subject" placeholder="Subject (e.g. Math, Movies, TV)" />
-          <select name="content_type">
-            <option value="movie">movie</option>
-            <option value="lesson_series">lesson_series</option>
-            <option value="tv_episode">tv_episode</option>
-          </select>
-          <button type="submit">Add template</button>
-        </form>
+        <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="margin:0">🗓 Block templates</h3>
+          <button id="btnNewTemplate" class="primary">+ New template</button>
+        </div>
+        <table id="templatesTable"><thead><tr><th>Channel</th><th>Name</th><th>Days</th><th>Airings</th><th>Series</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
   </section>
@@ -166,6 +146,50 @@
       <h3 id="dialogTitle"></h3>
       <div id="dialogContent"></div>
       <div class="modal-actions" id="dialogActions"></div>
+    </div>
+  </div>
+
+  <!-- Series manager modal -->
+  <div id="seriesModal" class="modal hidden">
+    <div class="modal-body">
+      <button id="seriesClose" class="close" aria-label="Close">×</button>
+      <h3 id="seriesTitle"></h3>
+      <div class="muted">Drag to set the channel reproduction order. Toggle whether each series is serial (plays chapter-by-chapter) or active. Click “chapters” to inspect a series.</div>
+      <ol id="seriesList" class="items"></ol>
+      <div id="seriesChapters"></div>
+      <div class="modal-actions">
+        <button id="btnDetectSeries" class="ghost">Detect from catalog</button>
+        <button id="btnSaveSeries" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Block template editor modal -->
+  <div id="templateModal" class="modal hidden">
+    <div class="modal-body">
+      <button id="tplmClose" class="close" aria-label="Close">×</button>
+      <h3 id="tplmTitle">Block template</h3>
+      <div class="stack">
+        <label class="field">Channel <select id="tplmChannel"></select></label>
+        <label class="field">Name <input id="tplmName" placeholder="Template name" /></label>
+        <div class="field">
+          <span class="form-title">Weekdays</span>
+          <div id="tplmWeekdays" class="weekday-row"></div>
+        </div>
+        <div class="field">
+          <span class="form-title">Airings <small class="muted">(first = primary; the rest air the same content)</small></span>
+          <div id="tplmSlots"></div>
+          <button id="btnAddSlot" class="mini ghost" type="button">+ add airing</button>
+        </div>
+        <div class="field">
+          <span class="form-title">Series <small class="muted">(check to include; drag to set the cycle order)</small></span>
+          <ol id="tplmSeries" class="items"></ol>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btnDeleteTpl" class="danger">Delete</button>
+        <button id="btnSaveTpl" class="primary">Save template</button>
+      </div>
     </div>
   </div>
 

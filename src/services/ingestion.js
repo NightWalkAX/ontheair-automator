@@ -8,7 +8,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, dirname } from 'node:path';
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
 
@@ -17,6 +17,36 @@ const execFileAsync = promisify(execFile);
 const VIDEO_EXTS = new Set([
   '.mov', '.mp4', '.m4v', '.mxf', '.avi', '.mkv', '.mpg', '.mpeg', '.ts', '.wmv',
 ]);
+
+// Show-type codes whose series default to sequential chapter progression.
+const SERIAL_DEFAULT_CODES = new Set(['lessons', 'tv_shows']);
+
+/**
+ * Infer a series/subject label from a file's path: the immediate parent folder
+ * name (the series folder). Files directly under the media root use that root's
+ * last path segment.
+ */
+function detectSubject(filePath, rootPath) {
+  const parent = dirname(filePath);
+  // Don't let the media root itself become a subject when files sit at its top
+  // level with no series folder — fall back to the root's own basename anyway,
+  // which is a reasonable label the admin can rename.
+  return basename(parent) || basename(rootPath) || null;
+}
+
+/**
+ * Infer a chapter number from a filename. Prefers an SxxEyy episode marker,
+ * else the last standalone integer in the name. Returns 0 when none found
+ * (single/standalone).
+ */
+function detectChapter(fileName) {
+  const base = basename(fileName, extname(fileName));
+  const ep = base.match(/[Ss]\d{1,3}[\s._-]*[Ee](\d{1,4})/);
+  if (ep) return Number(ep[1]);
+  const nums = base.match(/\d{1,4}/g);
+  if (nums && nums.length) return Number(nums[nums.length - 1]);
+  return 0;
+}
 
 /** Probe a single file's duration (seconds, rounded) via ffprobe. */
 async function probeDuration(filePath) {
@@ -72,13 +102,42 @@ function upsert(row) {
 }
 
 /**
- * Scan one MediaRoot row and upsert its Resource rows.
+ * Register any newly-seen (channel, subject) pairs in ChannelSeries so the admin
+ * can order/toggle them. Existing rows are never clobbered (INSERT OR IGNORE),
+ * so admin ordering/flags survive re-scans. Filler content (null subject) is
+ * skipped — fillers are a channel-wide pool, not a series.
+ */
+function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
+  if (!subjects.size) return;
+  const nextOrder = db.prepare(
+    'SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM ChannelSeries WHERE channel_id = ?'
+  );
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO ChannelSeries
+      (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+    VALUES (?, ?, ?, ?, 1, ?)
+  `);
+  for (const subject of subjects) {
+    insert.run(channelId, subject, showTypeId ?? null, isSerialDefault ? 1 : 0, nextOrder.get(channelId).n);
+  }
+}
+
+/**
+ * Scan one MediaRoot row and upsert its Resource rows. Subject/chapter are
+ * detected from the folder/filename on first insert; the Fillers show type
+ * marks its resources is_filler=1 (and leaves subject null). Newly-seen series
+ * are registered in ChannelSeries.
  * Returns { scanned, ingested, errors }.
  */
 export async function scanMediaRoot(mediaRoot) {
+  const showType = db.prepare('SELECT code, is_filler FROM ShowType WHERE id = ?').get(mediaRoot.show_type_id);
+  const isFiller = showType?.is_filler ? 1 : 0;
+  const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
+
   const files = await collectVideoFiles(mediaRoot.path);
   let ingested = 0;
   const errors = [];
+  const subjects = new Set();
 
   for (const file of files) {
     try {
@@ -88,13 +147,16 @@ export async function scanMediaRoot(mediaRoot) {
         continue;
       }
       const info = await stat(file);
+      const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
+      const chapter = isFiller ? 0 : detectChapter(file);
+      if (subject) subjects.add(subject);
       upsert({
         name: basename(file, extname(file)),
         file_path: file,
         duration,
-        subject: null,          // filled in by admin / naming convention later
-        chapter: 0,
-        is_filler: 0,
+        subject,
+        chapter,
+        is_filler: isFiller,
         audience_rating: null,
         channel_id: mediaRoot.channel_id,
         show_type_id: mediaRoot.show_type_id,
@@ -105,6 +167,8 @@ export async function scanMediaRoot(mediaRoot) {
       errors.push({ file, error: String(err.message || err) });
     }
   }
+
+  registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault);
   return { scanned: files.length, ingested, errors };
 }
 
