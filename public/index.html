@@ -3,56 +3,84 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>OnTheAir Automator — Schedule Review</title>
   <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
   <header>
-    <h1>OnTheAir Automator</h1>
+    <div class="brand">
+      <span class="dot" title="On Air"></span>
+      <h1>OnTheAir Automator <span>· Broadcast Scheduler</span></h1>
+    </div>
     <nav>
       <button data-tab="schedule" class="active">Schedule Review</button>
       <button data-tab="media">Media &amp; Roots</button>
       <button data-tab="setup">Channels &amp; Templates</button>
     </nav>
+    <div class="header-right">
+      <button id="themeToggle" class="theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">🌙</button>
+    </div>
   </header>
 
   <!-- ===== Schedule Review ===== -->
   <section id="tab-schedule" class="tab active">
+    <div class="section-head">
+      <h2>Schedule Review</h2>
+      <p>Generate weekly drafts, review each block for exact-duration fit, then approve and push to the OTAV instances.</p>
+    </div>
+
     <div class="toolbar">
-      <label>Week starting
+      <label class="field"><span>Week starting</span>
         <input type="date" id="weekStart" />
       </label>
-      <button id="btnGenerate">Generate drafts</button>
-      <button id="btnApproveWeek">Approve fitting drafts</button>
-      <button id="btnReload">Reload</button>
-      <label>Push date
+      <button id="btnGenerate">✨ Generate drafts</button>
+      <button id="btnApproveWeek" class="ghost">✓ Approve fitting drafts</button>
+      <button id="btnReload" class="ghost">↻ Reload</button>
+      <span class="spacer"></span>
+      <label class="field"><span>Push date</span>
         <input type="date" id="pushDate" />
       </label>
-      <button id="btnPush" class="danger">Push to Air</button>
+      <button id="btnPush" class="danger">📡 Push to Air</button>
     </div>
+
+    <div class="legend">
+      <span><i class="fits"></i> Fits tolerance</span>
+      <span><i class="misfit"></i> Off tolerance</span>
+      <span><i class="approved"></i> Approved</span>
+      <span><i class="exported"></i> Exported</span>
+    </div>
+
     <div id="scheduleGrid" class="grid"></div>
   </section>
 
   <!-- ===== Media & Roots ===== -->
   <section id="tab-media" class="tab">
-    <div class="toolbar">
-      <button id="btnMount">Mount SMB share</button>
-      <span id="mountStatus" class="muted"></span>
-      <button id="btnScanAll">Scan all roots (ffprobe)</button>
+    <div class="section-head">
+      <h2>Media &amp; Roots</h2>
+      <p>Mount the SMB share, browse folders, and map each folder to a channel / show type so ffprobe can catalog it.</p>
     </div>
+
+    <div class="toolbar">
+      <button id="btnMount" class="ghost">🔌 Mount SMB share</button>
+      <span id="mountStatus" class="mount-pill off">checking…</span>
+      <span class="spacer"></span>
+      <button id="btnScanAll">🔍 Scan all roots (ffprobe)</button>
+    </div>
+
     <div class="split">
-      <div>
-        <h3>Browse share</h3>
+      <div class="panel">
+        <h3>📂 Browse share</h3>
         <div id="browserPath" class="muted"></div>
         <ul id="browser" class="tree"></ul>
         <div class="assign">
           <select id="assignChannel"></select>
           <select id="assignShowType"></select>
-          <button id="btnAssignRoot">Assign selected folder as root</button>
+          <button id="btnAssignRoot">➕ Assign folder as root</button>
         </div>
       </div>
-      <div>
-        <h3>Configured media roots</h3>
+      <div class="panel">
+        <h3>🗂 Configured media roots</h3>
         <table id="rootsTable"><thead><tr><th>Channel</th><th>Show type</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -60,11 +88,17 @@
 
   <!-- ===== Channels & Templates ===== -->
   <section id="tab-setup" class="tab">
+    <div class="section-head">
+      <h2>Channels &amp; Templates</h2>
+      <p>Register the OTAV channels, define show types, and lay out the recurring weekly block templates.</p>
+    </div>
+
     <div class="split">
-      <div>
-        <h3>Channels</h3>
+      <div class="panel">
+        <h3>📺 Channels</h3>
         <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Playlist</th><th>Active</th></tr></thead><tbody></tbody></table>
         <form id="channelForm" class="stack">
+          <div class="form-title">Add channel</div>
           <input name="name" placeholder="Channel name" required />
           <input name="api_ip" placeholder="API IP (e.g. 192.168.0.10)" />
           <input name="api_port" placeholder="API port (e.g. 8081)" type="number" />
@@ -72,18 +106,20 @@
           <button type="submit">Add channel</button>
         </form>
       </div>
-      <div>
-        <h3>Show types</h3>
+      <div class="panel">
+        <h3>🎬 Show types</h3>
         <table id="showTypesTable"><thead><tr><th>Name</th><th>Educational</th></tr></thead><tbody></tbody></table>
         <form id="showTypeForm" class="stack">
+          <div class="form-title">Add show type</div>
           <input name="name" placeholder="Show type (e.g. Movies, Lessons)" required />
           <label><input type="checkbox" name="is_educational" /> Educational</label>
           <button type="submit">Add show type</button>
         </form>
 
-        <h3>Block templates</h3>
+        <h3>🗓 Block templates</h3>
         <table id="templatesTable"><thead><tr><th>Channel</th><th>Name</th><th>Day</th><th>Time</th><th>Type</th></tr></thead><tbody></tbody></table>
         <form id="templateForm" class="stack">
+          <div class="form-title">Add block template</div>
           <select name="channel_id" id="tplChannel" required></select>
           <input name="name" placeholder="Template name" required />
           <select name="weekday">
@@ -107,21 +143,34 @@
   <!-- Block editor modal -->
   <div id="modal" class="modal hidden">
     <div class="modal-body">
-      <button id="modalClose" class="close">×</button>
+      <button id="modalClose" class="close" aria-label="Close">×</button>
       <h3 id="modalTitle"></h3>
       <div id="modalMeta" class="muted"></div>
       <ol id="itemList" class="items"></ol>
       <div class="add-item">
         <select id="addResourceSel"></select>
-        <button id="btnAddItem">Add item</button>
+        <button id="btnAddItem" class="ghost">➕ Add item</button>
       </div>
       <div id="modalValidation" class="validation"></div>
       <div class="modal-actions">
-        <button id="btnSaveItems">Save order</button>
+        <button id="btnSaveItems" class="ghost">Save order</button>
         <button id="btnApproveBlock" class="primary">Approve block</button>
       </div>
     </div>
   </div>
+
+  <!-- Generic report / confirm dialog -->
+  <div id="dialog" class="modal hidden">
+    <div class="modal-body">
+      <button id="dialogClose" class="close" aria-label="Close">×</button>
+      <h3 id="dialogTitle"></h3>
+      <div id="dialogContent"></div>
+      <div class="modal-actions" id="dialogActions"></div>
+    </div>
+  </div>
+
+  <!-- Toast host -->
+  <div id="toasts" aria-live="polite" aria-atomic="false"></div>
 
   <script src="/js/app.js" type="module"></script>
 </body>
