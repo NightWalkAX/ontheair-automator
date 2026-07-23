@@ -1,7 +1,12 @@
 // Admin review UI logic. Vanilla ES modules, no framework/bundler.
 
 const api = {
-  async get(url) { const r = await fetch(url); return r.json(); },
+  async get(url) {
+    const r = await fetch(url);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.status);
+    return data;
+  },
   async send(method, url, body) {
     const r = await fetch(url, {
       method,
