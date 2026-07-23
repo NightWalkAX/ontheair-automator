@@ -153,12 +153,36 @@ function showGridSkeleton() {
   }
 }
 
+// Per-channel filtering of the schedule/generator. null = all channels.
+let scheduleChannels = [];
+let currentScheduleChannel = null;
+
+async function renderChannelStrip() {
+  try { scheduleChannels = await api.get('/api/channels'); } catch { scheduleChannels = []; }
+  const strip = $('#channelStrip');
+  strip.innerHTML = '';
+  if (scheduleChannels.length <= 1) return; // no point showing a strip for a single channel
+  const mk = (label, id) => {
+    const active = currentScheduleChannel === id;
+    const b = el('button', { className: `chip ${active ? 'active' : ''}`, textContent: label });
+    b.onclick = () => { currentScheduleChannel = id; loadSchedule(); };
+    return b;
+  };
+  strip.append(mk('All channels', null));
+  for (const c of scheduleChannels) strip.append(mk(c.name, c.id));
+}
+
+function scheduleChannelQuery() {
+  return currentScheduleChannel != null ? `&channel_id=${currentScheduleChannel}` : '';
+}
+
 async function loadSchedule() {
   showGridSkeleton();
+  await renderChannelStrip();
   let data;
   try {
     const week = $('#weekStart').value || isoToday();
-    data = await api.get(`/api/blocks?week=${week}`);
+    data = await api.get(`/api/blocks?week=${week}${scheduleChannelQuery()}`);
   } catch (e) {
     $('#scheduleGrid').innerHTML = '';
     $('#scheduleGrid').append(emptyState('⚠️', 'Could not load schedule', e.message));
@@ -217,9 +241,10 @@ function emptyState(icon, title, hint) {
 
 $('#btnReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadSchedule));
 $('#btnGenerate').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}`);
+  const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}${scheduleChannelQuery()}`);
   const n = r.results?.length ?? 0;
-  toast(`Generated ${n} draft block${n === 1 ? '' : 's'}`, 'ok', 'Drafts ready');
+  const scope = currentScheduleChannel != null ? ' (this channel)' : '';
+  toast(`Generated ${n} draft block${n === 1 ? '' : 's'}${scope}`, 'ok', 'Drafts ready');
   await loadSchedule();
 }));
 $('#btnApproveWeek').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
@@ -358,6 +383,7 @@ document.addEventListener('keydown', (e) => {
     $('#modal').classList.add('hidden');
     $('#seriesModal')?.classList.add('hidden');
     $('#templateModal')?.classList.add('hidden');
+    $('#channelModal')?.classList.add('hidden');
     closeDialog();
   }
 });
@@ -366,18 +392,58 @@ document.addEventListener('keydown', (e) => {
 let browsePath = null;
 let selectedFolder = null;
 
+let mediaChannels = [];
+
 async function loadMediaTab() {
   try {
     const st = await api.get('/api/media/status');
     const pill = $('#mountStatus');
     pill.className = `mount-pill ${st.mounted ? 'on' : 'off'}`;
     pill.textContent = st.mounted ? `mounted at ${st.mountPoint}` : `not mounted (${st.mountPoint})`;
-    await populateSelect('#assignChannel', '/api/channels', 'name');
+    mediaChannels = await api.get('/api/channels');
+    // Channel checkboxes for multi-channel folder assignment.
+    const box = $('#assignChannels'); box.innerHTML = '';
+    for (const c of mediaChannels) {
+      box.append(el('label', { className: 'chk' }, el('input', { type: 'checkbox', value: c.id }), document.createTextNode(' ' + c.name)));
+    }
     await populateSelect('#assignShowType', '/api/showtypes', 'name');
+    // Check-media channel filter.
+    const filt = $('#mediaChannelFilter'); filt.innerHTML = '';
+    for (const c of mediaChannels) filt.append(el('option', { value: c.id, textContent: c.name }));
     await browse(st.mountPoint);
     await loadRoots();
+    await loadResources();
   } catch (e) { toast(e.message, 'bad', 'Media'); }
 }
+
+async function loadResources() {
+  const tb = $('#resourcesTable tbody');
+  if (!tb) return;
+  const ch = $('#mediaChannelFilter').value;
+  if (!ch) { tb.innerHTML = ''; return; }
+  const filler = $('#mediaFillerFilter').value;
+  tb.innerHTML = '';
+  let rows = [];
+  try {
+    const q = `channel_id=${ch}` + (filler !== '' ? `&is_filler=${filler}` : '');
+    rows = await api.get(`/api/resources?${q}`);
+  } catch (e) { return toast(e.message, 'bad', 'Resources'); }
+  if (!rows.length) {
+    tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'muted', style: 'text-align:center;padding:18px', textContent: 'No cataloged media for this channel yet — assign a root and scan.' })));
+    return;
+  }
+  for (const r of rows) {
+    tb.append(el('tr', {},
+      el('td', { textContent: r.name }),
+      el('td', { textContent: r.subject || '—' }),
+      el('td', { textContent: r.is_filler ? '—' : String(r.chapter) }),
+      el('td', { className: 'dur', textContent: fmt(r.duration) }),
+      el('td', {}, el('span', { className: `badge ${r.is_filler ? 'ok' : 'status'}`, textContent: r.is_filler ? 'filler' : 'main' }))));
+  }
+}
+$('#btnLoadResources')?.addEventListener('click', (e) => withBusy(e.currentTarget, loadResources));
+$('#mediaChannelFilter')?.addEventListener('change', loadResources);
+$('#mediaFillerFilter')?.addEventListener('change', loadResources);
 
 async function browse(path) {
   try {
@@ -423,13 +489,16 @@ $('#btnScanAll').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
 $('#btnAssignRoot').addEventListener('click', (e) => {
   const folder = selectedFolder || browsePath;
   if (!folder) return toast('Select a folder first', 'bad');
+  const channel_ids = $$('#assignChannels input:checked').map((i) => Number(i.value));
+  if (!channel_ids.length) return toast('Select at least one channel', 'bad');
   return withBusy(e.currentTarget, async () => {
-    await api.send('POST', '/api/media/roots', {
-      channel_id: Number($('#assignChannel').value),
+    const r = await api.send('POST', '/api/media/roots', {
+      channel_ids,
       show_type_id: Number($('#assignShowType').value),
       path: folder,
     });
-    toast('Folder assigned as root', 'ok');
+    const n = r.created?.length ?? 0;
+    toast(`Assigned folder to ${n} channel${n === 1 ? '' : 's'}`, 'ok');
     await loadRoots();
   });
 });
@@ -450,14 +519,54 @@ async function loadRoots() {
       const x = await api.send('POST', `/api/media/roots/${r.id}/scan`);
       toast(`Ingested ${x.ingested} of ${x.scanned}`, 'ok', r.path.split('/').pop());
     });
+    const btnEdit = el('button', { className: 'mini ghost', textContent: 'edit' });
+    btnEdit.onclick = () => editRoot(r);
     const btnDel = el('button', { className: 'mini danger', textContent: 'delete' });
     btnDel.onclick = async () => {
-      if (!await confirmDialog('Delete media root', `Remove the root “${r.path}”? Cataloged resources stay, but this folder won’t be re-scanned.`, { confirmLabel: 'Delete', danger: true })) return;
-      await withBusy(btnDel, async () => { await api.send('DELETE', `/api/media/roots/${r.id}`); toast('Root removed', 'ok'); await loadRoots(); });
+      if (!await confirmDialog('Delete media root', `Remove the root “${r.path}” and drop every resource it cataloged for ${r.channel_name}? This also removes those clips from any draft blocks.`, { confirmLabel: 'Delete', danger: true })) return;
+      await withBusy(btnDel, async () => {
+        const res = await api.send('DELETE', `/api/media/roots/${r.id}`);
+        toast(`Root removed — ${res.deletedResources ?? 0} resource(s) dropped`, 'ok');
+        await loadRoots();
+        await loadResources();
+      });
     };
-    const td = el('td'); td.style.textAlign = 'right'; td.append(btnScan, document.createTextNode(' '), btnDel); tr.append(td);
+    const td = el('td'); td.style.textAlign = 'right';
+    td.append(btnScan, document.createTextNode(' '), btnEdit, document.createTextNode(' '), btnDel); tr.append(td);
     tb.append(tr);
   }
+}
+
+// Edit a media root's channel / show type (folder type). Uses the generic dialog
+// with two selects. A re-scan afterwards re-catalogs under the new assignment.
+async function editRoot(r) {
+  const showTypes = await api.get('/api/showtypes');
+  $('#dialogTitle').textContent = 'Edit media root';
+  const content = $('#dialogContent');
+  content.innerHTML = '';
+  content.append(el('p', { className: 'dialog-msg', textContent: r.path }));
+  const chSel = el('select');
+  for (const c of mediaChannels) chSel.append(el('option', { value: c.id, textContent: c.name, selected: c.id === r.channel_id }));
+  const stSel = el('select');
+  for (const s of showTypes) stSel.append(el('option', { value: s.id, textContent: s.name, selected: s.id === r.show_type_id }));
+  content.append(
+    el('label', { className: 'field' }, document.createTextNode('Channel'), chSel),
+    el('label', { className: 'field' }, document.createTextNode('Folder type'), stSel),
+    el('p', { className: 'hint muted', textContent: 'Re-scan this root afterwards to re-catalog under the new assignment.' }),
+  );
+  const actions = $('#dialogActions');
+  actions.innerHTML = '';
+  const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+  const save = el('button', { className: 'primary', textContent: 'Save' });
+  cancel.onclick = closeDialog;
+  save.onclick = () => withBusy(save, async () => {
+    await api.send('PUT', `/api/media/roots/${r.id}`, { channel_id: Number(chSel.value), show_type_id: Number(stSel.value) });
+    closeDialog();
+    toast('Root updated — re-scan to apply', 'ok');
+    await loadRoots();
+  });
+  actions.append(cancel, save);
+  $('#dialog').classList.remove('hidden');
 }
 
 // ---- Channels & Templates --------------------------------------------------
@@ -479,9 +588,12 @@ async function loadSetupTab() {
     const ct = $('#channelsTable tbody'); ct.innerHTML = '';
     if (!setupChannels.length) ct.append(el('tr', {}, el('td', { colSpan: 5, className: 'muted', style: 'text-align:center;padding:18px', textContent: 'No channels yet — add one below.' })));
     for (const c of setupChannels) {
+      const editBtn = el('button', { className: 'mini ghost', textContent: 'edit' });
+      editBtn.onclick = () => openChannelEditor(c);
       const seriesBtn = el('button', { className: 'mini ghost', textContent: 'series' });
       seriesBtn.onclick = () => openSeries(c);
-      const td = el('td'); td.style.textAlign = 'right'; td.append(seriesBtn);
+      const td = el('td'); td.style.textAlign = 'right';
+      td.append(editBtn, document.createTextNode(' '), seriesBtn);
       ct.append(el('tr', {},
         el('td', { textContent: c.name }),
         el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}` : '—' }),
@@ -556,6 +668,23 @@ function renderSeries() {
     chaptersBtn.onclick = () => showChapters(s.subject);
     li.append(serial, active, chaptersBtn);
 
+    // Next-episode cursor controls for serial series.
+    if (s.is_serial) {
+      const label = el('span', { className: 'cursor-badge', title: 'Next episode to air' });
+      const paint = () => { label.textContent = `next #${s.cursor_chapter ?? 1}`; };
+      paint();
+      const nudge = (delta) => async () => {
+        try {
+          const r = await api.send('POST', `/api/channels/${seriesChannel.id}/series/${encodeURIComponent(s.subject)}/cursor`, { delta });
+          s.cursor_chapter = r.cursor; paint();
+        } catch (e) { toast(e.message, 'bad', 'Cursor'); }
+      };
+      const down = el('button', { className: 'mini ghost', textContent: '↓', title: 'Rewind one episode' });
+      const up = el('button', { className: 'mini ghost', textContent: '↑', title: 'Advance one episode' });
+      down.onclick = nudge(-1); up.onclick = nudge(1);
+      li.append(down, label, up);
+    }
+
     li.addEventListener('dragstart', () => { seriesDragIdx = idx; li.classList.add('dragging'); });
     li.addEventListener('dragend', () => { seriesDragIdx = null; li.classList.remove('dragging'); });
     li.addEventListener('dragover', (e) => { e.preventDefault(); });
@@ -570,21 +699,52 @@ function renderSeries() {
   });
 }
 
+let chapterRows = [];
+let chapterDragIdx = null;
 async function showChapters(subject) {
   const box = $('#seriesChapters');
   box.innerHTML = '';
   try {
-    const rows = await api.get(`/api/channels/${seriesChannel.id}/series/${encodeURIComponent(subject)}/chapters`);
-    box.append(el('div', { className: 'form-title', textContent: `Chapters — ${subject}` }));
-    const ol = el('ol', { className: 'items compact' });
-    for (const r of rows) {
-      ol.append(el('li', {},
-        el('span', { className: 'idx', textContent: String(r.chapter) }),
-        el('span', { className: 'grow', textContent: r.name }),
-        el('span', { className: 'dur', textContent: fmt(r.duration) })));
-    }
-    box.append(ol);
-  } catch (e) { toast(e.message, 'bad', 'Chapters'); }
+    chapterRows = await api.get(`/api/channels/${seriesChannel.id}/series/${encodeURIComponent(subject)}/chapters`);
+  } catch (e) { return toast(e.message, 'bad', 'Chapters'); }
+  const head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px' });
+  head.append(el('div', { className: 'form-title', textContent: `Chapters — ${subject}`, style: 'margin:0' }));
+  const saveBtn = el('button', { className: 'mini primary', textContent: 'Save order' });
+  saveBtn.onclick = () => withBusy(saveBtn, async () => {
+    await api.send('PUT', `/api/channels/${seriesChannel.id}/series/${encodeURIComponent(subject)}/chapters`,
+      { order: chapterRows.map((r) => r.id) });
+    toast('Chapter order saved', 'ok');
+    await showChapters(subject);
+  });
+  head.append(saveBtn);
+  box.append(head);
+  box.append(el('div', { className: 'hint muted', textContent: 'Drag to reorder — position becomes the play order (chapter number).' }));
+  box.append(el('ol', { className: 'items compact', id: 'chapterList' }));
+  renderChapters();
+}
+// Render the reorderable chapter list; used on first show and after each drag.
+function renderChapters() {
+  const ol = $('#chapterList');
+  if (!ol) return;
+  ol.innerHTML = '';
+  chapterRows.forEach((r, idx) => {
+    const li = el('li', { draggable: true });
+    li.append(el('span', { className: 'drag', textContent: '⠿' }));
+    li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
+    li.append(el('span', { className: 'grow', textContent: r.name }));
+    li.append(el('span', { className: 'dur', textContent: fmt(r.duration) }));
+    li.addEventListener('dragstart', () => { chapterDragIdx = idx; li.classList.add('dragging'); });
+    li.addEventListener('dragend', () => { chapterDragIdx = null; li.classList.remove('dragging'); });
+    li.addEventListener('dragover', (e) => e.preventDefault());
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (chapterDragIdx === null || chapterDragIdx === idx) return;
+      const [m] = chapterRows.splice(chapterDragIdx, 1);
+      chapterRows.splice(idx, 0, m);
+      renderChapters();
+    });
+    ol.append(li);
+  });
 }
 
 $('#btnDetectSeries').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
@@ -608,11 +768,24 @@ let tplSlots = [];          // [{start_time, end_time}]
 let tplSeries = [];         // [{subject, checked}] ordered
 let tplSeriesDragIdx = null;
 
+// The channel whose series populate the picker (subjects are shared across
+// channels that share folders, so the first checked channel is representative).
+function tplPrimaryChannel() {
+  const first = $$('#tplmChannels input:checked')[0];
+  return first ? Number(first.value) : (setupChannels[0]?.id ?? '');
+}
+
 async function openTemplate(t) {
   tplEditing = t ? t.id : null;
   $('#tplmTitle').textContent = t ? `Edit template — ${t.name}` : 'New block template';
-  await populateSelect('#tplmChannel', '/api/channels', 'name');
-  $('#tplmChannel').value = t ? t.channel_id : (setupChannels[0]?.id ?? '');
+  if (!setupChannels.length) setupChannels = await api.get('/api/channels');
+  const selected = new Set(t ? (t.channels?.length ? t.channels : [t.channel_id]) : (setupChannels[0] ? [setupChannels[0].id] : []));
+  const chBox = $('#tplmChannels'); chBox.innerHTML = '';
+  for (const c of setupChannels) {
+    const lbl = el('label', { className: 'chk' }, el('input', { type: 'checkbox', value: c.id, checked: selected.has(c.id) }), document.createTextNode(' ' + c.name));
+    lbl.querySelector('input').onchange = () => loadTplSeries(tplPrimaryChannel(), tplSeries.filter((s) => s.checked).map((s) => s.subject));
+    chBox.append(lbl);
+  }
   $('#tplmName').value = t ? t.name : '';
   $('#btnDeleteTpl').style.display = t ? '' : 'none';
 
@@ -627,12 +800,10 @@ async function openTemplate(t) {
   renderTplSlots();
 
   const included = (t?.series || []).map((s) => s.subject);
-  await loadTplSeries($('#tplmChannel').value, included);
+  await loadTplSeries(tplPrimaryChannel(), included);
 
   $('#templateModal').classList.remove('hidden');
 }
-
-$('#tplmChannel').addEventListener('change', (e) => loadTplSeries(e.target.value, tplSeries.filter((s) => s.checked).map((s) => s.subject)));
 
 async function loadTplSeries(channelId, included = []) {
   let rows = [];
@@ -694,11 +865,11 @@ function renderTplSeries() {
 $('#btnSaveTpl').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const weekdays = $$('#tplmWeekdays input:checked').map((i) => i.value);
   const name = $('#tplmName').value.trim();
-  const channel_id = Number($('#tplmChannel').value);
+  const channels = $$('#tplmChannels input:checked').map((i) => Number(i.value));
   const slots = tplSlots.filter((s) => s.start_time && s.end_time);
   const series = tplSeries.filter((s) => s.checked).map((s) => s.subject);
-  if (!name || !weekdays.length || !slots.length) return toast('Name, at least one weekday and one airing are required', 'bad', 'Template');
-  const body = { channel_id, name, weekdays, slots, series };
+  if (!name || !channels.length || !weekdays.length || !slots.length) return toast('Name, at least one channel, one weekday and one airing are required', 'bad', 'Template');
+  const body = { channels, channel_id: channels[0], name, weekdays, slots, series };
   if (tplEditing) await api.send('PUT', `/api/blocks/templates/${tplEditing}`, body);
   else await api.send('POST', '/api/blocks/templates', body);
   $('#templateModal').classList.add('hidden');
@@ -716,6 +887,39 @@ $('#btnDeleteTpl').addEventListener('click', (e) => withBusy(e.currentTarget, as
 $('#btnNewTemplate').addEventListener('click', () => openTemplate(null));
 $('#tplmClose').addEventListener('click', () => $('#templateModal').classList.add('hidden'));
 $('#templateModal').addEventListener('click', (e) => { if (e.target.id === 'templateModal') $('#templateModal').classList.add('hidden'); });
+
+// ---- Channel editor modal --------------------------------------------------
+let chEditing = null;
+function openChannelEditor(c) {
+  chEditing = c.id;
+  $('#chmTitle').textContent = `Edit channel — ${c.name}`;
+  $('#chmName').value = c.name ?? '';
+  $('#chmIp').value = c.api_ip ?? '';
+  $('#chmPort').value = c.api_port ?? '';
+  $('#chmPlaylist').value = c.playlist_ref ?? '';
+  $('#chmUser').value = c.api_username ?? '';
+  $('#chmPass').value = c.api_password ?? '';
+  $('#chmActive').checked = !!c.is_active;
+  $('#channelModal').classList.remove('hidden');
+}
+$('#chmSave').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (chEditing == null) return;
+  const body = {
+    name: $('#chmName').value.trim(),
+    api_ip: $('#chmIp').value.trim() || null,
+    api_port: $('#chmPort').value ? Number($('#chmPort').value) : null,
+    playlist_ref: $('#chmPlaylist').value.trim() || null,
+    api_username: $('#chmUser').value.trim() || null,
+    api_password: $('#chmPass').value || null,
+    is_active: $('#chmActive').checked ? 1 : 0,
+  };
+  await api.send('PUT', `/api/channels/${chEditing}`, body);
+  $('#channelModal').classList.add('hidden');
+  toast('Channel saved', 'ok');
+  await loadSetupTab();
+}));
+$('#chmClose').addEventListener('click', () => $('#channelModal').classList.add('hidden'));
+$('#channelModal').addEventListener('click', (e) => { if (e.target.id === 'channelModal') $('#channelModal').classList.add('hidden'); });
 
 // Channel add form (the only remaining inline form).
 function formToObj(form) {

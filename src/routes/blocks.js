@@ -17,7 +17,8 @@ function validateBlock(blockId) {
            COALESCE(s.start_time, bt.start_time) AS start_time,
            COALESCE(s.end_time, bt.end_time)     AS end_time,
            s.slot_order AS slot_order,
-           bt.name AS template_name, bt.channel_id
+           bt.name AS template_name,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
@@ -39,6 +40,36 @@ function validateBlock(blockId) {
   const overrun = diff < 0;
   const fits = !overrun && diff <= maxUnderrun;
   return { block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, fits };
+}
+
+// Record that a block's items aired: write PlayHistory (drives movie cooldown +
+// series progression), stamp fillers' last_used_at (repeat-heat), and advance the
+// per-series cursor for serial series. Called once when a block first becomes
+// approved. Idempotent-safe fields (MAX-based progression) tolerate re-runs, but
+// callers guard on the draft→approved transition to avoid duplicate history rows.
+function recordBlockPlays(v) {
+  const { block, items } = v;
+  const channelId = block.channel_id;
+  if (channelId == null) return;
+  const playedAt = `${block.target_date}T${(block.start_time || '00:00')}:00`;
+
+  const insPlay = db.prepare('INSERT INTO PlayHistory (resource_id, channel_id, played_at) VALUES (?, ?, ?)');
+  const stampFiller = db.prepare('UPDATE Resource SET last_used_at = ? WHERE id = ?');
+  const bumpCursor = db.prepare(`
+    UPDATE ChannelSeries SET cursor_chapter = ?
+    WHERE channel_id = ? AND subject = ? AND is_serial = 1
+      AND (cursor_chapter IS NULL OR cursor_chapter < ?)
+  `);
+
+  const serialMax = new Map(); // subject -> highest chapter aired in this block
+  for (const it of items) {
+    insPlay.run(it.resource_id, channelId, playedAt);
+    if (it.is_filler) stampFiller.run(playedAt, it.resource_id);
+    else if (it.subject != null) serialMax.set(it.subject, Math.max(serialMax.get(it.subject) ?? 0, it.chapter));
+  }
+  for (const [subject, maxCh] of serialMax) {
+    bumpCursor.run(maxCh + 1, channelId, subject, maxCh + 1);
+  }
 }
 
 // ---- BlockTemplate CRUD ----------------------------------------------------
@@ -69,11 +100,34 @@ function setSeries(templateId, series) {
   series.forEach((s, idx) => ins.run(templateId, typeof s === 'string' ? s : s.subject, idx));
 }
 
+// Replace a template's target channels. `channels` is a list of channel ids.
+// Always keeps at least the legacy primary channel so a template is never
+// orphaned. The first channel is also written back as BlockTemplate.channel_id
+// (the legacy "primary").
+function setChannels(templateId, channels, fallbackChannelId) {
+  const ids = (Array.isArray(channels) ? channels : [])
+    .map((c) => Number(typeof c === 'object' ? c.channel_id : c))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const list = ids.length ? [...new Set(ids)] : (fallbackChannelId ? [fallbackChannelId] : []);
+  if (!list.length) return;
+  db.prepare('DELETE FROM BlockTemplateChannel WHERE template_id = ?').run(templateId);
+  const ins = db.prepare('INSERT OR IGNORE INTO BlockTemplateChannel (template_id, channel_id) VALUES (?, ?)');
+  list.forEach((cid) => ins.run(templateId, cid));
+  db.prepare('UPDATE BlockTemplate SET channel_id = ? WHERE id = ?').run(list[0], templateId);
+}
+
+function templateChannels(templateId) {
+  return db.prepare(
+    'SELECT channel_id FROM BlockTemplateChannel WHERE template_id = ? ORDER BY channel_id'
+  ).all(templateId).map((r) => r.channel_id);
+}
+
 function templateWithDetails(t) {
   return {
     ...t,
     slots: db.prepare('SELECT id, start_time, end_time, slot_order FROM BlockTemplateSlot WHERE template_id = ? ORDER BY slot_order').all(t.id),
     series: db.prepare('SELECT subject, play_order FROM BlockTemplateSeries WHERE template_id = ? ORDER BY play_order').all(t.id),
+    channels: templateChannels(t.id),
   };
 }
 
@@ -88,18 +142,23 @@ router.post('/templates', (req, res) => {
   const slots = Array.isArray(b.slots) && b.slots.length
     ? b.slots
     : (b.start_time && b.end_time ? [{ start_time: b.start_time, end_time: b.end_time }] : []);
-  if (!b.channel_id || !b.name || !weekdays || !slots.length) {
-    return res.status(400).json({ error: 'channel_id, name, weekdays and at least one time slot are required' });
+  // Channels can arrive as a list (multi-channel) or a single channel_id (legacy).
+  const channels = Array.isArray(b.channels) && b.channels.length
+    ? b.channels : (b.channel_id ? [b.channel_id] : []);
+  const primaryChannel = channels[0];
+  if (!primaryChannel || !b.name || !weekdays || !slots.length) {
+    return res.status(400).json({ error: 'at least one channel, name, weekdays and one time slot are required' });
   }
   const primary = slots[0];
   const firstWeekday = weekdays.split(',')[0];
   const info = db.prepare(`
     INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(b.channel_id, b.name, firstWeekday, weekdays, primary.start_time, primary.end_time,
+  `).run(primaryChannel, b.name, firstWeekday, weekdays, primary.start_time, primary.end_time,
          b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie');
   const id = info.lastInsertRowid;
   setSlots(id, slots);
+  setChannels(id, channels, primaryChannel);
   if (Array.isArray(b.series)) setSeries(id, b.series);
   res.status(201).json({ id });
 });
@@ -124,8 +183,24 @@ router.put('/templates/:id', (req, res) => {
     b.content_type ?? cur.content_type, id
   );
   if (slots) setSlots(id, slots);
+  if (Array.isArray(b.channels)) setChannels(id, b.channels, b.channel_id ?? cur.channel_id);
   if (Array.isArray(b.series)) setSeries(id, b.series);
   res.json({ ok: true });
+});
+
+// ---- Template channels sub-resource ----------------------------------------
+router.get('/templates/:id/channels', (req, res) => {
+  res.json(templateChannels(Number(req.params.id)));
+});
+
+router.put('/templates/:id/channels', (req, res) => {
+  const id = Number(req.params.id);
+  const cur = db.prepare('SELECT channel_id FROM BlockTemplate WHERE id = ?').get(id);
+  if (!cur) return res.status(404).json({ error: 'not found' });
+  const list = Array.isArray(req.body?.channels) ? req.body.channels : null;
+  if (!list || !list.length) return res.status(400).json({ error: 'channels array is required' });
+  setChannels(id, list, cur.channel_id);
+  res.json({ ok: true, channels: templateChannels(id) });
 });
 
 router.delete('/templates/:id', (req, res) => {
@@ -164,8 +239,9 @@ router.put('/templates/:id/slots', (req, res) => {
 // POST /api/blocks/generate?weekStart=YYYY-MM-DD (defaults to today)
 router.post('/generate', (req, res) => {
   const ws = req.query.weekStart ? new Date(String(req.query.weekStart) + 'T00:00:00') : new Date();
+  const channelId = req.query.channel_id ? Number(req.query.channel_id) : null;
   try {
-    const results = generateWeek(ws);
+    const results = generateWeek(ws, channelId);
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -183,26 +259,31 @@ router.post('/:id/regenerate', (req, res) => {
 // GET /api/blocks?week=YYYY-MM-DD — the 7-day window starting at `week`.
 router.get('/', (req, res) => {
   const start = req.query.week ? new Date(String(req.query.week) + 'T00:00:00') : new Date();
+  const channelId = req.query.channel_id ? Number(req.query.channel_id) : null;
   const dates = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     dates.push(d.toISOString().slice(0, 10));
   }
+  const clauses = ['sb.target_date BETWEEN ? AND ?'];
+  const params = [dates[0], dates[6]];
+  if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
   const rows = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, bt.name AS template_name,
-           bt.channel_id, bt.weekday, bt.content_type,
+    SELECT sb.id, sb.target_date, sb.status, sb.slot_id,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           bt.name AS template_name, bt.weekday, bt.content_type,
            COALESCE(s.start_time, bt.start_time) AS start_time,
            COALESCE(s.end_time, bt.end_time)     AS end_time,
            COALESCE(s.slot_order, 0)             AS slot_order,
            c.name AS channel_name
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
-    JOIN ChannelType   c  ON c.id = bt.channel_id
+    JOIN ChannelType   c  ON c.id = COALESCE(sb.channel_id, bt.channel_id)
     LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
-    WHERE sb.target_date BETWEEN ? AND ?
+    WHERE ${clauses.join(' AND ')}
     ORDER BY sb.target_date, c.name, start_time
-  `).all(dates[0], dates[6]);
+  `).all(...params);
 
   // Attach validation summary so the UI can render tolerance badges directly.
   const blocks = rows.map((r) => {
@@ -257,6 +338,7 @@ router.post('/:id/approve', (req, res) => {
       diff: v.diff, overrun: v.overrun, maxUnderrun: v.maxUnderrun,
     });
   }
+  if (v.block.status !== 'approved') recordBlockPlays(v); // record only on first approval
   db.prepare("UPDATE ScheduledBlock SET status = 'approved' WHERE id = ?").run(id);
   res.json({ ok: true, status: 'approved' });
 });
@@ -272,8 +354,11 @@ router.post('/approve-week', (req, res) => {
   const approved = [], blocked = [];
   for (const { id } of drafts) {
     const v = validateBlock(id);
-    if (v.fits) { db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE id=?").run(id); approved.push(id); }
-    else blocked.push({ id, diff: v.diff });
+    if (v.fits) {
+      recordBlockPlays(v); // these are drafts, so always a first approval
+      db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE id=?").run(id);
+      approved.push(id);
+    } else blocked.push({ id, diff: v.diff });
   }
   res.json({ ok: blocked.length === 0, approved, blocked });
 });

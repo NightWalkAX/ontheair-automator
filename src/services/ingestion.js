@@ -21,6 +21,18 @@ const VIDEO_EXTS = new Set([
 // Show-type codes whose series default to sequential chapter progression.
 const SERIAL_DEFAULT_CODES = new Set(['lessons', 'tv_shows']);
 
+// A clip is auto-classified as a filler when it lives inside a folder named
+// "Filler"/"Fillers" AND runs shorter than this. (Explicitly assigning a root to
+// the Fillers show type still marks its clips regardless of duration.)
+const FILLER_MAX_SECONDS = 15 * 60; // 900s
+
+/** True if any segment of the path is (case-insensitively) "filler"/"fillers". */
+function looksLikeFillerFolder(filePath) {
+  return dirname(filePath)
+    .split(/[\\/]/)
+    .some((seg) => /^fillers?$/i.test(seg));
+}
+
 /**
  * Infer a series/subject label from a file's path: the immediate parent folder
  * name (the series folder). Files directly under the media root use that root's
@@ -91,9 +103,9 @@ function upsert(row) {
                             audience_rating, channel_id, show_type_id, added_at)
       VALUES (@name, @file_path, @duration, @subject, @chapter, @is_filler,
               @audience_rating, @channel_id, @show_type_id, @added_at)
-      ON CONFLICT(file_path) DO UPDATE SET
+      ON CONFLICT(channel_id, file_path) DO UPDATE SET
         duration     = excluded.duration,
-        channel_id   = excluded.channel_id,
+        is_filler    = excluded.is_filler,
         show_type_id = excluded.show_type_id,
         added_at     = excluded.added_at
     `);
@@ -131,7 +143,7 @@ function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
  */
 export async function scanMediaRoot(mediaRoot) {
   const showType = db.prepare('SELECT code, is_filler FROM ShowType WHERE id = ?').get(mediaRoot.show_type_id);
-  const isFiller = showType?.is_filler ? 1 : 0;
+  const typeIsFiller = showType?.is_filler ? 1 : 0;
   const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
 
   const files = await collectVideoFiles(mediaRoot.path);
@@ -146,6 +158,10 @@ export async function scanMediaRoot(mediaRoot) {
         errors.push({ file, error: 'no duration from ffprobe' });
         continue;
       }
+      // Filler if the root's show type is the Fillers type, OR the clip sits in a
+      // "Filler(s)" folder and is under 15 minutes.
+      const isFiller = typeIsFiller
+        || (looksLikeFillerFolder(file) && duration < FILLER_MAX_SECONDS ? 1 : 0);
       const info = await stat(file);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
       const chapter = isFiller ? 0 : detectChapter(file);

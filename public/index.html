@@ -44,6 +44,8 @@
       <button id="btnPush" class="danger">📡 Push to Air</button>
     </div>
 
+    <div id="channelStrip" class="channel-strip"></div>
+
     <div class="legend">
       <span><i class="fits"></i> Fits tolerance</span>
       <span><i class="misfit"></i> Off tolerance</span>
@@ -74,15 +76,36 @@
         <div id="browserPath" class="muted"></div>
         <ul id="browser" class="tree"></ul>
         <div class="assign">
-          <select id="assignChannel"></select>
-          <select id="assignShowType"></select>
-          <button id="btnAssignRoot">➕ Assign folder as root</button>
+          <div class="field">
+            <span class="form-title">Channels <small class="muted">(assign this folder to one or more channels)</small></span>
+            <div id="assignChannels" class="weekday-row"></div>
+          </div>
+          <div class="assign-row">
+            <select id="assignShowType"></select>
+            <button id="btnAssignRoot">➕ Assign folder as root</button>
+          </div>
         </div>
       </div>
       <div class="panel">
         <h3>🗂 Configured media roots</h3>
         <table id="rootsTable"><thead><tr><th>Channel</th><th>Show type</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
       </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">✅ Check cataloged media</h3>
+        <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0">
+          <select id="mediaChannelFilter"></select>
+          <select id="mediaFillerFilter">
+            <option value="">All types</option>
+            <option value="0">Main content</option>
+            <option value="1">Fillers only</option>
+          </select>
+          <button id="btnLoadResources" class="ghost">↻ Show</button>
+        </div>
+      </div>
+      <table id="resourcesTable"><thead><tr><th>Name</th><th>Series</th><th>Ch#</th><th>Duration</th><th>Filler</th></tr></thead><tbody></tbody></table>
     </div>
   </section>
 
@@ -103,6 +126,8 @@
           <input name="api_ip" placeholder="API IP (e.g. 192.168.0.10)" />
           <input name="api_port" placeholder="API port (e.g. 8081)" type="number" />
           <input name="playlist_ref" placeholder="Playlist ref (index or unique_id, default 0)" />
+          <input name="api_username" placeholder="API username (optional)" />
+          <input name="api_password" placeholder="API password (optional)" type="password" />
           <button type="submit">Add channel</button>
         </form>
 
@@ -122,11 +147,13 @@
 
   <!-- Block editor modal -->
   <div id="modal" class="modal hidden">
-    <div class="modal-body">
+    <div class="modal-body wide">
       <button id="modalClose" class="close" aria-label="Close">×</button>
       <h3 id="modalTitle"></h3>
       <div id="modalMeta" class="muted"></div>
-      <ol id="itemList" class="items"></ol>
+      <div class="modal-scroll">
+        <ol id="itemList" class="items"></ol>
+      </div>
       <div class="add-item">
         <select id="addResourceSel"></select>
         <button id="btnAddItem" class="ghost">➕ Add item</button>
@@ -144,7 +171,7 @@
     <div class="modal-body">
       <button id="dialogClose" class="close" aria-label="Close">×</button>
       <h3 id="dialogTitle"></h3>
-      <div id="dialogContent"></div>
+      <div class="modal-scroll"><div id="dialogContent"></div></div>
       <div class="modal-actions" id="dialogActions"></div>
     </div>
   </div>
@@ -154,9 +181,11 @@
     <div class="modal-body">
       <button id="seriesClose" class="close" aria-label="Close">×</button>
       <h3 id="seriesTitle"></h3>
-      <div class="muted">Drag to set the channel reproduction order. Toggle whether each series is serial (plays chapter-by-chapter) or active. Click “chapters” to inspect a series.</div>
-      <ol id="seriesList" class="items"></ol>
-      <div id="seriesChapters"></div>
+      <div class="modal-scroll">
+        <div class="muted">Drag to set the channel reproduction order. Toggle whether each series is serial (plays chapter-by-chapter) or active. Click “chapters” to inspect or reorder a series and set its next episode.</div>
+        <ol id="seriesList" class="items"></ol>
+        <div id="seriesChapters"></div>
+      </div>
       <div class="modal-actions">
         <button id="btnDetectSeries" class="ghost">Detect from catalog</button>
         <button id="btnSaveSeries" class="primary">Save</button>
@@ -169,26 +198,53 @@
     <div class="modal-body">
       <button id="tplmClose" class="close" aria-label="Close">×</button>
       <h3 id="tplmTitle">Block template</h3>
-      <div class="stack">
-        <label class="field">Channel <select id="tplmChannel"></select></label>
-        <label class="field">Name <input id="tplmName" placeholder="Template name" /></label>
-        <div class="field">
-          <span class="form-title">Weekdays</span>
-          <div id="tplmWeekdays" class="weekday-row"></div>
-        </div>
-        <div class="field">
-          <span class="form-title">Airings <small class="muted">(first = primary; the rest air the same content)</small></span>
-          <div id="tplmSlots"></div>
-          <button id="btnAddSlot" class="mini ghost" type="button">+ add airing</button>
-        </div>
-        <div class="field">
-          <span class="form-title">Series <small class="muted">(check to include; drag to set the cycle order)</small></span>
-          <ol id="tplmSeries" class="items"></ol>
+      <div class="modal-scroll">
+        <div class="stack">
+          <div class="field">
+            <span class="form-title">Channels <small class="muted">(check every channel this block airs on; each picks its own content)</small></span>
+            <div id="tplmChannels" class="weekday-row"></div>
+          </div>
+          <label class="field">Name <input id="tplmName" placeholder="Template name" /></label>
+          <div class="field">
+            <span class="form-title">Weekdays</span>
+            <div id="tplmWeekdays" class="weekday-row"></div>
+          </div>
+          <div class="field">
+            <span class="form-title">Airings <small class="muted">(first = primary; the rest air the same content)</small></span>
+            <div id="tplmSlots"></div>
+            <button id="btnAddSlot" class="mini ghost" type="button">+ add airing</button>
+          </div>
+          <div class="field">
+            <span class="form-title">Series <small class="muted">(check to include; drag to set the cycle order)</small></span>
+            <ol id="tplmSeries" class="items"></ol>
+          </div>
         </div>
       </div>
       <div class="modal-actions">
         <button id="btnDeleteTpl" class="danger">Delete</button>
         <button id="btnSaveTpl" class="primary">Save template</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Channel editor modal -->
+  <div id="channelModal" class="modal hidden">
+    <div class="modal-body">
+      <button id="chmClose" class="close" aria-label="Close">×</button>
+      <h3 id="chmTitle">Edit channel</h3>
+      <div class="modal-scroll">
+        <div class="stack">
+          <label class="field">Name <input id="chmName" placeholder="Channel name" /></label>
+          <label class="field">API IP <input id="chmIp" placeholder="192.168.0.10" /></label>
+          <label class="field">API port <input id="chmPort" type="number" placeholder="8081" /></label>
+          <label class="field">Playlist ref <input id="chmPlaylist" placeholder="index or unique_id (default 0)" /></label>
+          <label class="field">API username <input id="chmUser" placeholder="(optional)" /></label>
+          <label class="field">API password <input id="chmPass" type="password" placeholder="(optional)" /></label>
+          <label class="chk"><input id="chmActive" type="checkbox" /> active</label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="chmSave" class="primary">Save channel</button>
       </div>
     </div>
   </div>

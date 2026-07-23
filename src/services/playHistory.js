@@ -64,7 +64,16 @@ export function nextChapter(channelId, subject, beforeDate) {
         WHERE r.channel_id = ? AND r.subject = ? AND sb.target_date < ?
     )
   `).get(channelId, subject, channelId, subject, beforeDate);
-  return (row?.last ?? 0) + 1;
+
+  // A manually-set cursor acts as a floor: cursor_chapter is the chapter the
+  // admin wants to play next, so treat (cursor - 1) as already played. History
+  // and earlier-this-week drafts still roll the series forward from there.
+  const cur = db.prepare(
+    'SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ?'
+  ).get(channelId, subject);
+  const cursorFloor = cur?.cursor_chapter != null ? cur.cursor_chapter - 1 : 0;
+
+  return Math.max(row?.last ?? 0, cursorFloor) + 1;
 }
 
 /**

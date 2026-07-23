@@ -70,7 +70,7 @@ export function initSchema() {
     CREATE TABLE IF NOT EXISTS Resource (
       id              INTEGER PRIMARY KEY,
       name            TEXT NOT NULL,
-      file_path       TEXT NOT NULL UNIQUE,   -- absolute local mount path
+      file_path       TEXT NOT NULL,          -- absolute local mount path
       duration        INTEGER NOT NULL,       -- seconds
       subject         TEXT,
       chapter         INTEGER NOT NULL DEFAULT 0,
@@ -79,7 +79,13 @@ export function initSchema() {
       -- Refinements flagged in the plan:
       channel_id      INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
       show_type_id    INTEGER REFERENCES ShowType(id)    ON DELETE SET NULL,
-      added_at        TEXT                    -- file mtime, drives Sunday "latest episode" pick
+      added_at        TEXT,                   -- file mtime, drives Sunday "latest episode" pick
+      last_used_at    TEXT,                   -- when a filler was last placed (spreads repeats)
+      sort_order      INTEGER,                -- optional manual chapter ordering within a series
+      -- Shared folders: the same physical file can be cataloged under several
+      -- channels (one Resource row per channel), so identity is (channel, path),
+      -- not the path alone.
+      UNIQUE (channel_id, file_path)
     );
 
     CREATE TABLE IF NOT EXISTS BlockTemplate (
@@ -122,6 +128,17 @@ export function initSchema() {
       UNIQUE (template_id, subject)
     );
 
+    -- The channels a template airs on. A template may target several channels;
+    -- each channel picks its own content independently at generation time. Legacy
+    -- BlockTemplate.channel_id is retained as the "primary" channel and backfilled
+    -- into this table for pre-existing templates.
+    CREATE TABLE IF NOT EXISTS BlockTemplateChannel (
+      id          INTEGER PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      channel_id  INTEGER NOT NULL REFERENCES ChannelType(id)   ON DELETE CASCADE,
+      UNIQUE (template_id, channel_id)
+    );
+
     -- Time slots (airings) of a template. slot_order 0 is the primary airing
     -- that picks fresh content; higher slot_order airings strict-mirror it.
     CREATE TABLE IF NOT EXISTS BlockTemplateSlot (
@@ -140,9 +157,13 @@ export function initSchema() {
       -- air the same content at several hours a day; slot_order 0 is the
       -- primary (picks fresh content), the rest strict-mirror it.
       slot_id     INTEGER REFERENCES BlockTemplateSlot(id) ON DELETE CASCADE,
+      -- Which channel this block belongs to. A template can air on several
+      -- channels; each gets its own block per slot/date with independent content.
+      -- Nullable for legacy rows; backfilled from template.channel_id on startup.
+      channel_id  INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
       target_date TEXT NOT NULL,              -- 'YYYY-MM-DD'
       status      TEXT NOT NULL DEFAULT 'draft', -- 'draft'|'approved'|'exported'
-      UNIQUE (template_id, slot_id, target_date)
+      UNIQUE (template_id, slot_id, channel_id, target_date)
     );
 
     CREATE TABLE IF NOT EXISTS ScheduleItem (
@@ -188,11 +209,18 @@ export function initSchema() {
   addColumnIfMissing('Resource', 'channel_id', 'INTEGER');
   addColumnIfMissing('Resource', 'show_type_id', 'INTEGER');
   addColumnIfMissing('Resource', 'added_at', 'TEXT');
+  addColumnIfMissing('Resource', 'last_used_at', 'TEXT');   // filler repeat-heat
+  addColumnIfMissing('Resource', 'sort_order', 'INTEGER');  // manual chapter order
+  addColumnIfMissing('ChannelSeries', 'cursor_chapter', 'INTEGER'); // per-series progression cursor
 
   seedShowTypes();
   backfillWeekdays();
   backfillPrimarySlots();
   rebuildScheduledBlockForSlots();
+  rebuildScheduledBlockForChannels();
+  rebuildResourceForSharedFolders();
+  backfillTemplateChannels();
+  backfillScheduledBlockChannel();
 }
 
 // The fixed, non-deletable catalogue of show types. Seeded by `code` so names
@@ -268,6 +296,101 @@ function rebuildScheduledBlockForSlots() {
     CREATE INDEX IF NOT EXISTS idx_scheduledblock_date ON ScheduledBlock(target_date, status);
   `);
   db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// One-time rebuild of ScheduledBlock for DBs whose table predates `channel_id`.
+// A template can now air on several channels, so a block must know its own
+// channel independent of the template. SQLite can't add the column to the
+// composite UNIQUE in place, so recreate the table, backfilling channel_id from
+// each block's template. Runs after rebuildScheduledBlockForSlots so slot_id
+// already exists.
+function rebuildScheduledBlockForChannels() {
+  const cols = db.prepare('PRAGMA table_info(ScheduledBlock)').all();
+  if (cols.some((c) => c.name === 'channel_id')) return; // already migrated
+
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE ScheduledBlock_new (
+      id          INTEGER PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES BlockTemplate(id) ON DELETE CASCADE,
+      slot_id     INTEGER REFERENCES BlockTemplateSlot(id) ON DELETE CASCADE,
+      channel_id  INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
+      target_date TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'draft',
+      UNIQUE (template_id, slot_id, channel_id, target_date)
+    );
+    INSERT INTO ScheduledBlock_new (id, template_id, slot_id, channel_id, target_date, status)
+      SELECT sb.id, sb.template_id, sb.slot_id,
+             (SELECT bt.channel_id FROM BlockTemplate bt WHERE bt.id = sb.template_id),
+             sb.target_date, sb.status
+      FROM ScheduledBlock sb;
+    DROP TABLE ScheduledBlock;
+    ALTER TABLE ScheduledBlock_new RENAME TO ScheduledBlock;
+    CREATE INDEX IF NOT EXISTS idx_scheduledblock_date ON ScheduledBlock(target_date, status);
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// One-time rebuild of Resource for DBs created with UNIQUE(file_path) alone.
+// Shared folders mean the same file can be cataloged under several channels, so
+// identity becomes (channel_id, file_path). Detect the old constraint by the
+// absence of the composite in the table's SQL and rebuild if needed.
+function rebuildResourceForSharedFolders() {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='Resource'"
+  ).get();
+  if (!row || /UNIQUE\s*\(\s*channel_id\s*,\s*file_path\s*\)/i.test(row.sql)) return; // already migrated
+
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE Resource_new (
+      id              INTEGER PRIMARY KEY,
+      name            TEXT NOT NULL,
+      file_path       TEXT NOT NULL,
+      duration        INTEGER NOT NULL,
+      subject         TEXT,
+      chapter         INTEGER NOT NULL DEFAULT 0,
+      is_filler       INTEGER NOT NULL DEFAULT 0,
+      audience_rating INTEGER,
+      channel_id      INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
+      show_type_id    INTEGER REFERENCES ShowType(id)    ON DELETE SET NULL,
+      added_at        TEXT,
+      last_used_at    TEXT,
+      sort_order      INTEGER,
+      UNIQUE (channel_id, file_path)
+    );
+    INSERT INTO Resource_new
+      (id, name, file_path, duration, subject, chapter, is_filler, audience_rating,
+       channel_id, show_type_id, added_at, last_used_at, sort_order)
+      SELECT id, name, file_path, duration, subject, chapter, is_filler, audience_rating,
+             channel_id, show_type_id, added_at, last_used_at, sort_order
+      FROM Resource;
+    DROP TABLE Resource;
+    ALTER TABLE Resource_new RENAME TO Resource;
+    CREATE INDEX IF NOT EXISTS idx_resource_channel ON Resource(channel_id, is_filler);
+    CREATE INDEX IF NOT EXISTS idx_resource_subject ON Resource(channel_id, subject, chapter);
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// Give every template at least one BlockTemplateChannel row, derived from its
+// legacy primary channel_id. Idempotent via INSERT OR IGNORE.
+function backfillTemplateChannels() {
+  db.exec(`
+    INSERT OR IGNORE INTO BlockTemplateChannel (template_id, channel_id)
+      SELECT id, channel_id FROM BlockTemplate WHERE channel_id IS NOT NULL
+  `);
+}
+
+// Set channel_id on any ScheduledBlock rows still missing it (belt-and-braces;
+// the rebuild already backfills, but a fresh row inserted before this migration
+// on a partially-migrated DB is covered too).
+function backfillScheduledBlockChannel() {
+  db.exec(`
+    UPDATE ScheduledBlock
+       SET channel_id = (SELECT bt.channel_id FROM BlockTemplate bt WHERE bt.id = ScheduledBlock.template_id)
+     WHERE channel_id IS NULL
+  `);
 }
 
 function addColumnIfMissing(table, column, type) {

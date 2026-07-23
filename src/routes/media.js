@@ -73,31 +73,75 @@ router.get('/roots', (req, res) => {
   res.json(rows);
 });
 
-// POST /api/media/roots  { channel_id, show_type_id, path }
-// Assign a browsed folder as a media root for a channel + show type.
+// POST /api/media/roots  { channel_ids?: number[], channel_id?, show_type_id, path }
+// Assign a browsed folder as a media root. Shared folders: pass channel_ids to
+// register the same folder for several channels at once (one row per channel;
+// each channel catalogs its own resources).
 router.post('/roots', (req, res) => {
-  const { channel_id, show_type_id, path } = req.body || {};
-  if (!channel_id || !show_type_id || !path) {
-    return res.status(400).json({ error: 'channel_id, show_type_id and path are required' });
+  const { channel_ids, channel_id, show_type_id, path } = req.body || {};
+  const channels = Array.isArray(channel_ids) && channel_ids.length
+    ? channel_ids.map(Number) : (channel_id ? [Number(channel_id)] : []);
+  if (!channels.length || !show_type_id || !path) {
+    return res.status(400).json({ error: 'at least one channel, show_type_id and path are required' });
   }
   const abs = withinMount(path);
   if (!abs) {
     return res.status(400).json({ error: 'path is outside the configured mount point' });
   }
+  const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
+  const created = [];
   try {
-    const info = db.prepare(
-      'INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)'
-    ).run(channel_id, show_type_id, abs);
-    res.status(201).json({ id: info.lastInsertRowid, channel_id, show_type_id, path: abs });
+    for (const cid of channels) {
+      const info = ins.run(cid, Number(show_type_id), abs);
+      if (info.changes) created.push({ id: info.lastInsertRowid, channel_id: cid, show_type_id: Number(show_type_id), path: abs });
+    }
+    res.status(201).json({ ok: true, created });
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
 });
 
-// DELETE /api/media/roots/:id
+// PUT /api/media/roots/:id  { channel_id?, show_type_id?, path? }
+// Edit a root's channel / show type (folder type) / path. A re-scan is needed
+// afterwards to re-catalog under the new assignment.
+router.put('/roots/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const cur = db.prepare('SELECT * FROM MediaRoot WHERE id = ?').get(id);
+  if (!cur) return res.status(404).json({ error: 'MediaRoot not found' });
+  const b = req.body || {};
+  let path = cur.path;
+  if (b.path !== undefined) {
+    const abs = withinMount(b.path);
+    if (!abs) return res.status(400).json({ error: 'path is outside the configured mount point' });
+    path = abs;
+  }
+  try {
+    db.prepare('UPDATE MediaRoot SET channel_id = ?, show_type_id = ?, path = ? WHERE id = ?').run(
+      b.channel_id != null ? Number(b.channel_id) : cur.channel_id,
+      b.show_type_id != null ? Number(b.show_type_id) : cur.show_type_id,
+      path, id
+    );
+    res.json({ ok: true, rescanNeeded: true });
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+// DELETE /api/media/roots/:id — also drops the resources this root cataloged
+// (there is no FK from Resource to MediaRoot, so do it explicitly). ScheduleItem
+// and PlayHistory rows cascade off Resource. Matches files at the root itself and
+// anywhere in its subtree, scoped to the root's channel + show type.
 router.delete('/roots/:id', (req, res) => {
-  db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(Number(req.params.id));
-  res.json({ ok: true });
+  const id = Number(req.params.id);
+  const root = db.prepare('SELECT * FROM MediaRoot WHERE id = ?').get(id);
+  if (!root) return res.json({ ok: true, deletedResources: 0 });
+  const info = db.prepare(`
+    DELETE FROM Resource
+    WHERE channel_id = ? AND show_type_id = ?
+      AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
+  `).run(root.channel_id, root.show_type_id, root.path, root.path.replace(/[%_\\]/g, '\\$&') + '/%');
+  db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(id);
+  res.json({ ok: true, deletedResources: info.changes });
 });
 
 // POST /api/media/scan  { channel_id? }  — run ffprobe ingestion.

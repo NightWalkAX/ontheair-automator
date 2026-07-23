@@ -32,6 +32,7 @@ const { router: media } = await import('../src/routes/media.js');
 const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
+const { fitFillers } = await import('../src/services/scheduling.js');
 const { startFakeOtav } = await import('./fake-otav.mjs');
 
 let server, base, fakeOtav, mediaDir;
@@ -287,4 +288,114 @@ test('media routes: status, mount-guard, and browse boundary', async () => {
 test('weekly cron entrypoint runs', async () => {
   const results = runWeeklyDraft();
   assert.ok(Array.isArray(results));
+});
+
+// ---- New feature coverage --------------------------------------------------
+
+test('filler auto-detection: Filler(s) folder + under 15 min, regardless of show type', async () => {
+  const chId = (await j('GET', '/api/channels')).data[0].id;
+  // A non-filler (documentaries) root that happens to contain a "Fillers" subfolder.
+  mkdirSync(join(mediaDir, 'docs', 'Fillers'), { recursive: true });
+  writeFileSync(join(mediaDir, 'docs', 'Fillers', 'bumper_60.mov'), 'x');   // 60s  -> filler
+  writeFileSync(join(mediaDir, 'docs', 'Fillers', 'promo_899.mov'), 'x');   // 899s -> filler (< 900)
+  writeFileSync(join(mediaDir, 'docs', 'Fillers', 'special_1200.mov'), 'x'); // 1200s -> NOT filler
+  writeFileSync(join(mediaDir, 'docs', 'Doc1_1800.mov'), 'x');               // outside Fillers -> not filler
+  const rootId = db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)')
+    .run(chId, stId('documentaries'), join(mediaDir, 'docs')).lastInsertRowid;
+  const scan = await j('POST', `/api/media/roots/${rootId}/scan`);
+  assert.equal(scan.status, 200);
+
+  const byName = (n) => (db.prepare('SELECT * FROM Resource WHERE channel_id=? AND name=?').get(chId, n));
+  assert.equal(byName('bumper_60').is_filler, 1, 'short clip in Fillers folder is a filler');
+  assert.equal(byName('promo_899').is_filler, 1, 'sub-15-min clip in Fillers folder is a filler');
+  assert.equal(byName('special_1200').is_filler, 0, 'over-15-min clip in Fillers folder is NOT a filler');
+  assert.equal(byName('Doc1_1800').is_filler, 0, 'clip outside a Fillers folder is not a filler');
+});
+
+test('unbounded filler fill reaches near-exact (repeats allowed)', () => {
+  const chId = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // With the seeded coarse filler pool, filling 1000s to within tolerance is only
+  // possible if fillers may repeat (subset-sum with each filler once tops out far short).
+  const fit = fitFillers(chId, 1000);
+  assert.ok(fit.total >= 995 && fit.total <= 1000, `filled ${fit.total}/1000 within 0..5s underrun`);
+  assert.ok(fit.items.length > new Set(fit.items.map((i) => i.id)).size || fit.items.length >= 9,
+    'fill reused fillers (or drew the whole pool) to close the gap');
+});
+
+let ch2Id;
+test('shared folder: the same files catalog independently under a second channel', async () => {
+  const ch = await j('POST', '/api/channels', { name: 'Channel 2', api_ip: '127.0.0.1', api_port: fakeOtav.port });
+  assert.equal(ch.status, 201);
+  ch2Id = ch.data.id;
+  // Assign the SAME lessons + fillers folders to channel 2 (shared folder).
+  for (const code of ['lessons', 'fillers']) {
+    const dir = code === 'lessons' ? 'lessons' : 'fillers';
+    const rid = db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)')
+      .run(ch2Id, stId(code), join(mediaDir, dir)).lastInsertRowid;
+    const scan = await j('POST', `/api/media/roots/${rid}/scan`);
+    assert.equal(scan.status, 200);
+  }
+  // Channel 2 has its own Math chapters (same file_path as channel 1, distinct rows).
+  const ch2Math = (await j('GET', `/api/resources?channel_id=${ch2Id}&subject=Math`)).data;
+  assert.equal(ch2Math.length, 6, 'channel 2 cataloged its own copy of Math');
+  const dup = db.prepare('SELECT COUNT(*) c FROM Resource WHERE file_path = (SELECT file_path FROM Resource WHERE channel_id=? AND subject=? LIMIT 1)')
+    .get(ch2Id, 'Math').c;
+  assert.ok(dup >= 2, 'same file_path exists under both channels (composite unique)');
+});
+
+test('multi-channel template generates independent blocks per channel', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // Register + activate Math on channel 2 so it has content to pick.
+  await j('PUT', `/api/channels/${ch2Id}/series`, { series: [{ subject: 'Math', play_order: 0, is_serial: 1, is_active: 1, show_type_id: stId('lessons') }] });
+  const created = await j('POST', '/api/blocks/templates', {
+    channels: [c1, ch2Id],
+    name: 'Shared Morning',
+    weekdays: ['Wed'],
+    slots: [{ start_time: '09:00', end_time: '09:30' }],
+    series: ['Math'],
+  });
+  assert.equal(created.status, 201);
+  const tpl = (await j('GET', '/api/blocks/templates')).data.find((t) => t.id === created.data.id);
+  assert.deepEqual([...tpl.channels].sort((a, b) => a - b), [c1, ch2Id].sort((a, b) => a - b));
+
+  const gen = await j('POST', '/api/blocks/generate?weekStart=2026-08-10'); // a Monday; Wed = 08-12
+  assert.equal(gen.status, 200);
+  const view = (await j('GET', '/api/blocks?week=2026-08-10')).data;
+  const wed = view.blocks.filter((b) => b.target_date === '2026-08-12' && b.template_name === 'Shared Morning');
+  const channelsWithBlock = new Set(wed.map((b) => b.channel_id));
+  assert.ok(channelsWithBlock.has(c1) && channelsWithBlock.has(ch2Id), 'both channels got their own block');
+
+  // Channel-filtered view returns only that channel's blocks.
+  const only2 = (await j('GET', `/api/blocks?week=2026-08-10&channel_id=${ch2Id}`)).data;
+  assert.ok(only2.blocks.every((b) => b.channel_id === ch2Id), 'channel filter is respected');
+});
+
+test('series cursor: nudge persists and sets the next episode', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const set = await j('PUT', `/api/channels/${c1}/series/${encodeURIComponent('History')}/cursor`, { chapter: 4 });
+  assert.equal(set.status, 200);
+  assert.equal(set.data.cursor, 4);
+  const got = (await j('GET', `/api/channels/${c1}/series/${encodeURIComponent('History')}/cursor`)).data;
+  assert.equal(got.cursor, 4, 'cursor persisted');
+  // Rewind by 1.
+  const down = await j('POST', `/api/channels/${c1}/series/${encodeURIComponent('History')}/cursor`, { delta: -1 });
+  assert.equal(down.data.cursor, 3);
+  // Clamped to the series range (1..6).
+  const clamp = await j('POST', `/api/channels/${c1}/series/${encodeURIComponent('History')}/cursor`, { delta: 99 });
+  assert.equal(clamp.data.cursor, 6, 'clamped to highest chapter');
+});
+
+test('deleting a media root drops its cataloged resources', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // The documentaries root created earlier owns the docs/* resources.
+  const root = db.prepare("SELECT * FROM MediaRoot WHERE channel_id=? AND show_type_id=?").get(c1, stId('documentaries'));
+  const before = db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND show_type_id=?').get(c1, stId('documentaries')).c;
+  assert.ok(before > 0, 'docs resources exist before delete');
+  const del = await j('DELETE', `/api/media/roots/${root.id}`);
+  assert.equal(del.status, 200);
+  assert.equal(del.data.deletedResources, before, 'reported count matches');
+  const after = db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND show_type_id=?').get(c1, stId('documentaries')).c;
+  assert.equal(after, 0, 'all docs resources dropped on root delete');
+  // Lessons/movies/fillers survive (different show type).
+  assert.ok(db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND subject=?').get(c1, 'Math').c === 6, 'unrelated resources untouched');
 });

@@ -12,6 +12,26 @@ export const router = Router();
 
 const SERIAL_DEFAULT_CODES = new Set(['lessons', 'tv_shows']);
 
+// Ensure a ChannelSeries row exists for (channel, subject) so a cursor write has
+// something to update. Adopts the subject's show type and serial default when
+// creating. No-op if the row already exists.
+function ensureSeriesRow(channelId, subject) {
+  const showTypeId = db.prepare(`
+    SELECT show_type_id FROM Resource
+    WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND show_type_id IS NOT NULL
+    ORDER BY id LIMIT 1
+  `).get(channelId, subject)?.show_type_id ?? null;
+  const code = showTypeId ? db.prepare('SELECT code FROM ShowType WHERE id = ?').get(showTypeId)?.code : null;
+  const isSerial = code && SERIAL_DEFAULT_CODES.has(code) ? 1 : 0;
+  const nextOrder = db.prepare(
+    'SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM ChannelSeries WHERE channel_id = ?'
+  ).get(channelId).n;
+  db.prepare(`
+    INSERT OR IGNORE INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+    VALUES (?, ?, ?, ?, 1, ?)
+  `).run(channelId, subject, showTypeId, isSerial, nextOrder);
+}
+
 // GET /api/channels/:id/series — registry rows with chapter counts + show type.
 router.get('/:id/series', (req, res) => {
   const channelId = Number(req.params.id);
@@ -67,6 +87,76 @@ router.get('/:id/series/:subject/chapters', (req, res) => {
     ORDER BY chapter, id
   `).all(channelId, subject);
   res.json(rows);
+});
+
+// Bounds (lowest/highest chapter) of a serial subject on a channel.
+function chapterBounds(channelId, subject) {
+  return db.prepare(`
+    SELECT MIN(chapter) AS lo, MAX(chapter) AS hi FROM Resource
+    WHERE channel_id = ? AND subject = ? AND is_filler = 0
+  `).get(channelId, subject);
+}
+
+// GET /api/channels/:id/series/:subject/cursor — the chapter that will play next.
+router.get('/:id/series/:subject/cursor', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subject = decodeURIComponent(req.params.subject);
+  const row = db.prepare(
+    'SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ?'
+  ).get(channelId, subject);
+  const b = chapterBounds(channelId, subject);
+  // Null cursor = "derive from history"; report the lowest chapter as the effective start.
+  const cursor = row?.cursor_chapter ?? b?.lo ?? 1;
+  res.json({ cursor, lo: b?.lo ?? null, hi: b?.hi ?? null });
+});
+
+// POST /api/channels/:id/series/:subject/cursor { delta } — nudge ±1 (or ±n),
+// clamped to the series' chapter range.
+router.post('/:id/series/:subject/cursor', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subject = decodeURIComponent(req.params.subject);
+  const delta = Number(req.body?.delta || 0);
+  const b = chapterBounds(channelId, subject);
+  if (b?.lo == null) return res.status(404).json({ error: 'series has no chapters' });
+  ensureSeriesRow(channelId, subject);
+  const row = db.prepare(
+    'SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ?'
+  ).get(channelId, subject);
+  const current = row?.cursor_chapter ?? b.lo;
+  const next = Math.max(b.lo, Math.min(b.hi, current + delta));
+  db.prepare(
+    'UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?'
+  ).run(next, channelId, subject);
+  res.json({ ok: true, cursor: next, lo: b.lo, hi: b.hi });
+});
+
+// PUT /api/channels/:id/series/:subject/cursor { chapter } — set absolutely.
+router.put('/:id/series/:subject/cursor', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subject = decodeURIComponent(req.params.subject);
+  const b = chapterBounds(channelId, subject);
+  if (b?.lo == null) return res.status(404).json({ error: 'series has no chapters' });
+  ensureSeriesRow(channelId, subject);
+  const chapter = Math.max(b.lo, Math.min(b.hi, Number(req.body?.chapter)));
+  db.prepare(
+    'UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?'
+  ).run(chapter, channelId, subject);
+  res.json({ ok: true, cursor: chapter, lo: b.lo, hi: b.hi });
+});
+
+// PUT /api/channels/:id/series/:subject/chapters { order: [resourceId,...] } —
+// reorder a series by rewriting each resource's chapter to its position (1..N).
+// Progression is chapter-number based, so play order IS the chapter sequence.
+router.put('/:id/series/:subject/chapters', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subject = decodeURIComponent(req.params.subject);
+  const order = Array.isArray(req.body?.order) ? req.body.order : null;
+  if (!order) return res.status(400).json({ error: 'order array of resource ids is required' });
+  const upd = db.prepare(
+    'UPDATE Resource SET chapter = ? WHERE id = ? AND channel_id = ? AND subject = ?'
+  );
+  order.forEach((rid, idx) => upd.run(idx + 1, Number(rid), channelId, subject));
+  res.json({ ok: true });
 });
 
 // POST /api/channels/:id/series/detect — (re)register any series seen in the
