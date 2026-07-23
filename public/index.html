@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OnTheAir Automator — Schedule Review</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header>
+    <h1>OnTheAir Automator</h1>
+    <nav>
+      <button data-tab="schedule" class="active">Schedule Review</button>
+      <button data-tab="media">Media &amp; Roots</button>
+      <button data-tab="setup">Channels &amp; Templates</button>
+    </nav>
+  </header>
+
+  <!-- ===== Schedule Review ===== -->
+  <section id="tab-schedule" class="tab active">
+    <div class="toolbar">
+      <label>Week starting
+        <input type="date" id="weekStart" />
+      </label>
+      <button id="btnGenerate">Generate drafts</button>
+      <button id="btnApproveWeek">Approve fitting drafts</button>
+      <button id="btnReload">Reload</button>
+      <label>Push date
+        <input type="date" id="pushDate" />
+      </label>
+      <button id="btnPush" class="danger">Push to Air</button>
+    </div>
+    <div id="scheduleGrid" class="grid"></div>
+  </section>
+
+  <!-- ===== Media & Roots ===== -->
+  <section id="tab-media" class="tab">
+    <div class="toolbar">
+      <button id="btnMount">Mount SMB share</button>
+      <span id="mountStatus" class="muted"></span>
+      <button id="btnScanAll">Scan all roots (ffprobe)</button>
+    </div>
+    <div class="split">
+      <div>
+        <h3>Browse share</h3>
+        <div id="browserPath" class="muted"></div>
+        <ul id="browser" class="tree"></ul>
+        <div class="assign">
+          <select id="assignChannel"></select>
+          <select id="assignShowType"></select>
+          <button id="btnAssignRoot">Assign selected folder as root</button>
+        </div>
+      </div>
+      <div>
+        <h3>Configured media roots</h3>
+        <table id="rootsTable"><thead><tr><th>Channel</th><th>Show type</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Channels & Templates ===== -->
+  <section id="tab-setup" class="tab">
+    <div class="split">
+      <div>
+        <h3>Channels</h3>
+        <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Playlist</th><th>Active</th></tr></thead><tbody></tbody></table>
+        <form id="channelForm" class="stack">
+          <input name="name" placeholder="Channel name" required />
+          <input name="api_ip" placeholder="API IP (e.g. 192.168.0.10)" />
+          <input name="api_port" placeholder="API port (e.g. 8081)" type="number" />
+          <input name="playlist_ref" placeholder="Playlist ref (index or unique_id, default 0)" />
+          <button type="submit">Add channel</button>
+        </form>
+      </div>
+      <div>
+        <h3>Show types</h3>
+        <table id="showTypesTable"><thead><tr><th>Name</th><th>Educational</th></tr></thead><tbody></tbody></table>
+        <form id="showTypeForm" class="stack">
+          <input name="name" placeholder="Show type (e.g. Movies, Lessons)" required />
+          <label><input type="checkbox" name="is_educational" /> Educational</label>
+          <button type="submit">Add show type</button>
+        </form>
+
+        <h3>Block templates</h3>
+        <table id="templatesTable"><thead><tr><th>Channel</th><th>Name</th><th>Day</th><th>Time</th><th>Type</th></tr></thead><tbody></tbody></table>
+        <form id="templateForm" class="stack">
+          <select name="channel_id" id="tplChannel" required></select>
+          <input name="name" placeholder="Template name" required />
+          <select name="weekday">
+            <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option>
+            <option>Fri</option><option>Sat</option><option>Sun</option>
+          </select>
+          <input name="start_time" placeholder="Start HH:MM" value="18:00" />
+          <input name="end_time" placeholder="End HH:MM" value="20:00" />
+          <input name="target_subject" placeholder="Subject (e.g. Math, Movies, TV)" />
+          <select name="content_type">
+            <option value="movie">movie</option>
+            <option value="lesson_series">lesson_series</option>
+            <option value="tv_episode">tv_episode</option>
+          </select>
+          <button type="submit">Add template</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- Block editor modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-body">
+      <button id="modalClose" class="close">×</button>
+      <h3 id="modalTitle"></h3>
+      <div id="modalMeta" class="muted"></div>
+      <ol id="itemList" class="items"></ol>
+      <div class="add-item">
+        <select id="addResourceSel"></select>
+        <button id="btnAddItem">Add item</button>
+      </div>
+      <div id="modalValidation" class="validation"></div>
+      <div class="modal-actions">
+        <button id="btnSaveItems">Save order</button>
+        <button id="btnApproveBlock" class="primary">Approve block</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js" type="module"></script>
+</body>
+</html>

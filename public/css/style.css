@@ -1,0 +1,149 @@
+:root {
+  --bg: #f3f4f5;
+  --panel: #fff;
+  --ink: #333;
+  --muted: #888;
+  --line: #dcdde0;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --bad: #dc2626;
+  --warn: #d97706;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+header {
+  background: #1f2937;
+  color: #fff;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+header h1 { font-size: 18px; margin: 0; }
+nav button {
+  background: transparent;
+  color: #cbd5e1;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 14px;
+}
+nav button.active, nav button:hover { background: #374151; color: #fff; }
+
+.tab { display: none; padding: 20px; }
+.tab.active { display: block; }
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+button:hover { filter: brightness(1.08); }
+button.danger { background: var(--bad); }
+button.primary { background: var(--ok); }
+button:disabled { background: #9ca3af; cursor: not-allowed; }
+input, select {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+label { display: inline-flex; gap: 6px; align-items: center; }
+.muted { color: var(--muted); }
+
+/* Schedule grid: columns per day */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+}
+.day-col { background: transparent; }
+.day-head {
+  font-weight: 600;
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--line);
+  margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+}
+.block-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--muted);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.block-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.block-card.fits { border-left-color: var(--ok); }
+.block-card.misfit { border-left-color: var(--bad); }
+.block-card.approved { background: #f0fdf4; }
+.block-card.exported { background: #eff6ff; }
+.block-card .b-title { font-weight: 600; }
+.block-card .b-meta { font-size: 12px; color: var(--muted); }
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  color: #fff;
+}
+.badge.ok { background: var(--ok); }
+.badge.bad { background: var(--bad); }
+.badge.status { background: #6b7280; }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.stack { display: flex; flex-direction: column; gap: 8px; max-width: 320px; margin-top: 12px; }
+
+table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+
+.tree { list-style: none; padding-left: 0; max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.tree li { padding: 5px 10px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+.tree li:hover { background: #f8fafc; }
+.tree li.selected { background: #dbeafe; }
+.tree li.up { color: var(--accent); }
+.assign { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* Modal */
+.modal {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.4);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal.hidden { display: none; }
+.modal-body {
+  background: #fff; border-radius: 10px; padding: 20px;
+  width: min(560px, 92vw); max-height: 90vh; overflow: auto;
+  position: relative;
+}
+.close { position: absolute; top: 10px; right: 12px; background: none; color: #666; font-size: 22px; padding: 0; }
+.items { padding-left: 18px; }
+.items li { padding: 6px 4px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
+.items li .grow { flex: 1; }
+.items li.filler { color: var(--warn); }
+.items .mini { padding: 2px 7px; font-size: 12px; }
+.add-item { display: flex; gap: 8px; margin: 12px 0; }
+.validation { padding: 10px; border-radius: 6px; margin: 10px 0; font-weight: 600; }
+.validation.ok { background: #f0fdf4; color: var(--ok); }
+.validation.bad { background: #fef2f2; color: var(--bad); }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }

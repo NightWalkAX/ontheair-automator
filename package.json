@@ -1,0 +1,22 @@
+{
+  "name": "ontheair-automator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal on-premise TV broadcast scheduler that ingests media, auto-generates weekly draft schedules, and pushes approved playlists to Softron OnTheAir Video instances over REST.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node scripts/seed.js",
+    "test": "rm -f data/scheduler.sqlite* && node --test --experimental-test-coverage 'test/*.test.mjs'",
+    "test:plain": "rm -f data/scheduler.sqlite* && node --test 'test/*.test.mjs'",
+    "setup": "bash setup.sh",
+    "pack": "bash pack.sh"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3"
+  }
+}

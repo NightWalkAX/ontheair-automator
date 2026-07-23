@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake ffprobe for tests. Ignores flags, takes the last arg as the media file,
+# and prints a duration (seconds) encoded as the last number in the filename.
+# e.g. movie_5400.mov -> 5400 ; f_30.mov -> 30 ; defaults to 60 if none found.
+file="${@: -1}"
+base="$(basename "$file")"
+num="$(printf '%s' "$base" | grep -oE '[0-9]+' | tail -1)"
+echo "${num:-60}"

@@ -1,0 +1,22 @@
+{
+  "server": {
+    "port": 8090
+  },
+  "smb": {
+    "host": "1.1.1.1",
+    "share": "Drive",
+    "username": "CHANGE_ME",
+    "password": "CHANGE_ME",
+    "mountPoint": "/Volumes/Drive",
+    "autoMountOnStartup": false
+  },
+  "ffprobePath": "ffprobe",
+  "cron": {
+    "weeklyDraft": "0 6 * * 4",
+    "dailyPush": null
+  },
+  "filler": {
+    "maxUnderrunSeconds": 5,
+    "maxOverrunSeconds": 0
+  }
+}

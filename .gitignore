@@ -1,0 +1,25 @@
+# Dependencies (reinstalled via npm; travels as tarball for USB, not git)
+node_modules/
+
+# Local runtime config with credentials — use config.example.json as template
+config/config.json
+
+# SQLite database (runtime data / play history)
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+
+# Build / distribution artifacts
+dist/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Media (scanned read-only, never committed)
+media/
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.log

@@ -1,0 +1,2991 @@
+<!DOCTYPE html>
+<!-- saved from url=(0014)about:internet -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		
+		<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+		<title>OnTheAir Video REST API documentation</title>
+		<meta name="description" content="OnTheAir Video API documentation">
+			<style type="text/css">
+				html {
+					scroll-behavior: smooth;
+				}
+				body {
+					display: flex;
+					background: #f3f4f5;
+					color: #777;
+					margin: 0;
+					font: 14px normal Helvetica, Arial, sans-serif;
+					line-height: 21px;
+					-webkit-font-smoothing: antialiased;
+				}
+
+				#sidebar {
+					width: 250px;
+					background-color: #333;
+					color: white;
+					position: fixed;
+					top: 0;
+					left: 0;
+					height: 100%;
+					padding-top: 20px;
+					overflow-y: auto;
+				}
+				
+				.sidebar-title {
+					font-size: 18px;
+					font-weight: bold;
+					padding: 15px;
+					text-align: center;
+					background-color: #444;
+					margin-bottom: 10px;
+				}
+				
+				#sidebar a {
+					display: block;
+					color: white;
+					padding: 10px 15px;
+					text-decoration: none;
+				}
+
+				#sidebar a:hover {
+					background-color: #575757;
+				}
+
+				#container {
+					margin-left: 250px; /* Same as the width of the sidebar */
+					padding: 20px;
+					width: calc(100% - 250px);
+					box-sizing: border-box;
+				}
+
+				@media (max-width: 1000px) {
+					#sidebar {
+						display: none;
+					}
+
+					#container {
+						margin-left: 0;
+						width: 100%;
+						padding: 20px;
+					}
+				}
+				
+				h1 {
+					padding-top: 30px;
+					color: #444;
+					text-align: center;
+				}
+
+				h2 {
+					padding-top: 20px;
+					color: #666;
+				}
+
+				h3 {
+					padding-top: 10px;
+					color: #666;
+				}
+
+				h4 {
+					padding-top: 5px;
+					color: #666;
+				}
+
+				h4, ol {
+					margin: 0;
+					margin-left: 20px; /* Adjust the value as needed for indentation */
+					font: 12px  Helvetica, Arial, sans-serif;
+					font-weight: 900;
+				}
+
+				.requestresponse {
+					margin-left: 20px; /* Adjust the value as needed for indentation */
+					color: grey;
+					font-style: italic;
+					font: 12px normal Helvetica, Arial, sans-serif;
+				}
+				
+				.requestbody {
+					margin-left: 20px; /* Adjust the value as needed for indentation */
+					color: grey;
+					font-style: italic;
+					font: 12px normal Helvetica, Arial, sans-serif;
+				}
+				
+				pre.code {
+					max-height: 40px;
+					overflow: hidden;
+					transition: max-height 0.3s ease;
+					position: relative;
+					cursor: pointer;
+					white-space: pre-wrap;
+					word-wrap: break-word;
+					background-color: #f8f7f7; /* Light background color for light mode */
+				}
+
+				pre.code.expandable {
+					cursor: pointer;
+				}
+				
+				pre.code:not(.expandable) {
+					cursor: default;
+				}
+				
+				pre.code.expandable::before {
+					content: "Click to expand";
+					position: absolute;
+					top: 0;
+					left: 0;
+					right: 0;
+					bottom: 0;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+					background-color: rgba(255, 255, 255, 0.8);
+					color: #007bff;
+					font-weight: bold;
+					text-align: center;
+				}
+
+				pre.code.expanded {
+					max-height: none;
+					overflow: visible;
+				}
+
+				pre.code.expanded::before {
+					content: none;
+				}
+
+				pre.code.no-collapse {
+					max-height: none;
+					cursor: default;
+					overflow: visible;
+				}
+
+				pre.code.no-collapse::before {
+					content: none;
+				}
+
+				pre.code i {
+					color: #40DD00;
+				}
+
+				pre.code b {
+					color: #ff9f00;
+				}
+
+				.info-icon {
+					display: inline-block;
+					position: relative;
+					cursor: pointer;
+					opacity: 1;
+					transition: opacity 0.3s ease;
+				}
+
+				pre.code .info-icon {
+					opacity: 0.5;
+				}
+
+				pre.code.expanded .info-icon,
+				pre.code.no-collapse .info-icon {
+					opacity: 1;
+				}
+
+				.info-icon::after {
+					content: attr(data-info);
+					display: none;
+					position: absolute;
+					transform: translateX(-50%);
+					background: #333;
+					color: #fff;
+					padding: 5px;
+					padding-left: 15px;
+					border-radius: 5px;
+					white-space: normal; /* Allow text to wrap */
+					min-width: 400px; /* Set your desired max width */
+					max-width: 800px; /* Set your desired max width */
+					z-index: 1000;
+					box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+				}
+
+				.info-icon:hover::after {
+					display: flex;
+					align-items: center; /* Center content vertically */
+				}
+
+				.hidden {
+					display: none;
+				}
+
+				.mandatory {
+					font-weight: bold;
+					color: #f53333;
+				}
+
+				.file-only-property {
+					color: #ebbd34;
+				}
+
+				.live-only-property {
+					color: #34d6eb;
+				}
+
+				.stream-only-property {
+					color: #ff34cc;
+				}
+
+				.comment-only-property {
+					color: #9834eb;
+				}
+
+				.traffic-only-property {
+					color: #5feb34;
+				}
+
+				.remote-only-property {
+					color: #347deb;
+				}
+
+				.enum {
+					color: #00eeaa;
+					text-decoration: underline;
+					display: inline-block;
+					cursor: pointer;
+				}
+
+				.enum-content {
+					display: none;
+					position: absolute;
+					padding: 0px;
+					line-height: 8px;
+					box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+					z-index: 1000;
+					background-color: #202020;
+					max-height: 400px;
+					overflow-y: auto;
+					overflow-x: visible;
+				}
+
+				.enum:hover .enum-content {
+					display: block;
+				}
+
+				codeline {
+					box-sizing: border-box;
+					padding-bottom: 2px;
+					padding-left: 4px;
+					padding-right: 4px;
+					padding-top: 2px;
+					color: #ff0101;
+					background-color: #f9f2f4;
+					border-radius: 4px;
+					display: inline;
+					width: auto;
+					line-height: 21px;
+					font-size: 16px;
+					font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+				}
+
+				header {
+					padding: 84px 0 0;
+				}
+
+				.content {
+					background: #FFFFFF;
+					border: 1px solid #D5D5D6;
+					border-top-color: #E0E1E2;
+					border-bottom-color: #C0C1C2;
+					padding: 20px 20px 20px 20px; /* Equal padding on all sides */
+					margin: 20px 20px 0 20px; /* Equal margin on all sides */
+					box-shadow: 0px 1px 3px rgba(0,0,0,0.1);
+					border-radius: 6px;
+					box-sizing: border-box;
+				}
+				
+				#footer {
+					bottom: 6px;
+					left: 0;
+					position: relative;
+					padding-top: 20px;
+					right: 0;
+					text-align: center;
+				}
+
+				#footer a {
+					font-size: 12px;
+					color: #B1B1B1;
+					text-decoration: none;
+				}
+
+				a {
+					color: #0083e8;
+				}
+
+				b, strong {
+					font-weight: 600;
+				}
+
+				.warning {
+					color: orange;
+				}
+
+				.code, kbd {
+					font-family: source-code-pro, monospace;
+					font-weight: 400;
+					background-color: #f8f7f7;
+					margin: 10px 20px 20px 20px;
+					padding: 10px 20px 10px 20px;
+					border: solid lightgrey;
+					border-width: thin;
+				}
+
+				table {
+					border-collapse: collapse;
+				}
+
+				td, th {
+					border: 1px solid #dddddd;
+					text-align: left;
+					padding: 8px;
+				}
+
+				.button {
+					background-color: #3d94f6;
+					-webkit-border-radius: 3px;
+					border: 1px solid #337fed;
+					display: inline-block;
+					color: #ffffff;
+					font-size: 15px;
+					font-weight: bold;
+					font-style: normal;
+					height: 30px;
+					line-height: 30px;
+					width: 100px;
+					text-decoration: none;
+					text-align: center;
+					text-shadow: 1px 1px 0px #1570cd;
+				}
+
+				.button:hover {
+					background-color: #1e62d0;
+				}
+
+				.button:active {
+					position: relative;
+					top: 1px;
+				}
+
+				#navigation {
+					color: #646464;
+					font-size: 12px;
+					margin-top: 20px;
+				}
+
+				@media (prefers-color-scheme: dark) {
+					body {
+						background: #222;
+						color: #ddd;
+					}
+					
+					pre.code {
+						background-color: #333; /* Dark background color for dark mode */
+					}
+					
+					pre.code i {
+						color: #90FF00;
+					}
+					pre.code.expandable::before {
+						background-color: rgba(40, 40, 40, 0.8);
+						color: #007bff;
+					}
+					
+					
+					h1, h2, h3 {
+						color: #7f7979;
+					}
+
+					codeline {
+						color: #ff0101;
+						background-color: #232323;
+					}
+
+					.content {
+						background: #333;
+					}
+
+					.code, kbd {
+						background-color: #444;
+						border: solid black;
+						border-width: thin;
+					}
+
+					tr.d1 td {
+						background-color: #282828;
+						color: #fff;
+						border: solid black;
+						border-width: thin;
+					}
+
+					tr.d2 td {
+						background-color: #232323;
+						color: #ddd;
+						border: solid black;
+						border-width: thin;
+					}
+				}
+			</style>
+			<script src="./OnTheAir Video REST API documentation_files/jquery.min.js"></script>
+			<script>
+				$(document).ready(function() {
+					// Handle .enum hover content
+					$(".enum").hover(function(event) {
+						let target = $(event.target);
+						let newContent = $(".enum-content #enum__" + target.attr("data-enum")).html();
+						target.closest(".enum").children(".enum-content").html(newContent);
+					});
+
+					// Initialize expandable pre.code blocks
+					var codeBlocks = document.querySelectorAll('pre.code');
+					codeBlocks.forEach(function(block) {
+						var lineHeight = parseInt(window.getComputedStyle(block).lineHeight);
+						var height = block.scrollHeight;
+						var lines = height / lineHeight;
+
+						if (lines > 2) {
+							block.classList.add('expandable');
+							block.addEventListener('click', function() {
+								block.classList.toggle('expanded');
+							});
+						}
+					});
+
+					// Function to expand pre block from hash
+					function expandPreBlockFromHash() {
+						var hash = window.location.hash.substring(1);
+						if (hash) {
+							var element = document.querySelector('a[name="' + hash + '"]');
+							if (element) {
+								var preElement = element.nextElementSibling;
+								while (preElement && preElement.tagName.toLowerCase() !== 'pre') {
+									preElement = preElement.nextElementSibling;
+								}
+								if (preElement && preElement.classList.contains('code')) {
+									preElement.classList.add('expanded');
+									var offset = preElement.offsetTop - 60; // Adjust this value as needed
+									window.scrollTo({
+										top: offset,
+										behavior: 'smooth'
+									});
+								}
+							}
+						}
+					}
+
+					// Add hash change event listener
+					window.addEventListener('hashchange', expandPreBlockFromHash);
+					
+					// Expand pre block if hash exists on initial load
+					expandPreBlockFromHash();
+				});
+			</script>
+	</head>
+	<body>
+		<div id="sidebar">
+			<div class="sidebar-title">Menu</div>
+			<a href="http://localhost:8081/api.html#home">Home</a>
+			<a href="http://localhost:8081/api.html#authorization">Authorization</a>
+			<a href="http://localhost:8081/api.html#uid">Identifiers</a>
+			<a href="http://localhost:8081/api.html#info">Info</a>
+			<a href="http://localhost:8081/api.html#playbackstatus">Playback Status</a>
+			<a href="http://localhost:8081/api.html#livesources">Live Sources</a>
+			<a href="http://localhost:8081/api.html#virtualsources">Virtual Sources</a>
+			<a href="http://localhost:8081/api.html#thumbnail">Thumbnail</a>
+			<a href="http://localhost:8081/api.html#playbackcontrol">Playback Control</a>
+			<a href="http://localhost:8081/api.html#playlists">Playlists</a>
+			<a href="http://localhost:8081/api.html#clips">Clips</a>
+			<a href="http://localhost:8081/api.html#currentclip">Current Clip</a>
+			<a href="http://localhost:8081/api.html#actions">Actions</a>
+			<a href="http://localhost:8081/api.html#dgo">DGO</a>
+			<a href="http://localhost:8081/api.html#scheduler">Scheduler</a>
+			<a href="http://localhost:8081/api.html#mediabrowser">Media Browser</a>
+			<a href="http://localhost:8081/api.html#transitions">Transitions</a>
+			<a href="http://localhost:8081/api.html#subtitles">Subtitles</a>
+			<a href="http://localhost:8081/api.html#more">More...</a>
+		</div>
+		<div id="container">
+			<picture>
+				<source srcset="./Logo_Softron_RGB_White.svg" media="(prefers-color-scheme: dark)">
+				<img align="right" src="./OnTheAir Video REST API documentation_files/Logo_Softron_RGB.svg">
+			</picture>
+			<br>
+			<h1 id="home">OnTheAir Video REST API</h1>
+			<div class="content" role="main">
+				<p>
+				</p><p>OnTheAir Video's REST API allows you to retrieve OTAV's status, change playlists, do controls of the playback and playing with the DGO. Also note that this REST API is not final, it's a first draft and there could be changes in the future when it is finalised.</p>
+				<p>This API is meant to be RESTful, then, using different verbs on requests leads to different behaviour on request processing.<br> In general manner, consider theses verbs to have the described behaviour:</p>
+				<list>
+					<ul><b>GET</b> -&gt; Retrieve data of a processable entity.</ul>
+					<ul><b>POST</b> -&gt; Create a new entity.</ul>
+					<ul><b>PUT</b> -&gt; Update a specified entity.</ul>
+					<ul><b>DELETE</b> -&gt; Delete an entity.</ul>
+				</list>
+				<p>When you modify or retrieving data, be sure to handle properly the return code that is returned by the API as it indicates if the operation was successfull or not.<br>
+				For <b>POST</b> &amp; <b>PUT</b> requests you <b>MUST</b> supply the <i>'Content-Type'</i> header with value <i>'application/json'</i>.<br>
+				Here is a short list common codes returned by the API:<br></p>
+				<table style="width:100%;">
+					<tbody><tr>
+						<th>Code</th>
+						<th>Meaning</th>
+						<th>Description</th>
+					</tr>
+					<tr>
+						<td>200</td>
+						<td>OK</td>
+						<td>The request was succesfully processed.</td>
+					</tr>
+					<tr>
+						<td>201</td>
+						<td>Created</td>
+						<td>A new resource has been created on server side.</td>
+					</tr>
+					<tr>
+						<td>202</td>
+						<td>Accepted</td>
+						<td>The resquest was accepted but was not processed.</td>
+					</tr>
+					<tr>
+						<td>400</td>
+						<td>Bad Request</td>
+						<td>The resquest was not well formed.</td>
+					</tr>
+					<tr>
+						<td>401</td>
+						<td>Unauthorized</td>
+						<td>The request needs an access token to proceed. <a href="http://localhost:8081/api.html#authorization">See Authorization</a></td>
+					</tr>
+					<tr>
+						<td>403</td>
+						<td>Forbidden</td>
+						<td>The token provided doesn't have sufficient privileges/permissions. <a href="http://localhost:8081/api.html#authorization">See Authorization</a></td>
+					</tr>
+					<tr>
+						<td>404</td><td>Not found</td>
+						<td>The resquest couldn't be processed. The path is not recognized.</td>
+					</tr>
+					<tr>
+						<td>422</td>
+						<td>Unprocessable entity</td>
+						<td>The resquest is well formed but is sementically incorrect</td>
+					</tr>
+				</tbody></table>
+				<p>To know if your request succeded; command, update, create and delete requests are followed with this kind of response:</p>
+				<a name="commandResponseObject"></a>
+				<h4>Command Response Object:</h4>
+				<pre class="code no-collapse expandable">{
+  "success" : boolean,
+  "error" : string <b>OPTIONAL</b>
+}</pre>
+				<p>"success": Indicates if the request was accepted and processed or not by OnTheAir Video.<br>"error": In case of success false, indicates what was wrong when processing the request.</p>
+				<br>
+				<p>NOTE:<br>
+				<b>OPTIONAL</b> marked parameters indicates that these parameters <b>can be or not be present</b> in the <b>response</b> object, this is due to  internal logics.<br>
+				However for requests that require a <b>body</b>, like <b>PUT</b> or <b>POST</b>, it means that it can be passed but they are <b>not mandatory</b>.
+				</p>
+				<p></p>
+			</div>
+			
+			
+			<!-- --------------AUTH----------- -->
+			<a name="authorization"></a>
+			<h1 id="authorization">Authorization</h1>
+			<div class="content">
+				<p>Since playlists can play sensitive content at a time, an authorization mechanism will be required if you decide to enable it in OnTheAir Video's preferences. (General -&gt; HTTP Server -&gt; Require Authentication).
+				</p>
+				<p>If this feature is enabled, it implies that you have to login with one of the registred user defined in OnTheAir Video and use the token received. In case not, you can ignore this section.
+				</p>
+				<p>
+				Each user has an access level, it defines how much control you have.<br>
+				Theses are described as follows:
+				</p><table style="width:100%;">
+					<tbody><tr>
+						<th>#</th>
+						<th>Title</th>
+						<th>Description</th>
+					</tr>
+					<tr>
+						<td>1</td>
+						<td>Read Only</td>
+						<td>You'll only be able to retrieve informations but not modifying it.</td>
+					</tr>
+					<tr>
+						<td>2</td>
+						<td>Modify Playlists</td>
+						<td>You'll only be able to modify playlists.</td>
+					</tr>
+					<tr>
+						<td>3</td>
+						<td>Modify And Control Playlists</td>
+						<td>You'll be able to modify playlist, control the playback and DGO.</td>
+					</tr>
+					<tr>
+						<td>4</td>
+						<td>Full Access</td>
+						<td>You'll be granted to execute all commands (admin privileges).</td>
+					</tr>
+				</tbody></table>
+				<p></p>
+				<p>
+				In order to make request you must first login with the following request:<br>
+				</p><pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/authorize</pre>
+				<pre class="code no-collapse expandable">{
+  "username": string, <span class="mandatory">REQUIRED</span>
+  "password": string <span class="mandatory">REQUIRED</span>
+}</pre>
+				<div class="requestresponse">Response:</div>
+				<pre class="code no-collapse expandable">{
+  "token": string, <b>OPTIONAL</b>
+  "error": string, <b>OPTIONAL</b>
+  "level": number
+}</pre>
+				<p></p>
+				<div>
+					The token received <b>MUST</b> be added in the query parameter of each request you make to OTAV.<br>
+					The level property is indicating the level granted to the logged user as defined in the table above.
+				</div>
+				<p>NOTE:<br>
+				</p><ul>
+					<li>The token will be invalid if you relaunch OnTheAir Video and thus you will have to remake the process again to obtain a new valid token.</li>
+					<li>In case of token invalidity, requests will send back a 401 error code</li>
+					<li>In case of not token provided, requests will send back a 403 error code</li>
+				</ul>
+				<p></p>
+			</div>
+			
+			<!-- --------------UNIQUE ID OR INDEX SECTION----------- -->
+			<h1 id="uid">Unique id - index or display name ?</h1>
+			<div class="content" role="main">
+				<p>Each <b>playlist</b> can be addressed using either its unique_id or its index.
+				</p><ul>
+					<li>The <b>unique_id</b> of a playlist represents its display name but may be altered to ensure it is unique among other playlists opened. It will not change unless you reanme the playlist.</li>
+					<li>The <b>index</b> is the position of the playlist in opening order. The index '0' would represent the first playlist opened, then '1' would represent the second and so on.</li>
+				</ul>
+				<p></p>
+				<p>Each <b>clip</b> can be addressed using either its unique_id, its index or eventually its display name.
+				</p><ul>
+					<li>The <b>unique_id</b> is the safest way as it will not change and remain unique, but you have to request first its value before being able to send arguments.</li>
+					<li>The <b>index of a clip</b> is the (zero based) position of a clip, or the order in which the playlists are displayed on screen (0 is the first playlist open, 1 is the second playlist open, etc...)</li>
+					<li>The <b>display name</b> is the name given to a clip inside OnTheAir Video. But pay attention that if you have mutiple clips with the same name, it will always address to the first one (in index order). Should be used as a convenience way or when you are sure the name is unique witthin the playlist.</li>
+				</ul>
+				<p></p>
+				<p>
+				Each <b>action</b> can only be addressed by its <b>unique_id</b>.
+				</p>
+			</div>
+			
+			<!-- --------------Info about OnTheAir Video----------- -->
+			<h1 id="info">Getting information about the OnTheAir Video Instance</h1>
+			<div class="content" role="main">
+				<p>
+				</p><pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/info</pre>
+				<div class="requestresponse">Response:</div>
+				<a name="infoResponseObject"></a>
+				<h4>Info Response Object:</h4>
+				<pre class="code expandable">{
+  "time_zone": string, <i> eg: "Europe\/Brussels"</i>
+  "is_player_capable": boolean
+  "computer_name": string, <i> eg: "Admin's computer"</i>
+  "application_name": string, <i> eg: "OnTheAir Video"</i>
+  "application_build_number": string, <i> eg: "402090"</i>
+  "mac_os_version": string, <i> eg: "14.1"</i>
+  "application_in_demo": boolean
+  "application_version": string, <i> eg: "4.2"</i>
+  "requires_authentication": false,
+  "name": string, <i> eg: "OTAV admin"</i>
+  "DGO_option": boolean
+}</pre>
+				<p></p>
+			</div>
+			
+			<!-- --------------Playback Status----------- -->
+			<h1 id="playbackstatus">Getting the Playback status</h1>
+			<div class="content" role="main">
+				<h2>Get the "generic" playback status of OnTheAir Video</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/playing</pre>
+				<div class="requestresponse">Response:</div>
+				<a name="playbackResponseObject"></a>
+				<h4>Playback Status Response object:</h4>
+				<pre class="code expandable">{
+  "current_date_time" : string, <i>eg: "2023-03-08 12:53:03"</i>
+  "is_playing" : boolean,
+  "is_paused" : boolean,
+  "is_locked" : boolean,
+  "item_index" : number, <b>OPTIONAL *</b> <i>eg. 3</i>
+  "item_display_name" : string, <b>OPTIONAL *</b> <i>eg. "My Movie Name"</i>
+  "item_duration" : number, <b>OPTIONAL *</b> <i>eg. 233.3199</i>
+  "item_elapsed" : number, <b>OPTIONAL *</b> <i>eg. 152.5200</i>
+  "item_filename" : string, <b>OPTIONAL *</b> <i>eg. "MyMovie1"</i>
+  "item_media_url" : string, <b>OPTIONAL *</b> <i>eg."file:\/\/\/Volumes\/Videos\/MyMovie1.mov"</i>
+  "item_remaining" : number, <b>OPTIONAL *</b> <i>eg. 65.03</i>
+  "item_path" : string, <b>OPTIONAL *</b> <i>eg. "/Volumes/Videos/MyMovie1.mov"</i>
+  "item_playback_status" : string, <b>OPTIONAL *</b> <i><div class="enum" data-enum="playback_mode">playback mode<div class="enum-content"></div></div></i>
+  "item_unique_id" : string, <b>OPTIONAL *</b> <i>eg. "666AD1EF-54C6-4A63-A67B-501C57E6080F" or "" if not playing</i>
+  "live_subtitling" : boolean, <b>OPTIONAL *</b>
+  "next_live_display_name" : string, <b>OPTIONAL *</b> <i>eg. "My Live Name"</i>
+  "next_live_unique_id" : string, <b>OPTIONAL *</b> <i>eg. "666AD1EF-54C6-4A63-A67B-501C57E6080F" or "" if no live in currently playing playlist</i>
+  "playback_status" : string, <b>OPTIONAL *</b> <i>eg. "Playing", "Stopped", "Pause"</i>
+  "playlist_display_name": string, <b>OPTIONAL *</b> <i>Playing playlist's name</i>
+  "playlist_duration" : number, <b>OPTIONAL *</b> <i>eg. 233.3199</i>
+  "playlist_elapsed" : number, <b>OPTIONAL *</b> <i>eg. 233.3199</i>
+  "playlist_index": number, <b>OPTIONAL *</b> <i></i> <i>Playing playlist's index (in opening order)</i>
+  "playlist_remaining" : number, <b>OPTIONAL *</b> <i>eg. 80.7999</i>
+  "playlist_unique_id": string, <b>OPTIONAL *</b> <i>Playing playlist's unique ID</i>
+  "remaining_time_until_next_live" : number, <b>OPTIONAL *</b> <i>eg. 233.3199</i>
+}</pre>
+				<p><strong>*</strong> Thoses fields will only appear if a playlist is playing</p>
+				<p>
+				</p><h2>Get the playback status of a playlist</h2>
+					With the following request, you will get a few info about the status of the playlist, and more. See playlist section for more controls.
+					<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/playing</pre>
+					<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+					<p></p>
+					<p>
+					</p><h2>Get the playback status of a clip</h2>
+						With the following request, you will get a few info about the status of the clip, and more. See clips section for more controls.
+						<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/playing</pre>
+						<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+						<p></p>
+					</div>
+			
+			
+			<!-- --------------Live Sources----------- -->
+			<h1 id="livesources">Live Sources</h1>
+			<div class="content" role="main">
+				<p>
+				Retrieve the list of Live sources available for that OnTheAir Video.
+				</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/live_sources</pre>
+				<div class="requestresponse">Response (array):</div>
+				<a name="liveResponseObject"></a>
+				<h4>Live Response Object:</h4>
+				<pre class="code expandable">[
+  {
+  "display_name" : string, <i> The name of the Live source. eg: "Live Source"</i>
+  "enabled" : boolean, <i> Wether the live source is enabled or not.</i>
+  "input_description" : string, <i> The name of the input used for the live source. eg: "UltraStudio 4K Mini"</i>
+  "input_unique_id" : string, <i> The unique id of the input used for the live source. eg: "A15G3FJ5YUI78"</i>
+  }
+]</pre>
+				<p>
+				Change the settings of live sources.
+				</p>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/live_sources</pre>
+				<div class="requestresponse">Body (array):</div>
+				<a name="liveResponseObject"></a>
+				<h4>Live Body Object:</h4>
+				<pre class="code expandable">[
+  {
+  "display_name" : string, <b>OPTIONAL *</b> <i> The name of the Live source. eg: "Live Source"</i>
+  "enabled" : boolean, <b>OPTIONAL *</b> <i> Wether the live source is enabled or not.</i>
+  }
+]</pre>
+
+			</div>
+			
+			
+			<!-- --------------Virtual Sources----------- -->
+			<h1 id="virtualsources">Virtual Sources</h1>
+			<div class="content" role="main">
+				<p>
+				Retrieve the list of Virtual sources available for that OnTheAir Video. Virtual Sources are only available with the traffic option.
+				</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/virtual_sources</pre>
+				<div class="requestresponse">Response (array):</div>
+				<a name="virtualSourcesResponseObject"></a>
+				<h4>Virtual Sources Response Object (Example):</h4>
+				<pre class="code expandable">[
+  {
+     "before_action" : {
+       "is_outpoint_clamped" : false,
+       "is_valid" : true,
+       "position_timecode" : "00:00:00:00",
+       "version" : 2,
+       "position" : 0,
+       "template_id" : ":Do Nothing",
+       "parameters" : {
+
+       },
+       "is_inpoint_clamped" : false,
+       "unique_id" : "586A8408-27B4-40EA-8B26-B12C13B80F85",
+       "is_offline" : false,
+       "name" : "Do Nothing",
+       "position_type" : "fromStart"
+     },
+     "default_clip_end_behaviour" : 2,
+     "version" : "2",
+     "is_live_source" : true,
+     "switching_action" : {
+  	 "is_outpoint_clamped" : false,
+  	 "is_valid" : true,
+  	 "position_timecode" : "00:00:00:00",
+  	 "version" : 2,
+  	 "position" : 0,
+  	 "template_id" : "AppleScript:Execute AppleScript",
+  	 "parameters" : {
+  	   "AppleScript Name" : "U_GRID",
+  	   "Parameter" : ""
+  	 },
+  	 "is_inpoint_clamped" : false,
+  	 "unique_id" : "105F6389-5301-4854-8D21-AED719F71E1C",
+  	 "is_offline" : false,
+  	 "name" : "Execute AppleScript",
+  	 "position_type" : "fromStart"
+     },
+     "source_name" : "GRID",
+     "default_duration" : 600,
+     "display_name" : "GRID",
+     "gpi_trigger_input" : 0,
+     "live_input_name" : "Live Source",
+     "is_default" : false,
+     "end_action" : {
+  	 "is_outpoint_clamped" : false,
+  	 "is_valid" : true,
+  	 "position_timecode" : "00:00:00:00",
+  	 "version" : 2,
+  	 "position" : 0,
+  	 "template_id" : ":Do Nothing",
+  	 "parameters" : {
+
+  	 },
+  	 "is_inpoint_clamped" : false,
+  	 "unique_id" : "2F13B026-1042-4DC7-824B-5E5B7F4F9243",
+  	 "is_offline" : false,
+  	 "name" : "Do Nothing",
+  	 "position_type" : "fromStart"
+     },
+     "start_action" : {
+  	 "is_outpoint_clamped" : false,
+  	 "is_valid" : true,
+  	 "position_timecode" : "00:00:00:00",
+  	 "version" : 2,
+  	 "position" : 0,
+  	 "template_id" : ":Do Nothing",
+  	 "parameters" : {
+
+  	 },
+  	 "is_inpoint_clamped" : false,
+  	 "unique_id" : "75CD140C-1CB9-4DA9-9083-DA3D3C78C1FD",
+  	 "is_offline" : false,
+  	 "name" : "Do Nothing",
+  	 "position_type" : "fromStart"
+     }
+   }
+]</pre>
+				
+			</div>
+			
+			<!-- --------------Get thumbnails of video output----------- -->
+			<h1 id="thumbnail">Getting thumbnails of video output</h1>
+			<div class="content" role="main">
+				<p>
+				Retrieve the thumbnails of the video output. Allows to have a small preview remotely.
+				</p>
+				<p>
+				</p><pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/thumbnail</pre>
+				<div class="requestresponse">Response: JPEG data</div>
+				<p></p>
+			</div>
+			
+			<!-- --------------Controlling the PLAYBACK SECTION----------- -->
+			<h1 id="playbackcontrol">Playback Controls</h1>
+			<div class="content" role="main">
+				<h2>Types of controls</h2>
+				<p>
+				</p><p>You have three ways to control the playback. Depending on what you want to achieve, you can:</p>
+				<ul>
+					<li> address "playback" and NOT specify a playlist, nor a clip. In this case, the playing playlist (or the front one if no playlist is playing) will be the one answering your requests.</li>
+					<li> specify the playlist you want to control (by using its index or unique ID), but without specifying a clip. In this case you can start the playback on a specific playlist, and the first clip (or the playing one) in the playlist will be controlled</li>
+					<li> specify both the playlist you want to control, as well as the clip (by using their index or unique ID). That's the way to start playing a specific clip in a specific playlist.</li>
+				</ul>
+				<p>
+				<b>NOTE:<br>
+				</b>When using playback commands (play or pause) by specifying a clip, the following parameters can be passed in the URL to set the playback's play head at a precise timecode:
+				</p><pre class="code no-collapse expandable">"position_relative_timecode": string, <i>"HH:MM:SS:FF" -" timecode position from the clip's start</i>
+"position_media_timecode": string, <i>"HH:MM:SS:FF" - absolute timecode in the media</i>
+"position_relative_seconds": number, <i>Position after x seconds from the media's beginning</i></pre>
+				Below, you will find the 3 types of controls (generic, per playlist or per clip). Depending on the type of command, you may have just one control possible. Or in some cases, all three are possible but will produce the same result. For example, if you aska a "generic" stop, it will do a stop the same way as if you specify a clip and/or a playlist.
+				<p></p>
+				<h2>The basic - play/stop/pause</h2>
+				<p>
+				</p><h3>Play</h3>
+				Start playing at the beginning of the front playlist:
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/play</pre>
+				Start playing at the beginning of the specified playlist:
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/play</pre>
+				Start playing at the the specified clip of the specified playlist (see above to also specify an offset to start the clip):
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/play</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				<p>
+				</p><h3>Stop</h3>
+				All three requests will stop the playback, whatever playlist is playing.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/stop</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/stop</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/stop</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				<p>
+				</p><h3>Pause</h3>
+				If a playlist is playing or paused, the first 2 requests will control the "playing or paused" playlist: pause the playback if playing or resume it if paused.
+				If nothing is playing, the first request will do a pause on the front playlist, on the selected clip if any. The second request will specify on which playlist the pause should be done.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/pause</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/pause</pre>
+				Even if something is playing or paused, the following request will ask to pause the clip. Never to resume it.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/pause</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				<p>
+				</p><h3>Resume</h3>
+				As the pause control can either do a pause or resume, if you want to be sure to do a resume, you should use this one, instead of the pause... Whatever three requests, it will do a resume of the paused clip if any, in whatever playlist.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/resume</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/resume</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/resume</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				<p>
+				</p><h2>Skip to previous/next</h2>
+				<p>
+				</p><h3>Skip to next</h3>
+				All three commands will do a skip to next on the playing playlist... Nothing will happen if nothing is played or paused. Note that they will return the "last position", which is the elapsed time (in seconds) of the previously playing clip
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/skip_next</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/skip_next</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/skip_next</pre>
+				You can also indicate if the skip to next should only be done if the currently playing item is a live (useful to exit a live, but ignore if you are already out of the live).
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/skip_next?live_only=1</pre>
+				<a name="skipToNextResponseObject"></a>
+				<h4>Skip To Next Response Object:</h4>
+				<pre class="code no-collapse expandable">{
+  "success": boolean,
+  "last_position": number <i>Indicates the elapsed time (in seconds) of the previously playing clip .</i>
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h3>Skip to previous</h3>
+				All three commands will do a skip to previous on the playing playlist... Nothing will happen if nothing is played or paused.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/skip_previous</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/skip_previous</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/skip_previous</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<h2>Play next</h2>
+				<p>
+				</p><h3>Play next (clip)</h3>
+				Set which clip will play once the current one is done playing (or when doing a skip to next). This request only works when specifying a playlist and a clip.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{i}</i>/play_next</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h3>Clear play next (clip)</h3>
+				All three requests will clear the clip that was previously set as the next to play.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/clear_next</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/clear_next</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/clear_next</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<h2>Other controls</h2>
+				<p>
+				</p><h3>Cue trigger</h3>
+				Emulates the "space bar". If you want to do as if you were using the space bar on your computer...
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/cue_trigger</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h3>GPI trigger</h3>
+				Emulates a "GPI input" received trigger. You must specify the input number. This will do a skip to next if a "GPI trigger" for the specified input is set on the currently playing clip (cf clip attributes inspector)
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/gpi_trigger?input=1</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h3>Join in progress</h3>
+				This feature is only available if you have the traffic option, will use the theoretical start date/time of the playlist and clip in order to start playing what was scheduled to play. The first request will do a join in progress, in the following order, on: the playing playlist; if no playlist is playing, the playlist of the day; if no playlist is playing, nor a playlist of the day is open, the front playlist
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/join_in_progress</pre>
+				The following two requests will do a join in progress on the specified playlist.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/join_in_progress</pre>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/join_in_progress</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+			</div>
+			
+			<!-----------PLAYLIST SECTION-------- -->
+			<h1 id="playlists"> Working with Playlists</h1>
+			<div class="content" role="main">
+				<p>
+				</p><h2>Get info about a playlist:</h2>
+				<p>Here is an example of request that you can use in a simple browser, to get the information about the playlist <i>{n}</i>:</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i></pre>
+				<div class="requestresponse">Response:</div>
+				<a name="playlistResponseObject"></a>
+				<h4>Playlist Response Object:</h4>
+				<pre class="code expandable">{
+  "unique_id" : string, <i>name of the document made unique</i>
+  "path" : string, <b>OPTIONAL</b> <i>eg. "/Volumes/Videos/MyPlaylist.xpls"</i>
+  "name" : string, <i>eg. "MyPlaylist"</i>
+  "loop": boolean,
+  "chain": boolean,
+  "cue": boolean,
+  "shuffle": boolean,
+  "is_folder_based": boolean,
+  "folder_based_path": string <b>OPTIONNAL</b> <i>eg. "/Volumes/Videos/"</i>
+  "total_items" : number, <i>eg. 57</i> <b>OPTIONAL</b> <i>only if 'items' is not present</i>
+  "player_description" : string, <i>eg. "Virtual Output (1080i 59.94)"</i>
+  "duration" : number, <i>eg. 1800.7999</i>
+  "duration_string" : string, <i>eg. "00:30:02" HH:MM:SS</i>
+  "preset_duration": number, <i>eg. 1800</i>
+  "preset_duration_string": string, <i>eg. "00:30:00" HH:MM:SS</i>
+  "start_time_offset": string, <i>eg. "00:30:00" HH:MM:SS</i>
+  "enable_clocked_items": boolean,
+  "is_front" : boolean,
+  "has_on_air_item": boolean,
+  "items": array <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object</a> <b>OPTIONAL</b> <i>Pass "include_items=true" in query parameters</i>
+}</pre>
+				<p>NOTE:<br>
+				The "preset_duration" parameter is a theoretical value that indicates the desired duration of the playlist althougth the duration may or may not be equal to this one.
+				</p>
+				
+				<p>
+				</p><h2>Get various info from a playlist</h2>
+				<p>The following request will get the list of items in playlist. </p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items</pre>
+				<div class="requestresponse">Response: array <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object (Array)</a></div>
+				<p></p>
+				
+				<p>
+				</p><p>The following request will get the thumbnails of all the items in a playlist. </p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/thumbnails</pre>
+				<div class="requestresponse">Response (Array):</div>
+				<a name="thumbnailResponseObject"></a>
+				<h4>Thumbnail Response Object:</h4>
+				<pre class="code expandable">[
+  {
+    "unique_id" : string, <i>name of the document made unique</i>
+    "thumbnail" : JPEG data
+  }
+ ]</pre>
+				<p></p>
+				
+				<p>
+				</p><div>Get the start times and overruns of items in a playlist. It is usefull when you don't want to ask the whole playlist if a duration has changed</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/start_times</pre>
+				<div class="requestresponse">Response:</div>
+				<pre class="code expandable">{
+  {
+    "303315D0-5D02-4610-B155-CCC7F5AC83E9" : {
+    "start_time" : 60929,
+    "overrun_underrun" : 0
+  },
+    "90B89FE6-1A84-4291-93AC-56A5A0F79C81" : {
+    "start_time" : 60809,
+    "overrun_underrun" : 0
+  }
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><div>Retrieve a list of items (their unique IDs) that don't match the "theoreticalStartDate" of the playlist</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>playlists/<i>{n}</i>/out_of_time_range_items</pre>
+				<div class="requestresponse">Response:</div>
+				<pre class="code expandable">{
+  "7EC74545-83C5-475A-B97E-8D64AF4D3A20",
+  "B0C11EC0-0159-4C15-8D0A-C83ABE687A6F"
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><div>Retrieve a list of items that have start date/time that are not chronologicaly ordered with the previous clip that has a start date/time</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>playlists/<i>{n}</i>/not_chronological_items</pre>
+				<div class="requestresponse">Response:</div>
+				<pre class="code expandable">{
+  "7EC74545-83C5-475A-B97E-8D64AF4D3A20",
+  "B0C11EC0-0159-4C15-8D0A-C83ABE687A6F"
+}</pre>
+				<p></p>
+				
+				
+				<p>
+				</p><h2>Create an empty playlist</h2>
+				<p>This option is only available when you have the "traffic" option, as the playlist will be created in the folder selected for the schedule.</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{NAME}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Playlist Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Delete all clips of a playlist</h2>
+				<pre class="code"><b>DELETE </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p>NOTE:<br>
+				Trying to delete all clips of playing playlist will return an error.
+				</p>
+				<p></p>
+				<p>
+				</p><h2>Close a playlist</h2>
+				<p>Close the playlist with specified ID.<br>
+				<b>Warning ! Use this command with care as some other remote user will no longer have access to the playlist after it is closed.</b>
+				</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{id}</i>/close</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+			</div>
+			
+			<!-----------CLIPS In playlists SECTION-------- -->
+			<h1 id="clips"> Working with clips in playlists</h1>
+			<div class="content" role="main">
+				
+				<p>
+				</p><h2>Get the info of a specific item in a playlist</h2>
+				<p>The following request will get the info of the item <i>{m}</i> in playlist <i>{n}</i>. You can use the playlist index, or a unique ID (see above), same thing for the clip, you can use either the index or the unique ID.</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i></pre>
+				<a name="playlistItemResponseObject"></a>
+				<h4>Playlist Item Response Object:</h4>
+				<pre class="code expandable">{
+  "unique_id" : string, <b>OPTIONAL *</b> <i>eg. "666AD1EF-54C6-4A63-A67B-501C57E6080F"</i>
+  "clip_type" : enum <div class="enum" data-enum="clip_type">clip_type<div class="enum-content"></div></div>,
+  <span class="file-only-property">"filename"</span> : : string, <i>eg. "MyMovie1.mov"</i>
+  "name" : string, <i>eg. "MyMovie1"</i>
+  <span class="file-only-property">"url"</span> : string, <i>eg. "/Users/admin/Documents/MyMovie1.mov" <b>REQUIRED</b> for <span class="file-only-property">FILE</span> or <span class="stream-only-property">STREAM</span></i>
+  <span class="file-only-property">"external_item_url" </span>: string, <i>eg. "http:\/\/192.168.0.33:8081\/media\/items\/MyMovie1.mov"</i>  <b>OPTIONAL</b>
+  <span class="file-only-property">"media_browser_item_unique_id"</span> string, <i>eg. "MyMovie1"</i>  <b>OPTIONAL</b>
+  <span class="file-only-property">"video_codec"</span> : string, <i>eg. "H.264"</i>
+  <span class="file-only-property">"audio_codec"</span> : string, <i>eg. "AAC"</i>
+  <span class="live-only-property">"live_source_name"</span>: string <i>eg. "Live Source 2"</i>  <b>OPTIONAL</b>
+  <span class="stream-only-property">"is_streamed"</span>: boolean, <i>Indicates if the stream is a remote file or not.</i>
+  "is_valid" : boolean,
+  "validation_status" : string, <i><div class="enum" data-enum="validation_status">validation status<div class="enum-content"></div></div></i>
+  "validation_error" : string, <i><div class="enum" data-enum="validation_error">validation error<div class="enum-content"></div></div></i>
+  "is_offline": boolean, <i>will always set to false for a <span class="live-only-property">LIVE</span> or <span class="stream-only-property">STREAM</span> clip.</i>
+  "is_disabled" : boolean,
+  "is_locked" : boolean,
+  <span class="file-only-property">"last_modification_date"</span> : string <i>eg. ""2024-05-13T11:56:08.597Z""</i>,
+  "relative_start_time" : number, <i>eg. 9.902 (in seconds)</i>
+  "relative_start_timecode" : string, <i>eg. "00:11:34" HH:MM:SS</i>
+  "displayed_start_time" : number " <i>eg. "679" (in seconds)</i>,
+  "theoretical_absolute_start_time" : number,	<i>eg. 13.532 (in seconds)</i>
+  "timed_start_date" : : string <i>eg. ""2024-05-13T11:56:08.597Z""</i>,
+  "displayed_start_timecode" : string,	<i>eg. "00:00:00" HH:MM:SS</i>
+  "overrun_underrun" : number, <i>eg. "60" (in seconds)</i>
+  "first_frame_number" :  number, <i>eg. "9000" (in frame number)</i>
+  "last_started_date": string <i>eg. ""2024-05-13T11:56:08.597Z""</i>,
+  "start_transition_name": string <i>eg. "Push - Down"</i>,
+  "start_transition_duration" : number, <i>eg. "1" (in seconds)</i>
+  <span class="file-only-property">"has_previous_item_mix_point"</span> : boolean,
+  <span class="file-only-property">"previous_item_mix_point"</span> : number, <i>eg. 1.000 (in seconds)</i> <b>OPTIONAL</b>
+  <span class="file-only-property">"has_in_point"</span> : boolean,
+  <span class="file-only-property">"in_point"</span> : number, <i>eg. 9.902 (in seconds)</i> <b>OPTIONAL</b>
+  <span class="file-only-property">"has_out_point"</span> : boolean,
+  <span class="file-only-property">"out_point"</span> : number, <i>eg. 59.000 (in seconds)</i> <b>OPTIONAL</b>
+  <span class="file-only-property">"has_next_item_mix_point"</span> : boolean,
+  <span class="file-only-property">"next_item_mix_point"</span> : number, <i>eg. 1.000 (in seconds)</i> <b>OPTIONAL</b>
+  "media_file_duration" : number, <i>eg. "600.000" (in seconds)</i>
+  "duration" : number, <i>eg. "600.000" (in seconds)</i>
+  "duration_timecode" : string, <i>eg. "00:10:00" HH:MM:SS</i>
+  "theoretical_duration" : number, <i>eg. "600.000" (in seconds)</i>
+  "chained_playback_duration" : number <i>eg. "600.000" (in seconds)</i>
+  "chained_playback_duration_timecode" :  string, <i>eg. "00:10:00" HH:MM:SS</i>
+  "non_chained_playback_duration" : <i>eg. "600.000" (in seconds)</i>
+  "non_chained_playback_duration_timecode" :  string, <i>eg. "00:10:00" HH:MM:SS</i>
+  "graphics_attributes" : array,
+  "display_rect" : array,
+  "media_display_size" : array
+  "gpi_trigger_input" : number,
+  "is_cued_as_next" : boolean, <b>OPTIONAL</b>
+  "logo_filename" : string, <i>eg. "MyLogo"</i>
+  <span class="file-only-property">"closed_captions"</span> : array &lt;string&gt; array <div class="enum" data-enum="closed_caption">closed_captions_types<div class="enum-content"></div></div>, <b>OPTIONAL</b>
+  "playback_mode" : string, <i><div class="enum" data-enum="playback_mode">playback mode<div class="enum-content"></div></div></i>
+  "actions" : array <a href="http://localhost:8081/api.html#actionResponseObject">action</a>,
+  "include_in_auto_check" : boolean,
+  <span class="get-only-property">"playback_status"</span>: string, <i>eg. "stopped"</i> <b>GET only</b>
+  "input_midi_message" : array,
+  "resize_mode_option" : string, <i>eg. "Default"</i>
+  "proxy_url" : string, <i>eg. "http:\/\/127.0.0.1:8081\/MyMovie1.mp4"</i>
+  "thumbnail_url" : string, <i>eg. "http:\/\/127.0.0.1:8081\/MyMovie1.jpg"</i>
+  "epg_tag_unique_id" : string, <i>eg. "MYEPGTAG"</i>
+  "resize_mode": string, <i><div class="enum" data-enum="resize_mode">resize mode<div class="enum-content"></div></div></i>
+  "finder_label_index" : number,  <b>OPTIONAL</b>
+  "finder_label_description" : string, <i>eg. "Red"</i> <b>OPTIONAL</b>
+  "segment_number" : number,
+  "virtual_clip" : boolean,  <b>OPTIONAL</b>
+  "virtual_source" : string, <i>eg. "REC-VS"</i>  <b>OPTIONAL</b>
+  "content_type" : string, <i>eg. "CM"</i>  <b>OPTIONAL</b>
+  "isci_code" : string, <i>eg. "MMS15OURVOICE"</i>  <b>OPTIONAL</b>
+  "reconcile_id" : string, <i>eg. "0003-T"</i>  <b>OPTIONAL</b>
+  "tv_rating" : string, <i>eg. "-16"</i>  <b>OPTIONAL</b>
+  "remote_change_id" : string, <i>eg. "125A2F9B-2774-4929-93BC-9311C672873A"</i>  <b>OPTIONAL</b>
+  <span class="file-only-property">"languages"</span> : array &lt;string&gt;
+  "premultiply_by_alpha" : boolean,
+  "can_be_inspected" :  boolean, <b>OPTIONAL</b>
+  "audio_volume" : number <i>"0" is muted, "1" is 0dB, "2" is 6dB</i>,
+  "logo_enabled" : boolean,
+  "reverse_field_order" : boolean,
+  "frames_per_second" : number,
+  "drop_frame" : boolean,
+}</pre>
+				<p> * : if the unique_id property is not present it means that the item is still in the playlist but will be further deleted and thus cannot be accessed.<br>
+				NB: If 'clip_type' is a comment item, he will only have 'unique_id', 'name', 'clip_type' &amp; 'segment_number' properties.</p>
+				<p></p>
+				
+				<p>
+				</p><h2>Get the thumbnail of a clip</h2>
+				<p>The following request will get the thumbnail of the item <i>{m}</i> in playlist <i>{n}</i>. You can use the playlist index, or a unique ID (see above), same thing for the clip thumbnail, you can use either the index or the unique ID.</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/thumbnails/<i>{m}</i></pre>
+				<a name="playlistItemGETThumbnailResponseObject"></a>
+				<h4>Playlist's item object response:</h4>
+				<pre class="code no-collapse expandable">{
+  "unique_id":"64191780-B968-454E-A5ED-A61CC85F170D",
+  "thumbnail":"JPEG data"
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Get the thumbnails</h2>
+				<div>Retrieve the thumbnails of all the clips in the playlist</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">/</span>playlists/<i>{n}</i>/thumbnails</pre>
+				<div class="requestresponse">Response: array <a href="http://localhost:8081/api.html#playlistResponseObject">Playlist Response Object</a></div>
+				<br>
+				<div>Retrieve the thumbnail of a clip (in JSON with Base64 data)</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">/</span>playlists/<i>{n}</i>/thumbnails/{i}</pre>
+				<div class="requestresponse">Response: array <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object</a></div>
+				<br>
+				<div>Retrieve the thumbnail of a clip (in JPEG)</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">/</span>playlists/<i>{n}</i>/items/{i}/thumbnail</pre>
+				<div class="requestresponse">Response: JPEG data</div>
+				<p></p>
+				
+				<p>
+				</p><h2>Check for missing clips / validate</h2>
+				<p>The following request will validate the clips within a playlist. A validation will open the file, read the header to retrieve the codec and format. You can either ask it for the whole playlist, or for a specific clip in the playlist. You can use the playlist index, or a unique ID (see above), same thing for the clip, you can use either the index or the unique ID.<br>
+				<br>
+				There are 2 types of check:
+				</p><ul>
+					<li>A "simple" validation, "check for missing clips": we will compare the modification date of the file, and what we have stored in the playlist, and only validate the clip if the 2 are different. This is mainly useful when asking a whole playlist to check if clips have been modified or became online/offline</li>
+					<li>A "forced" validation: we will not check the modification date and force to validate the clip. This is to be used with care as it uses some resources (we have to open the file to get its info).</li>
+				</ul>
+				<p></p>
+				<h3>Check for missing clips</h3>
+				<p>For the whole playlist:</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/validate</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p>For a specific clip:</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/validate</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<h3>Force a validation</h3>
+				<p>For a specific clip (it is not recommended to do it on a whole playlist as it will use resources):</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/validate?force=1</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<!-- PUT -->
+				<p>
+				</p><h2>Update playlist's clip</h2>
+				<div>All properties of a clip can be changed but here are the most common to be changed.<br> WARNING: if you change some properties that doesn't appear on this list, it might lead to unwanted UI behaviour. For example, we do not recommend sending things as "Modification date", durations, etc... as these will be calculated by OnTheAir Video directly depending on the media that it has. Note that this command will also automatically save the playlist once it has loaded the new values.</div>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "name" : string, <b>OPTIONAL</b> <i>eg. "MyMovie1"</i>
+  <span class="file-only-property">"url"</span> : string, <b>OPTIONAL</b> <i>eg. "/Volumes/Movies/MyMovie.mov" (ONLY FOR <span class="file-only-property">FILE</span> or <span class="stream-only-property">STREAM</span>)</i>
+  <span class="live-only-property">"live_source_name"</span> : string, <b>OPTIONAL</b> <i>eg. "Live Source 2" (ONLY FOR <span class="live-only-property">LIVE</span>)</i>
+  <span class="live-only-property">"duration"</span> : number, <b>OPTIONAL</b> <i>eg. 679.902 (in seconds) (ONLY FOR <span class="live-only-property">LIVE</span> or <span class="stream-only-property">STREAM</span>)</i>
+  "playback_mode" : string, <i><div class="enum" data-enum="playback_mode">playback_mode<div class="enum-content"></div></div></i> <b>OPTIONAL</b>
+  "has_in_point" : boolean, <b>OPTIONAL</b>
+  "in_point" : number, <b>OPTIONAL</b> <i>eg. 9.902 (in seconds)</i>
+  "has_out_point" : boolean, <b>OPTIONAL</b>
+  "out_point" : number, <b>OPTIONAL</b> <i>eg. 59.000 (in seconds)</i>
+  "start_transition_name": string <b>OPTIONAL</b>
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Change playlist content &amp; properties</h2>
+				<div><b>WARNING</b>: You MUST send the entire items list, the content will be reflected, the additional items wil not be added nor removed. To add or delete items, please use <a href="http://localhost:8081/api.html#addClip">POST</a>/<a href="http://localhost:8081/api.html#deleteClip">DELETE</a> requests</div>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/</pre>
+				<div class="requestbody">Body: <a href="http://localhost:8081/api.html#playlistResponseObject">Playlist Object</a></div>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				<a name="addClip"></a>
+				</p><h2>Create a clip</h2>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items</pre>
+				<p>If you want to create a clip at a specific index {m}, you can use the following:</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "clip_type" : enum &lt;<div class="enum" data-enum="clip_type">clip_type<div class="enum-content"></div></div>&gt;, <span class="mandatory">REQUIRED</span>
+  <span class="file-only-property">"url"</span> : string, <span class="mandatory">REQUIRED ONLY FOR <span class="file-only-property">FILE</span> or <span class="stream-only-property">STREAM</span></span> <i>eg. "/Volumes/Movies/MyMovie.mov"</i>
+  <span class="live-only-property">"live_source_name"</span> : string, <span class="mandatory">REQUIRED ONLY FOR <span class="live-only-property">LIVE</span></span> <i>eg. "Live Source 	2"</i>
+  <span class="live-only-property">"duration"</span> : number, <span class="mandatory">REQUIRED ONLY FOR <span class="stream-only-property">STREAM</span> OR <span class="live-only-property">LIVE</span></span> <i>eg. 679.902 (in seconds)</i>
+  "name" : string, <b>OPTIONAL</b> <i>eg. "MyMovie1"</i>
+  "playback_mode" : string, <i><div class="enum" data-enum="playback_mode">playback_mode<div class="enum-content"></div></div></i> <b>OPTIONAL</b>
+  "has_in_point" : boolean, <b>OPTIONAL</b>
+  "in_point" : number, <b>OPTIONAL</b> <i>eg. 9.902 (in seconds)</i>
+  "has_out_point" : boolean, <b>OPTIONAL</b>
+  "out_point" : number, <b>OPTIONAL</b> <i>eg. 59.000 (in seconds)</i>
+  "start_time" : number, <b>OPTIONAL</b>
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object</a></div>
+				
+				<div>Examples:</div>
+				<h3>File based clip body:</h3>
+				<pre class="code no-collapse expandable">{
+  "clip_type" : 0,
+  "url" : "/Volumes/Movies/MyMovie.mov"
+}</pre>
+				<h3>Comment:</h3>
+				<pre class="code no-collapse expandable">{
+  "clip_type" : 3,
+  "name" : "Start Section"
+}</pre>
+				<h3>Live clip body:</h3>
+				<pre class="code no-collapse expandable">{
+  "clip_type" : 4,
+  "live_source_name" : "Live Source 2",
+  "duration" : 1800,
+  "name" : "Live"
+}</pre>
+				<h3>Stream clip body:</h3>
+				<pre class="code no-collapse expandable">{
+  "clip_type" : 5,
+  "url" : "rtmp://192.168.0.10:1935/live/mystream",
+  "duration" : 1800
+}</pre>
+				<p></p>
+				<p>
+				</p><h2>Delete a specific clip of a playlist</h2>
+				<pre class="code"><b>DELETE </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p>NOTE:<br>
+				Trying to delete a playing clip of a playlist will return an error.
+				</p>
+				<p></p>
+			</div>
+			<br>
+			<br>
+			<!-----------CURRENTLY PLAYING CLIP SECTION-------- -->
+			<h1 id="currentclip"> Working with the currently playing clip</h1>
+			<div class="content" role="main">
+				
+				<p>
+				To address the currently playing clip, instead of communicating "through" the playlist, you go through the "playback" command. With the currently playing item, you can do all the same requests you do to the playlist items.
+				</p><h2>Get the info of the currently playing clip </h2>
+				<p>The following request will get the info of the currently playing clip. </p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/current_item</pre>
+				<a name="playbackItemResponseObject"></a>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#playlistItemResponseObject">Playlist Item Response Object</a></div>
+				<p></p>
+			</div>
+			<br>
+			<br>
+			<!-----------ACTIONS SECTION-------- -->
+			<h1 id="actions">Working with Actions</h1>
+			<div class="content" role="main">
+				<p>
+				WARNING: There is a major change with Actions in OnTheAir Video 4.2. In previous versions, Actions were only AppleScripts. Now they can be AppleScript, or other direct actions that allow you to control various equipments. Make sure to check the changes, and when sending or receiving requests to a OnTheAir Video, check the version of the server (using GET /info), to make sure you are compatible.
+				</p>
+				<br>
+				<h2>Get available the list of available actions</h2>
+				<p>The following request will retrieve the available actions on the server. You can use them to update your clip's available actions, and know the possible values for each. </p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/actions</pre>
+				<div>Response (example): </div>
+				<pre class="code expandable">[
+  {
+  "is_available" : false,
+  "is_user_action" : false,
+  "group_name" : "",
+  "name" : "Do Nothing",
+  "unique_id" : ":Do Nothing",
+  "should_run_on_backup" : true
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 128,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Source Index",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 7,
+  "is_visible_in_description" : true,
+  "default_value" : false,
+  "name" : "Transition",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "ATEMSwitchByIndex",
+  "unique_id" : "ATEM:ATEM Program Switch (by index)",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "ATEM",
+  "name" : "ATEM Program Switch (by index)"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "Source Name",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 7,
+  "is_visible_in_description" : true,
+  "default_value" : false,
+  "name" : "Transition",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "ATEMSwitchByName",
+  "unique_id" : "ATEM:ATEM Program Switch (by name)",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "ATEM",
+  "name" : "ATEM Program Switch (by name)"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 100,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : "1",
+  "name" : "Macro Index",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "runATEMMacroAtIndex",
+  "unique_id" : "ATEM:Run Macro At Index",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "ATEM",
+  "name" : "Run Macro At Index"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "Macro Name",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "runATEMMacroWithName",
+  "unique_id" : "ATEM:Run Macro With Name",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "ATEM",
+  "name" : "Run Macro With Name"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "BUGEnd",
+  "BUGStart",
+  "LowerThird",
+  "RollBreak"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "AppleScript Name",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 2,
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "Parameter",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "executeAppleScript",
+  "unique_id" : "AppleScript:Execute AppleScript",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "AppleScript",
+  "name" : "Execute AppleScript"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "1",
+  "name" : "Output Number",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "gpiPulseOutput",
+  "unique_id" : "GPI:GPI Pulse Output",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "GPI",
+  "name" : "GPI Pulse Output"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "1",
+  "name" : "Output Number",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "gpiSetOutputOff",
+  "unique_id" : "GPI:GPI Set Output OFF",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "GPI",
+  "name" : "GPI Set Output OFF"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "1",
+  "name" : "Output Number",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "gpiSetOutputOn",
+  "unique_id" : "GPI:GPI Set Output ON",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "GPI",
+  "name" : "GPI Set Output ON"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "LowerThird",
+  "BUG",
+  "Coming_Next",
+  "Box_Right"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "Project Name",
+  "index" : 0
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "startDGOProject",
+  "unique_id" : "Graphics:Start DGO Project",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "Graphics",
+  "name" : "Start DGO Project"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "LowerThird",
+  "BUG",
+  "Coming_Next",
+  "Box_Right"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "",
+  "name" : "Project Name",
+  "index" : 0
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "stopDGOProject",
+  "unique_id" : "Graphics:Stop DGO Project",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "Graphics",
+  "name" : "Stop DGO Project"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "note_on",
+  "note_off",
+  "after_touch",
+  "program_change",
+  "control_change",
+  "channel_pressure",
+  "pitch_wheel",
+  "non_musical"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "program_change",
+  "name" : "Message Type",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 255,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Channel",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 255,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "Param 1",
+  "index" : 2
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 255,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "Param 2",
+  "index" : 3
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "sendMIDIMessage",
+  "unique_id" : "MIDI:Send MIDI Message",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "MIDI",
+  "name" : "Send MIDI Message"
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiCueNextClip",
+  "unique_id" : "Playback:Cue Next Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Cue Next Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiCueSelectedClip",
+  "unique_id" : "Playback:Cue Selected Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Cue Selected Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiPause",
+  "unique_id" : "Playback:Pause",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Pause",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiPlayNextClip",
+  "unique_id" : "Playback:Play Next Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Play Next Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiPlaySelectedClip",
+  "unique_id" : "Playback:Play Selected Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Play Selected Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiReCueCurrentClip",
+  "unique_id" : "Playback:Re-Cue Current Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Re-Cue Current Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiRePlayCurrentClip",
+  "unique_id" : "Playback:Re-Play Current Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Re-Play Current Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiReleasePause",
+  "unique_id" : "Playback:Release Pause",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Release Pause",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiSelectNextClip",
+  "unique_id" : "Playback:Select Next Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Select Next Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiSelectNextPlaylist",
+  "unique_id" : "Playback:Select Next Playlist",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Select Next Playlist",
+  "should_run_on_backup" : false
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiSelectPreviousClip",
+  "unique_id" : "Playback:Select Prev. Clip",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Select Prev. Clip",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiSpaceBar",
+  "unique_id" : "Playback:Space Bar",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Space Bar",
+  "should_run_on_backup" : true
+  },
+  {
+  "group_name" : "Playback",
+  "selector" : "gpiStop",
+  "unique_id" : "Playback:Stop",
+  "is_user_action" : false,
+  "is_available" : true,
+  "name" : "Stop",
+  "should_run_on_backup" : true
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 2,
+  "is_visible_in_description" : true,
+  "default_value" : "192.168.0.1",
+  "name" : "IP Address",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : true,
+  "maximum_value" : 16,
+  "parameter_type" : 3,
+  "is_visible_in_description" : false,
+  "default_value" : 1,
+  "name" : "Matrix",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : true,
+  "maximum_value" : 16,
+  "parameter_type" : 3,
+  "is_visible_in_description" : false,
+  "default_value" : 1,
+  "name" : "Level",
+  "index" : 2
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 128,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Destination",
+  "index" : 3
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 128,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Source",
+  "index" : 4
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "proBelSwitch",
+  "unique_id" : "Routers:ProBel Switch",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "Routers",
+  "name" : "ProBel Switch"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 2,
+  "is_visible_in_description" : true,
+  "default_value" : "192.168.0.1",
+  "name" : "IP Address",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 2,
+  "is_visible_in_description" : true,
+  "default_value" : "GPI 1",
+  "name" : "Command",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "rossTalkSwitch",
+  "unique_id" : "Routers:RossTalk",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "Routers",
+  "name" : "RossTalk"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 2,
+  "is_visible_in_description" : true,
+  "default_value" : "192.168.0.1",
+  "name" : "IP Address",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 128,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Destination",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 1,
+  "is_optional" : false,
+  "maximum_value" : 128,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Source",
+  "index" : 2
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : false,
+  "selector" : "videohubSwitch",
+  "unique_id" : "Routers:Videohub Switch",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "Routers",
+  "name" : "Videohub Switch"
+  },
+  {
+  "parameters" : [
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 0,
+  "parameter_type" : 5,
+  "possible_values" : [
+  "Cancel",
+  "Start Normal",
+  "End Normal",
+  "Start Immediate",
+  "End Immediate"
+  ],
+  "is_visible_in_description" : true,
+  "default_value" : "Start Normal",
+  "name" : "Splice Type",
+  "index" : 0
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 4294967295,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Event ID",
+  "index" : 1
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 65535,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 1,
+  "name" : "Program ID",
+  "index" : 2
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 65535,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 300,
+  "name" : "Duration (ds)",
+  "index" : 3
+  },
+  {
+  "minimum_value" : 0,
+  "is_optional" : false,
+  "maximum_value" : 10000,
+  "parameter_type" : 3,
+  "is_visible_in_description" : true,
+  "default_value" : 0,
+  "name" : "After Delay (ms)",
+  "index" : 99
+  }
+  ],
+  "should_run_on_backup" : true,
+  "selector" : "sendSCTETrigger",
+  "unique_id" : "SCTE:Send SCTE Trigger",
+  "is_user_action" : false,
+  "is_available" : true,
+  "group_name" : "SCTE",
+  "name" : "Send SCTE Trigger"
+  }
+]</pre>
+				The parameter_type set if it's a string, a number, a boolean. And is defined here: <div class="enum" data-enum="parameter_type">parameter type<div class="enum-content"></div></div>
+				
+				<p>
+				</p><h2>Get the list of actions of a playlist item</h2>
+				<p>The following request will retrieve all the actions set on the item <i>{m}</i> of playlist <i>{n}</i>. You can use indexes, or unique IDs (see above).</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<a name="actionResponseObject"></a>
+				<h4>Action response object:</h4>
+				<pre class="code expandable">{
+  "name" : string, <i>The name of the type of Action to execute. eg. "Execute AppleScript"</i>
+  "unique_id" : string, <i>The unique identifier of the action.  eg. "0650A319-B0B7-4B06-957C-F81B38470548"</i>
+  "position" : number,<i>position of the action in seconds. eg. 0</i>
+  "position_type" : string, <i><div class="enum" data-enum="position_type">position type<div class="enum-content"></div></div></i>
+  "position_timecode" : string, <i>position of the action in timecode. eg. "00:00:00:00" HH:MM:SS:FF</i>
+  "template_id" : string, <i><div class="enum" data-enum="template_id">type of action<div class="enum-content"></div></div></i>
+  "parameters" : array, <i>will depend on the selected "template_id". See below for examples</i>
+  "is_outpoint_clamped" : boolean, *
+  "is_inpoint_clamped" : boolean, **
+  "is_valid" : boolean, <i>TRUE if the action is not valid (for example outside of clip boundaries)</i>
+  "is_offline": boolean, <i>TRUE if the AppleScript action, or custom action file is not present on disk</i>
+}</pre>
+				<p>* TRUE if the Action is set to be triggered juste after the out point of the clip (less than 1 second after). Therefore, we have 'clamped' it so it will be triggered at the end of the clip.<br>
+				** TRUE if the Action is set to be triggered juste before the in point of the clip (less than 1 second after). Therefore, we have 'clamped' it so it will be triggered at the end of the clip.</p>
+				
+				
+				<h2>Get the info of a specific action on a playlist item</h2>
+				<p>The following request will retrieve the action <i>{k}</i> set on the item <i>{m}</i> of playlist <i>{n}</i>. You can use indexes, or unique IDs (see above).</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions/<i>{k}</i></pre>
+				<div class="requestresponse">Response: array &lt;<a href="http://localhost:8081/api.html#actionResponseObject">playback response object</a>&gt;</div>
+				<p></p>
+				
+				<p>
+				</p><h2>Add actions to a clip</h2>
+				<p>Previously, you just had to set a name of the AppleScript that had to be triggered for the action. Now you need to indicate the template_id, which is the type of action to execute. Then in its parameters, you set the attributes for that action. These parameters will be different depending on the type of action selected. This is why, we give some examples of actions below.<br>
+				</p><pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "name" : string, <b>OPTIONAL</b>, <i>eg. "Execute AppleScript" -&gt; the name of the type of Action to execute</i>
+  "unique_id" : string, <b>OPTIONAL</b>, <i>The unique identifier of the action. eg. "0650A319-B0B7-4B06-957C-F81B38470548"</i>
+  "position" : number, <b>OPTIONAL</b>, <i>The position of the action in seconds. eg. 0</i> *
+  "position_timecode" : string, <b>OPTIONAL</b>, <i>The position of the action in timecode in HH:MM:SS:FF</i> *
+  "position_type" : string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position type<div class="enum-content"></div></div></i>
+  "template_id" : string, <i><div class="enum" data-enum="template_id">type of action<div class="enum-content"></div></div></i>
+  "parameters" : array, <b>OPTIONAL</b>, <i>will depend on the selected "template_id". See below for examples</i>
+}</pre>
+				<p>* When adding actions, you can specify 2 types of timing. Either using seconds (position), or using timecode (position_timecode). If you set both, it's the "position" (in seconds) that will be used.</p>
+				
+				
+				<h2>Some examples of actions to add</h2>
+				<p>As the parameter you will set will be different depending on the type of action, we are showing below some examples. But the easiest is for you to add actions in the OnTheAir Video playlist, and see the parameters that can be used.<br>
+				</p>
+				<h3>Add an AppleScript Action</h3>
+				<p>This actions will trigger an AppleScript (as the old actions). In parameters, you set the AppleScript to execute, and the "parameter" for that AppleScript (the string that can be used as a variable in the AppleScript).</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "position_timecode": string, <b>OPTIONAL</b> <i>eg. "00:00:45:00"</i>
+  "position_type": string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position_type<div class="enum-content"></div></div></i>
+  "template_id": "AppleScript:Execute AppleScript"
+  "parameters": {
+    "AppleScript Name": string, <i>The name of the project to start.</i>
+    "Parameter": string, <b>OPTIONAL</b>, <i>The string that will be passed to be used in the AppleScript</i>
+    "After Delay (ms)": number, <b>OPTIONAL</b>, <i>The delay to start the action in ms. eg. 0</i>
+  }
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#actionResponseObject">action response object</a></div>
+				<p></p>
+				
+				<h3>Add a Dynamic Graphics Overlay (DGO) action</h3>
+				<p>This actions will control CG projects. The difference with the DGO control below is that when using Actions, you can set a specific time for the action to be triggered. If you want to control the status of the projects for the whole length of a clip, you may want to look below, in the section to control the DGO on a "per clip" base</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "position_timecode": string, <b>OPTIONAL</b> <i>eg. "00:00:45:00"</i>
+  "position_type": string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position_type<div class="enum-content"></div></div></i>
+  "template_id": "Graphics:Start DGO Project"
+  "parameters": {
+    "Project Name": string, <i>The name of the project to start.</i>
+	"After Delay (ms)": number, <b>OPTIONAL</b>, <i>The delay to start the action in ms. eg. 0</i>
+  }
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#actionResponseObject">action response object</a></div>
+				<p></p>
+				
+				<h3>Add a SCTE trigger action</h3>
+				<p>This actions will output SCTE35 triggers in the SDI output (CC option required).</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "position_timecode": string, <b>OPTIONAL</b> <i>eg. "00:00:45:00"</i>
+  "position_type": string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position_type<div class="enum-content"></div></div></i>
+  "template_id": "SCTE:Send SCTE Trigger"
+  "parameters": {
+    "Splice Type": string, <i>The type of splice to do. <div class="enum" data-enum="splice_type">splice_type<div class="enum-content"></div></div> </i>
+    "Event ID": number, <b>OPTIONAL</b> <i>The number of the Event ID to. eg. 1</i>
+    "Program ID": number, <b>OPTIONAL</b> <i>The number of Program ID. eg. 1</i>
+    "Duration (ds)": number, <b>OPTIONAL</b> <i>The duration of the event in ds. eg. 0</i>
+    "After Delay (ms)": number, <b>OPTIONAL</b> <i>The delay to start the action in ms. eg. 0</i>
+  }
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#actionResponseObject">action response object</a></div>
+				<p></p>
+				
+				<h3>Add a Videohub Action</h3>
+				<p>This actions will control a Blackmagic-Design VideoHub.</p>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "position_timecode": string, <b>OPTIONAL</b> <i>eg. "00:00:45:00"</i>
+  "position_type": string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position_type<div class="enum-content"></div></div></i>
+  "template_id": "Routers:Videohub Switch"
+  "parameters": {
+    "IP Address": string, <i>The IP address of the VideoHub</i>
+    "Source": number, <b>OPTIONAL</b> <i>The number of the source to switch to. eg. 1</i>
+    "Destination": number, <b>OPTIONAL</b> <i>The number of the destination to control. eg. 1</i>
+    "After Delay (ms)": number, <b>OPTIONAL</b> <i>The delay to start the action in ms. eg. 0</i>
+  }
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#actionResponseObject">action response object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Modify an existing action on a clip</h2>
+				<p>Once you have actions on a clip, you can use a PUT request to modify it. Just pass the keys that you want to modify. So if you need to modify the position, just pass the position key. You can usen either the index or the UID of the action. The UID is recommended so you are sure of which action you are modifying even if their order change.
+				</p><pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions/<i>{k}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code expandable">{
+  "name" : string, <b>OPTIONAL</b>, <i>eg. "Execute AppleScript" -&gt; the name of the type of Action to execute</i>
+  "unique_id" : string, <b>OPTIONAL</b>, <i>The unique identifier of the action. eg. "0650A319-B0B7-4B06-957C-F81B38470548"</i>
+  "position" : number, <b>OPTIONAL</b>, <i>The position of the action in seconds. eg. 0</i> *
+  "position_timecode" : string, <b>OPTIONAL</b>, <i>The position of the action in timecode in HH:MM:SS:FF</i> *
+  "position_type" : string, <b>OPTIONAL</b>, <i><div class="enum" data-enum="position_type">position type<div class="enum-content"></div></div></i>
+  "template_id" : string, <i><div class="enum" data-enum="template_id">type of action<div class="enum-content"></div></div></i>
+  "parameters" : array, <b>OPTIONAL</b>, <i>will depend on the selected "template_id". See below for examples</i>
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#actionResponseObject">action response object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Delete actions</h2>
+				<h3>Delete a specific action of a clip</h3>
+				<pre class="code"><b>DELETE </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions/<i>{k}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h3>Delete all actions of a clip</h3>
+				<pre class="code"><b>DELETE </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{n}</i>/items/<i>{m}</i>/actions</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Run an Apple script action on the go</h2>
+				<p>The following request will run the mentionned apple script.</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/actions/<i>{name}</i>/run?parameter=<i>{parameter}</i></pre>
+				<div>Where :<br>
+					{name} is the name of the action (the one you see on your folder)<br>
+					{parameter} is the paramter you want to pass to that action</div><br>
+				<div class="warning"><b>Warning:</b> Use url percent encoded string if your action's name or parameter is using special characters (especially spaces) !</div><br>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+			</div>
+			
+			<!-- ---------DGO SECTION-------- -->
+			<h1 id="dgo">Control the Dynamic Graphics Overlays "per clip"</h1>
+			<div class="content" role="main">
+				<p>
+				In this section, you will see how to control the status of the DGO projects on a "per clip" base. In the OnTheAir Video preferences, you have to set a default status of a DGO project (running or stopped), which will be used if nothing is set on the clips. So it's very easy for example to have a project running by default, but then on a specific clip, to set the project to stop. This will be done for the whole duration of the clip. If you would like the project to start, or stop (or having its values modified) at a specific time in the clip, use actions instead.
+				</p><h2>Get the DGO projects:</h2>
+				<p>Here are examples of requests to get the available CG projects or a specific project designated by <i>{n}</i>:</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects</pre>
+				<div class="requestresponse">Response: array &lt;<a href="http://localhost:8081/api.html#cgProjectResponseObject">CG Project object</a>&gt;</div>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#cgProjectResponseObject">CG Project object</a></div>
+				
+				<a name="cgProjectResponseObject"></a>
+				<h4>CG Project object:</h4>
+				<pre class="code expandable">{
+  "unique_id" : string,
+  "formatted_elapsed_time" : string, <i>eg. "00:00:00"</i>
+  "formatted_duration_time" : string,
+  "formatted_remaining_time" : string,
+  "published" : boolean,
+  "display_name" : string, <i>eg. "AnalogClock"</i>
+  "display_mode" : string, <b>OPTIONAL</b> <i>eg. "1080i 59.94"</i>
+  "width" : number, <b>OPTIONAL</b> <i>eg. 1920</i>
+  "height" : number, <b>OPTIONAL</b> <i>eg. 1080</i>
+  "frames_per_second" : number, <b>OPTIONAL</b>
+  "metadata" : object,
+  "path" : string, <i>eg. "\/Applications\/OnTheAir CG\/Projects\/AnalogClock.cg3"</i>
+  "remaining" : number,
+  "elapsed" : number,
+  "duration" : number,
+  "status" : string <i> eg. "Loading"</i>
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Play/Pause/Stop a DGO project:</h2>
+				<h3>Play</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/play</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<h3>Pause</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/pause</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<h3>Stop</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/stop</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				
+				<h2>Additional commands:</h2>
+				<h3>Getting the thumbnail of a project</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/thumbnail</pre>
+				<div>Query parameters:</div>
+				<pre class="code no-collapse expandable">  "width"  <span class="mandatory">REQUIRED</span>
+  "height" <span class="mandatory">REQUIRED</span>
+				</pre>
+				<div class="requestresponse">Response: image/jpeg DATA or <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				
+				<h3>Close the project</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/close</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<h3>Scrub in the project</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/scrub</pre>
+				<div>Query parameters:</div>
+				<pre class="code">  "position" <span class="mandatory">REQUIRED</span></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+				
+				<p>
+				</p><h2>Get the CG items of a DGO project:</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items</pre>
+				<div class="requestresponse">Response: array &lt;<a href="http://localhost:8081/api.html#cgItemResponseObject">CG Item object</a>&gt;</div>
+				<a name="cgItemResponseObject"></a>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#cgItemResponseObject">CG Item object</a></div>
+				
+				<a name="cgItemResponseObject"></a>
+				<h4>CG Item object:</h4>
+				<pre class="code expandable">{
+  "unique_id" : string,
+  "type" : string,
+  "display_name" : string,
+  "frame" : number,
+  "begin_time" : number,
+  "hold_duration" : number,
+  "stay_forever" : boolean,
+  "is_locked" : boolean,
+  "is_hidden" : boolean,
+  "is_published" : boolean,
+  "default_value" : string
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Modify the items of a DGO project:</h2>
+				<p>Below are example of request that you can use to modify the items <i>{i}</i> of a DGO project <i>{n}</i>:</p>
+				<h3>Modifying the position and dimensions of an item</h3>
+				<p>You can modify the width, height and position of an item. The unit of the numbers below are in pixels, and the origin for the position is at the bottom left of the signal</p>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  "width": number, <b>OPTIONAL</b> <i>eg. "40"</i>,
+  "height": number, <b>OPTIONAL</b> <i>eg. "60"</i>,
+  "originX": number, <b>OPTIONAL</b> <i>eg. "600"</i>,
+  "originY": number, <b>OPTIONAL</b> <i>eg. "800"</i>,
+}</pre>
+				<h3>Hiding an item</h3>
+				<p>To hide an item, set the "hidden" property of an item to true, set it to false to unhide it.</p>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  "hidden": boolean,,
+}</pre>
+				<h3>Modifying text items</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  "text" : string, <b>OPTIONAL</b> <i>eg. "This is my new text"</i>
+}</pre>
+				
+				<h3>Modifying rich text items</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  "htmlText": "&lt;span style='font-family:Courier; color:red; font-size: 20;'&gt; 20px red text. &lt;/span&gt;
+  &lt;span style='font-family:Courier; color:blue; font-size: 50;'&gt; 50px blue text.&lt;/span&gt;"
+}</pre>
+				
+				<h3>Modifying shapes</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  "shape_type": string, <b>OPTIONAL</b> <i>eg. "rectangle"</i> - <div class="enum" data-enum="dgo_shape_type">Possible shape types<div class="enum-content"></div></div>,
+  "fill_type": string, <b>OPTIONAL</b> <i>eg. "linear_gradient"</i> - <div class="enum" data-enum="dgo_shape_fill_type">Possible shape fill types<div class="enum-content"></div></div>,
+  "stroke_width": number, <b>OPTIONAL</b> <i>eg. "5"</i>,
+  "stroke_color": string, <b>OPTIONAL</b> <i> eg. "0xFFFF00FF"</i> - RGBA 32-bit Representation (0xRRGGBBAA),
+  "fill_color": string, <b>OPTIONAL</b> <i>eg. "0x51127FFF"</i> - RGBA 32-bit Representation (0xRRGGBBAA),
+  "gradient_colors": array of strings, <b>OPTIONAL</b> <i>eg. ["0x143490FF","0x51127FFF","0xC4408FFF"]</i> - RGBA 32-bit Representations (0xRRGGBBAA) of the different colors of the gradient,
+  "gradient_locations": array of numbers, <b>OPTIONAL</b> <i>eg. [0,0.25,1]</i> - Number (from 0 to 1) representing the position of the gradient colors indicated in 'gradient_colors',
+  "stroke_line_cap": string, <b>OPTIONAL</b> <i>eg. "butt"</i> - <div class="enum" data-enum="dgo_shape_stroke_line_cap">Possible line cap styles<div class="enum-content"></div></div>,
+  "stroke_line_join": string, <b>OPTIONAL</b> <i>eg. "miter"</i> - <div class="enum" data-enum="dgo_shape_stroke_line_cap">Possible line join styles<div class="enum-content"></div></div>,
+  "stroke_pattern": string, <b>OPTIONAL</b> <i>eg. "10-20-50-20"</i> - The dash pattern, represented by units of dash and gaps. The example before will be: a dash of 10 units, gap 20 units, dash 50 units, gap 20 units, repeating,
+  "gradient_angle": number, <b>OPTIONAL</b> <i>eg. "45"</i>
+}</pre>
+				
+				<h3>Change Movies items</h3>
+				You can change the path of a movie item using either the full path or the relative path. When using the relative path, this means that the file used will be found relatively to the location of the project itself. This allows you then to move the project and media to another location, and this will continue to work. Of course this requires that the file be located in the same folder as the project.
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  <span class="file-only-property">"moviePath"</span> : url, <span class="mandatory">REQUIRED</span> <i>eg. using full path "/Volumes/Movies/MyMovie.mov"</i>
+}</pre><br>
+				<h3>Change Images items</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  <span class="file-only-property">"imagePath"</span> : url, <b>OPTIONAL</b> <i>eg. using relative path "../MyImage.jpeg"</i>
+}</pre><br>
+				<h3>Change Audio items</h3>
+				<pre class="code"><b>PUT </b><span class="hidden request-address">http://localhost:8081</span>/playback/cg_projects/<i>{n}</i>/items/<i>{i}</i></pre>
+				<div class="requestbody">Body:</div>
+				<pre class="code no-collapse expandable">{
+  <span class="file-only-property">"filePath"</span> : url, <b>OPTIONAL</b> <i>eg. using relative path "../MySound.AIFF"</i>
+}</pre>
+				<p></p>
+			</div>
+			
+			<!-----------SCHEDULER SECTION---------->
+			<h1 id="scheduler">Scheduler &amp; Control</h1>
+			<div class="content" role="main">
+				<p>
+				</p><h2>Start the schedule</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/start</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Stop the schedule</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/stop</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Resynchornize the schedule</h2>
+				This will force OTAV to go through the schedule again and start what is scheduled to be started. Note that this will interrupt playback very briefly to start a new clip.
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/resynchronize</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Get the list of playlists in the current schedule</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/playlists</pre>
+				<div class="requestresponse">Response: array &lt;<a href="http://localhost:8081/api.html#schedulerPlaylistResponseObject">scheduler's Playlist Object</a>&gt;</div>
+				<a name="schedulerPlaylistResponseObject"></a>
+				
+				<h4 id="schedulerPlaylistResponseObject">Scheduler's Playlist Object response:</h4>
+				<pre class="code expandable">{
+  "path" : string, <i>eg. "/Volumes/Movies/DailyPlaylist.xpls"</i>
+  "missing_items" : number,
+  "modification_date" : string, <i>eg. "Today at 09:35"</i>
+  "is_folderbased" : boolean,
+  "total_items" : number,
+  "duration" : number, <i>eg. 1802.00</i>
+  "duration_string" : string <i>eg. "00:30:02" HH:MM:SS</i>
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Open a playlist from the schedule</h2>
+				<p>The following request will open the playlist with specified path <i>{path}</i>. Once a scheduled playlist is open you can control it the way you do with opened playlists.</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/playlists?path=<i>{path}</i></pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#playlistResponseObject">playlist response object</a> in case of success, <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a> in case of open failure</div>
+				<p></p>
+				
+				<p>
+				</p><h2>Close a playlist</h2>
+				<p>The following request will close the playlist with specified ID.<br>
+				<b>Warning ! Use this command with care as some other remote user may no longer have access to the playlist after its close.</b>
+				</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playlists/<i>{id}</i>/close</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Get schedule's infos</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler?include_items=<i>1</i></pre>
+				<p>
+				You can retrieve several infos about the current scheduler. The query parameter "include_items" will allow you to get all the events of the scheduler. If you don't need them, don't pass it.
+				</p>
+				<div class="requestresponse">Response:</div>
+				<pre class="code expandable">{
+  "version" : string, <i>eg. "2.0"</i>
+  "is_enabled" : boolean,
+  "schedule_path" : string, <b>OPTIONAL</b> <i>eg. "/Users/admin/Documents/MySchedule.xml"</i>
+  "current_playlist": string, <b>OPTIONAL</b>
+  "next_playlist": string, <b>OPTIONAL</b>
+  "next_timed_playlist": string, <b>OPTIONAL</b>
+  "events": array &lt;<a href="http://localhost:8081/api.html#schedulerEventResponseObject">scheduler event response object</a>&gt; <b>OPTIONAL</b>
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2 id="schedulerEventResponseObject">Get schedule's events only</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/events</pre>
+				<a name="schedulerEventResponseObject"></a>
+				<h4>Scheduler's event object response:</h4>
+				<pre class="code expandable">[
+  {
+    "start_date_time" : date, <b>OPTIONAL *</b>, <i>eg. "2023-10-28 04:00:00"</i>
+    "playlists": [
+      {
+      "playlist_path": string, <i>eg. "/Volumes/Playlists/MyPlaylist.xpls"</i>
+      "should_shuffle": boolean,
+      "should_loop": boolean,
+      "should_randomize": boolean
+      },
+      {
+      "playlist_path": string, <i>eg. "/Volumes/Playlists/MyPlaylist.xpls"</i>
+      "should_shuffle": boolean,
+      "should_loop": boolean,
+      "should_randomize": boolean
+      }
+    ],
+    "is_enabled": boolean,
+    "repeating_event_start_time": number, <b>OPTIONAL **</b> <i>In seconds. eg. "3600"</i>
+    "should_loop": false,
+    "repeating_days": <b>OPTIONAL **</b>{
+      "monday": boolean, <i>TRUE if event repeats on Mondays</i>
+      "tuesday": boolean, <i>TRUE if event repeats on Tuesdays</i>
+      "wednesday": boolean, <i>TRUE if event repeats on Wednesdays</i>
+      "thursday": boolean, <i>TRUE if event repeats on Thursdays</i>
+      "friday": boolean, <i>TRUE if event repeats on Fridays</i>
+      "saturday": boolean,  <i>TRUE if event repeats on Saturdays</i>
+      "sunday": boolean, <i>TRUE if event repeats on Sundays</i>
+      },
+    "use_preset_theoretical_duration" : boolean, <i>TRUE if event has a preset duration</i>
+    "theoretical_duration_in_seconds" : number, <b>OPTIONAL ***</b>, <i>the preset duration in seconds of the event</i>
+    "finder_label_index" : number, <i>the index number of the color label eg. "0"</i>
+    "display_name" : string, <i>Name of the event eg. "My event"</i>
+    "is_repeating_event" : boolean
+  }
+]</pre>
+				<strong>*</strong> Only for events with a specific date (non repeating)
+				<strong>**</strong> Only for repeating events
+				<strong>***</strong> Only when "use_preset_theoretical_duration" = TRUE
+				<p></p>
+				<p>
+				</p><h2>Resynchronize the schedule</h2>
+				<p>The following request will ask the scheduler to resynchornize: stop playing what it is currently playing and start playing what was scheduled to play.</p>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/scheduler/resynchronize</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+			</div>
+			
+			<!-- ---------MEDIABROWSER SECTION-------- -->
+			<h1 id="mediabrowser">Media Browser</h1>
+			<div class="content" role="main">
+				<p>
+				</p><h2>Refresh media browser's content</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/media/refresh</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<h2>Refresh media browser's content</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/media/refresh</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<p></p>
+			</div>
+			
+			<!-- --------------Getting available transitions----------- -->
+			<h1 id="transitions">Working with Transitions</h1>
+			<div class="content" role="main">
+				<h2>Get available transitions</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/transitions</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#transitionsResponseObject">Transitions object</a></div>
+				<a name="transitionsResponseObject"></a>
+				<h4>Transitions response object:</h4>
+				<pre class="code expandable">[
+  {
+    "user_transition" : boolean <i>TRUE if it's a user custom transition</i>
+    "type" : string, <i> eg: "alphaMovie" (custom transition), "shader" (built-in transition)</i>
+    "unique_id" : string, <i> eg: "MyTransition"</i>
+    "name" : string, <i> eg: "MyTransition"</i>
+    "item_b_start_frame_offset" : number, <i>eg. 19.452766666666665</i>
+    "item_a_end_frame_offset" : number, <i>eg. 9.4761333333333333</i>
+    "duration" : number, <i>eg. 30.163466666666668</i>
+    "path" : string, <b>OPTIONAL *</b>, <i>"\/Volumes\/Transitions\MyTransition.mov"</i>
+    "should_premultiply_by_alpha" : boolean, <b>OPTIONAL *</b>, <i>TRUE to premultiply alpha</i>
+    "shader_animation_type" : string, <b>OPTIONAL **</b>, <i><div class="enum" data-enum="shader_animation_type">shader animation type<div class="enum-content"></div></div></i>
+    "shader_animation_option" : string, <b>OPTIONAL **</b>, <i><div class="enum" data-enum="shader_animation_option">shader animation option<div class="enum-content"></div></div></i>
+  }
+]</pre>
+				<p><strong>*</strong> Only for user transitions<br>
+				<strong>**</strong> Only for built-in transitions</p>
+				<p></p>
+			</div>
+			
+			<!-- ---------Subtitles SECTION-------- -->
+			<h1 id="subtitles">Working with Subtitles</h1>
+			<div class="content" role="main">
+				<p>
+				This allows you to control the subtitles that are going out of OTAV. This is very useful to provide live subtitling output for your program.
+				</p><h2>Get playback's subtitles</h2>
+				<pre class="code"><b>GET </b><span class="hidden request-address">http://localhost:8081</span>/playback/subtitles</pre>
+				<div class="requestresponse">Response: array &lt;<a href="http://localhost:8081/api.html#subtitleRecordResponseObject">subtitle record object</a>&gt;</div>
+				<br>
+				<a name="subtitleRecordResponseObject"></a>
+				<h4>Subtitle record response object:</h4>
+				<pre class="code expandable">{
+  "start_time_seconds": number,
+  "start_timecode": string,
+  "end_time_seconds": number,
+  "end_timecode": string,
+  "text_lines": array &lt;<a href="http://localhost:8081/api.html#subtitleLineResponseObject">subtitle line</a>&gt;
+}</pre>
+				<a name="subtitleLineResponseObject"></a>
+				<h4>Subtitle line response object:</h4>
+				<pre class="code expandable">{
+  "alignment": string, <i>eg. "center" see <div class="enum" data-enum="alignment_type">alignment type<div class="enum-content"></div></div></i>
+  "text": string
+}</pre>
+				<p></p>
+				
+				<p>
+				</p><h2>Adding subtitles to current playback</h2>
+				<pre class="code"><b>POST </b><span class="hidden request-address">http://localhost:8081</span>/playback/subtitles</pre>
+				
+				<a name="subtitleRecordObject"></a>
+				<h4>Subtitle record object:</h4>
+				<pre class="code expandable">{
+  "start_time_seconds": number, <span class="mandatory">REQUIRED</span>
+  "start_timecode": string, <b>OPTIONAL</b> <i>Format HH:MM:SS,ttt</i>
+  "end_time_seconds": number, <span class="mandatory">REQUIRED</span>
+  "end_timecode": string, <b>OPTIONAL</b> <i>Format HH:MM:SS,ttt</i>
+  "text_lines": array &lt;<a href="http://localhost:8081/api.html#subtitleLineObject">subtitle line</a>&gt; <span class="mandatory">REQUIRED</span>
+}</pre>
+				<a name="subtitleLineObject"></a>
+				<h4>Subtitle line object:</h4>
+				<pre class="code expandable">{
+  "color": string, <i>eg. "#ff00ff"</i> <b>OPTIONAL</b>
+  "alignment": string, <i><div class="enum" data-enum="alignment_type">alignment type<div class="enum-content"></div></div></i> <b>OPTIONAL</b>
+  "vertical_position": number, <i>eg. 11</i> <b>OPTIONAL</b>
+  "text": string
+}</pre>
+				<div class="requestresponse">Response: <a href="http://localhost:8081/api.html#commandResponseObject">Command Response Object</a></div>
+				<br>
+				<p>NOTE:<br>
+				<i>"end_time_seconds"</i> property override the <i>"end_timecode"</i> property.<br>
+				<i>"start_time_seconds"</i> property override the <i>"start_timecode"</i> property.
+				</p>
+				
+				<p></p>
+			</div>
+			
+			
+			<h1 id="more">For more information</h1>
+			<div class="content" role="main">
+				<div>
+					If you need more info or support about OnTheAir Video, you can find it on <a href="https://softron.zendesk.com/hc/en-us/sections/201275227-OnTheAir-Video-OnTheAir-Video-Express-3">our support desk</a>. And if you need additional information on the API and/or the websockets, submit a ticket and we'll be happy to guide you.
+				</div>
+			</div>
+	
+		
+		<div id="footer">
+			<a href="https://www.softron.tv/">Copyright © 2014-2025 Softron Media Services. All rights reserved.</a>
+		</div>
+		<div style="display: none;" class="enum-content">
+			<div id="enum__playback_mode">
+				<a name="playbackModeEnum"></a>
+				<ul>
+					<li>unknown</li>
+					<li>normal</li>
+					<li>stop</li>
+					<li>holdLastFrame</li>
+					<li>chain</li>
+					<li>loop</li>
+					<li>cueNext</li>
+				</ul>
+			</div>
+			<div id="enum__resize_mode">
+				<a name="resizeModeEnum"></a>
+				<ul>
+					<li>default</li>
+					<li>fill</li>
+					<li>letterbox</li>
+					<li>panAndScan</li>
+					<li>natural</li>
+				</ul>
+			</div>
+			<div id="enum__playback_status">
+				<a name="playbackStatusEnum"></a>
+				<ul>
+					<li>stopped</li>
+					<li>playing</li>
+					<li>paused</li>
+					<li>holdLastFrame</li>
+					<li>holdFirstFrame</li>
+				</ul>
+			</div>
+			<div id="enum__clip_type">
+				<a name="clipTypeEnum"></a>
+				<ol start="0">
+					<span class="file-only-property"><li>Video file</li></span>
+					<span class="file-only-property"><li>Audio file</li></span>
+					<span class="file-only-property"><li>Image file</li></span>
+					<span class="comment-only-property"><li>Comment</li></span>
+					<span class="live-only-property"><li>Live</li></span>
+					<span class="stream-only-property"><li>Stream</li></span>
+				</ol>
+			</div>
+			<div id="enum__closed_caption">
+				<a name="closedCaptionTypeEnum"></a>
+				<ol start="0">
+					<span><li>No Captions</li></span>
+					<span><li>CEA-608 (Embedded)</li></span>
+					<span><li>CEA-708 (Embedded)</li></span>
+					<span><li>OP47/Teletext (Embedded)</li></span>
+					<span><li>ATSC (Not Supported)</li></span>
+					<span><li>SRT (Sidecar File)</li></span>
+					<span><li>STL (Sidecar File)</li></span>
+				</ol>
+			</div>
+			<div id="enum__validation_status">
+				<a name="validationStatusEnum"></a>
+				<ul>
+					<li>"invalid"</li>
+					<li>"valid"</li>
+					<li>"offline"</li>
+					<li>"notYetValidated"</li>
+				</ul>
+			</div>
+			<div id="enum__validation_error">
+				<a name="validationErrorEnum"></a>
+				<ul>
+					<li>"none"</li>
+					<li>"fileNotFound"</li>
+					<li>"notAMovie"</li>
+					<li>"notSelfContained"</li>
+					<li>"notThreadSafe"</li>
+					<li>"codecNotFound"</li>
+					<li>"videoCodecNotSupported"</li>
+					<li>"noVideoTrack"</li>
+					<li>"noAudioTrack"</li>
+					<li>"invalidAudioTracks"</li>
+					<li>"fileFormatNotSupported"</li>
+					<li>"incorrectFrameRate"</li>
+					<li>"liveInputNotPresent"</li>
+					<li>"liveDisabled"</li>
+					<li>"liveCaptureNotStarted"</li>
+					<li>"liveInvalidInputFormat"</li>
+					<li>"liveNotSupportedInOTAVE"</li>
+					<li>"streamNotFound"</li>
+					<li>"streamNotSupportedInOTAVE"</li>
+					<li>"fileDurationTooShort"</li>
+					<li>"containsOfflineActions"</li>
+					<li>"unknown"</li>
+				</ul>
+			</div>
+			<div id="enum__position_type">
+				<ul>
+					<li>"beforeStart"</li>
+					<li>"fromStart"</li>
+					<li>"fromEnd"</li>
+					<li>"fromInPoint"</li>
+					<li>"fromOutPoint"</li>
+				</ul>
+			</div>
+			<div id="enum__template_id">
+				<ul>
+					<li>"Do Nothing"</li>
+					<li>"ATEM:ATEM Program Switch (by index)"</li>
+					<li>"ATEM:ATEM Program Switch (by name)"</li>
+					<li>"ATEM:Run Macro At Index"</li>
+					<li>"ATEM:Run Macro With Name"</li>
+					<li>"GPI:GPI Pulse Output"</li>
+					<li>"GPI:GPI Set Output ON"</li>
+					<li>"GPI:GPI Set Output OFF"</li>
+					<li>"Graphics:Start DGO Project"</li>
+					<li>"Graphics:Stop DGO Project"</li>
+					<li>"MIDI:Send MIDI Message"</li>
+					<li>"Playback:Cue Next Clip"</li>
+					<li>"Playback:Cue Selected Clip"</li>
+					<li>"Playback:Pause"</li>
+					<li>"Playback:Play Next Clip"</li>
+					<li>"Playback:Play Selected Clip"</li>
+					<li>"Playback:Re-Cue Current Clip"</li>
+					<li>"Playback:Re-Play Current Clip"</li>
+					<li>"Playback:Release Pause"</li>
+					<li>"Playback:Select Next Clip"</li>
+					<li>"Playback:Select Next Playlist"</li>
+					<li>"Playback:Select Prev. Clip"</li>
+					<li>"Playback:Space Bar"</li>
+					<li>"Playback:Stop"</li>
+					<li>"Routers:ProBel Switch"</li>
+					<li>"Routers:RossTalk"</li>
+					<li>"Routers:Videohub Switch"</li>
+					<li>"SCTE:Send SCTE Trigger"</li>
+				</ul>
+			</div>
+			<div id="enum__splice_type">
+				<ul>
+					<li>"Cancel"</li>
+					<li>"Start Normal"</li>
+					<li>"End Normal"</li>
+					<li>"Start Immediate"</li>
+					<li>"End Immediate"</li>
+				</ul>
+			</div>
+			<div id="enum__parameter_type">
+				<ul>
+					<li>0 (None)</li>
+					<li>1 (File Path)</li>
+					<li>2 (String)</li>
+					<li>3 (Integer Number)</li>
+					<li>4 (Double Number)</li>
+					<li>5 (Multiple Values)</li>
+					<li>6 (Blob)</li>
+					<li>7 (Boolean)</li>
+				</ul>
+			</div>
+			<div id="enum__alignment_type">
+				<ul>
+					<li>"left"</li>
+					<li>"right"</li>
+					<li>"center"</li>
+					<li>"unchanged"</li>
+				</ul>
+			</div>
+			<div id="enum__dgo_shape_type">
+				<ul>
+					<li>"rectangle"</li>
+					<li>"rounded_rectangle"</li>
+					<li>"ellipse"</li>
+				</ul>
+			</div>
+			<div id="enum__dgo_shape_fill_type">
+				<ul>
+					<li>"clear_color"</li>
+					<li>"color"</li>
+					<li>"linear_gradient"</li>
+					<li>"radial_gradient"</li>
+				</ul>
+			</div>
+			<div id="enum__dgo_shape_stroke_line_cap">
+				<ul>
+					<li>"butt"</li>
+					<li>"round"</li>
+					<li>"square"</li>
+				</ul>
+			</div>
+			<div id="enum__dgo_shape_stroke_line_join">
+				<ul>
+					<li>"miter"</li>
+					<li>"round"</li>
+					<li>"bevel"</li>
+				</ul>
+			</div>
+			<div id="enum__shader_animation_type">
+				<ul>
+					<li>CrossFade</li>
+					<li>FadeInFadeOut</li>
+					<li>Push</li>
+					<li>WipeColumns</li>
+					<li>WipeLines</li>
+					<li>WipeColumns</li>
+					<li>WipeSingleTriangle</li>
+					<li>WipeDualTriangles</li>
+					<li>WipeCircle</li>
+					<li>WipeDiagonalFromCenter</li>
+					<li>WipeCornersInDiagonal</li>
+					<li>WipeSingleBox</li>
+					<li>WipeCornersInFourBoxes</li>
+					<li>WipeSingleBox</li>
+				</ul>
+			</div>
+			<div id="enum__shader_animation_option">
+				<ul>
+					<li>none</li>
+					<li>bottom</li>
+					<li>left</li>
+					<li>right</li>
+					<li>top</li>
+					<li>topRight</li>
+					<li>topLeft</li>
+					<li>bottomRight</li>
+					<li>bottomLeft</li>
+					<li>left+right</li>
+					<li>top+bottom</li>
+					<li>topCenter</li>
+					<li>middleCenter</li>
+					<li>middleRight</li>
+					<li>middleLeft</li>
+					<li>bottomCenter</li>
+				</ul>
+			</div>
+		</div>
+
+</div></body><!--! end of #container --></html>
