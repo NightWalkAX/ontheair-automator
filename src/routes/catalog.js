@@ -70,6 +70,7 @@ router.get('/', (req, res) => {
       id: r.id, name: r.name, display_name: r.display_name || r.name,
       raw_name: r.name, subject: r.subject, chapter: r.chapter, duration: r.duration,
       is_filler: !!r.is_filler, has_override: !!r.has_override,
+      file_path: r.file_path, show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
     });
   }
   const out = [...groups.values()].map((g) => ({ ...g, shows: [...g.shows.values()] }));
@@ -129,6 +130,16 @@ router.post('/bulk', (req, res) => {
         // ids arrive in the desired play order → chapters 1..N (gathers free
         // seasons into one continuous show when combined with set-subject).
         ids.forEach((id, i) => db.prepare('UPDATE Resource SET chapter = ? WHERE id = ?').run(i + 1, id));
+        break;
+      }
+      case 'set-chapters': {
+        // Explicit per-resource chapter assignment from the "Fix order" editor:
+        // entries = [{ id, chapter }]. Lets the operator correct a mis-detected
+        // order by typing the numbers directly.
+        const entries = Array.isArray(req.body.entries) ? req.body.entries : [];
+        for (const e of entries) {
+          db.prepare('UPDATE Resource SET chapter = ? WHERE id = ?').run(Number(e.chapter) | 0, Number(e.id));
+        }
         break;
       }
       case 'set-showtype': {
@@ -205,4 +216,14 @@ router.post('/reset', (req, res) => {
     }
   });
   res.json({ ok: true, count: ids.length });
+});
+
+// DELETE /api/catalog/resource/:id — remove a catalog row (e.g. a duplicate).
+// Only drops the DB row (and its ScheduleItem/PlayHistory/override via cascade);
+// the file on disk is untouched. A re-scan of the folder would re-add it.
+router.delete('/resource/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const info = db.prepare('DELETE FROM Resource WHERE id = ?').run(id);
+  if (!info.changes) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 });

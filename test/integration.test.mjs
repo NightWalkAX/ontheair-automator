@@ -513,6 +513,31 @@ test('catalog editor: bulk merge + renumber gathers clips into one continuous sh
   assert.ok(reg.includes('Life Sciences'));
 });
 
+test('catalog editor: GET includes file_path, set-chapters fixes order, DELETE removes a clip', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const cat = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const someEp = cat.groups.flatMap((g) => g.shows).flatMap((s) => s.episodes)[0];
+  assert.ok(someEp.file_path && someEp.file_path.includes('/'), 'episodes carry file_path for the browser tree');
+
+  // Fix order: assign explicit chapters to two Math clips (reversed).
+  const math = (await j('GET', `/api/resources?channel_id=${c1}&subject=Math`)).data.sort((a, b) => a.chapter - b.chapter);
+  const [a, b] = math;
+  const entries = [{ id: a.id, chapter: 50 }, { id: b.id, chapter: 40 }];
+  const fix = await j('POST', '/api/catalog/bulk', { ids: entries.map((e) => e.id), op: 'set-chapters', entries });
+  assert.equal(fix.status, 200);
+  assert.equal(db.prepare('SELECT chapter FROM Resource WHERE id=?').get(a.id).chapter, 50);
+  assert.equal(db.prepare('SELECT chapter FROM Resource WHERE id=?').get(b.id).chapter, 40);
+
+  // Delete a clip (duplicate case) — DB row gone, file untouched (nothing to check on disk).
+  const before = db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND subject=?').get(c1, 'Math').c;
+  const del = await j('DELETE', `/api/catalog/resource/${a.id}`);
+  assert.equal(del.status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM Resource WHERE id=?').get(a.id).c, 0, 'resource row removed');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND subject=?').get(c1, 'Math').c, before - 1);
+  const del404 = await j('DELETE', `/api/catalog/resource/${a.id}`);
+  assert.equal(del404.status, 404, 'deleting a missing clip is a 404');
+});
+
 test('catalog editor: mark/unmark filler toggles is_filler and drops series on mark', async () => {
   const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
   const hist = (await j('GET', `/api/resources?channel_id=${c1}&subject=History`)).data.slice(0, 2);
