@@ -87,8 +87,11 @@ export function templateSeries(template, channelId = template.channel_id) {
 
 /** Scheduling rule for a series from its show type + serial flag. */
 function ruleFor(showCode, isSerial) {
-  if (showCode === 'tv_shows') return 'tv';   // Sunday latest / weekday cooldown
+  // The explicit "serial" toggle wins over everything: a show marked serial
+  // plays in strict chapter order from its cursor, honouring resets. This is
+  // why a TV series set serial no longer gets stuck on latest-added/cooldown.
   if (isSerial) return 'serial';              // sequential chapter progression
+  if (showCode === 'tv_shows') return 'tv';   // TV default: Sunday latest / weekday cooldown
   return 'cooldown';                          // random movie/documentary pick
 }
 

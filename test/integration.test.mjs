@@ -799,3 +799,28 @@ test('reset-cursors: next-ups go back to episode 1 and scheduling honours it', a
   const firstMath = (await j('GET', `/api/blocks/${mon.id}`)).data.items.find((it) => it.subject === 'Math');
   assert.equal(firstMath.chapter, lo, 'scheduler selects episode 1 after a reset');
 });
+
+test('serial toggle overrides the TV rule: a serial TV show plays in order, not latest-added', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const tv = stId('tv_shows');
+  const ins = db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler, approved, channel_id, show_type_id, added_at)
+    VALUES (?, ?, 600, 'SeqTV', ?, 0, 1, ?, ?, ?)`);
+  ins.run('e1', '/seqtv/e1.mov', 1, c1, tv, '2026-01-01T00:00:00.000Z');
+  ins.run('e2', '/seqtv/e2.mov', 2, c1, tv, '2026-02-01T00:00:00.000Z');
+  ins.run('e3', '/seqtv/e3.mov', 3, c1, tv, '2026-03-01T00:00:00.000Z'); // newest → old TV rule would pick this on Sunday
+
+  await j('PUT', `/api/channels/${c1}/series`, { series: [{ subject: 'SeqTV', is_serial: 1, is_active: 1, show_type_id: tv, play_order: 99 }] });
+  await j('PUT', `/api/channels/${c1}/series/${encodeURIComponent('SeqTV')}/cursor`, { chapter: 1 });
+  await j('POST', '/api/blocks/templates', {
+    channels: [c1], name: 'Sunday Serial', weekdays: ['Sun'],
+    slots: [{ start_time: '10:00', end_time: '10:30' }], series: ['SeqTV'],
+  });
+
+  await j('POST', '/api/blocks/generate?weekStart=2027-01-03'); // a Sunday
+  const view = (await j('GET', '/api/blocks?week=2027-01-03')).data;
+  const block = view.blocks.find((b) => b.channel_id === c1 && !b.is_mirror && b.template_name === 'Sunday Serial');
+  assert.ok(block, 'Sunday Serial block generated');
+  const seq = (await j('GET', `/api/blocks/${block.id}`)).data.items.filter((it) => it.subject === 'SeqTV');
+  assert.ok(seq.length, 'block contains the serial TV show');
+  assert.equal(seq[0].chapter, 1, 'serial TV show plays episode 1 (cursor), not the latest-added episode 3');
+});
