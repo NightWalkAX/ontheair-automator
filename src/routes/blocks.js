@@ -2,7 +2,7 @@
 // Backs the admin review UI (Module B).
 
 import { Router } from 'express';
-import { db } from '../db.js';
+import { db, withTx } from '../db.js';
 import { loadConfig } from '../config.js';
 import { blockDurationSeconds, generateWeek, populateBlock } from '../services/scheduling.js';
 
@@ -55,10 +55,15 @@ function recordBlockPlays(v) {
 
   const insPlay = db.prepare('INSERT INTO PlayHistory (resource_id, channel_id, played_at) VALUES (?, ?, ?)');
   const stampFiller = db.prepare('UPDATE Resource SET last_used_at = ? WHERE id = ?');
+  // Advance the cursor only for genuinely sequential (serial-rule) series. TV
+  // shows are is_serial by default but are picked by the latest-added/cooldown
+  // rule, not chapter progression, so bumping their cursor to (lastChapter+1)
+  // would wrap the series — exclude the tv_shows show type here.
   const bumpCursor = db.prepare(`
     UPDATE ChannelSeries SET cursor_chapter = ?
     WHERE channel_id = ? AND subject = ? AND is_serial = 1
       AND (cursor_chapter IS NULL OR cursor_chapter < ?)
+      AND show_type_id NOT IN (SELECT id FROM ShowType WHERE code = 'tv_shows')
   `);
 
   const serialMax = new Map(); // subject -> highest chapter aired in this block
@@ -322,6 +327,82 @@ router.put('/:id/items', (req, res) => {
   );
   tx.run(id);
   items.forEach((it, idx) => ins.run(id, it.resource_id, idx, it.is_manual_override ? 1 : 0));
+
+  res.json(validateBlock(id));
+});
+
+// POST /api/blocks/:id/items/:itemId/set-episode { chapter }
+// Correct which episode of a serial show plays in this block, then propagate:
+// (1) swap the item to the chosen chapter (marked manual), (2) set the series
+// cursor so future generations continue from there, (3) regenerate later
+// still-draft blocks this week for the same channel so their ordering follows.
+router.post('/:id/items/:itemId/set-episode', (req, res) => {
+  const id = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  const chapter = Number(req.body?.chapter);
+  if (!Number.isFinite(chapter)) return res.status(400).json({ error: 'chapter is required' });
+
+  const block = db.prepare(`
+    SELECT sb.*, COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           COALESCE(s.slot_order, 0) AS slot_order
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE sb.id = ?
+  `).get(id);
+  if (!block) return res.status(404).json({ error: 'not found' });
+  if (block.slot_order > 0) {
+    return res.status(409).json({ error: 'this is a mirrored airing — edit its primary airing instead' });
+  }
+
+  const item = db.prepare(`
+    SELECT si.id, r.subject FROM ScheduleItem si
+    JOIN Resource r ON r.id = si.resource_id
+    WHERE si.id = ? AND si.block_id = ?
+  `).get(itemId, id);
+  if (!item) return res.status(404).json({ error: 'item not found in this block' });
+  if (item.subject == null) return res.status(400).json({ error: 'this item is not part of a series' });
+
+  const target = db.prepare(
+    'SELECT id FROM Resource WHERE channel_id = ? AND subject = ? AND chapter = ? AND is_filler = 0'
+  ).get(block.channel_id, item.subject, chapter);
+  if (!target) return res.status(404).json({ error: `no chapter ${chapter} for “${item.subject}”` });
+
+  try {
+  withTx(() => {
+    // (1) swap this block's item and mark it a manual override.
+    db.prepare(
+      'UPDATE ScheduleItem SET resource_id = ?, is_manual_override = 1 WHERE id = ?'
+    ).run(target.id, itemId);
+
+    // (2) set the series cursor (ensure a row exists first), so future
+    // generations continue from the corrected episode.
+    db.prepare(`
+      INSERT INTO ChannelSeries (channel_id, subject, is_serial, is_active, play_order)
+      VALUES (?, ?, 1, 1, (SELECT COALESCE(MAX(play_order), -1) + 1 FROM ChannelSeries WHERE channel_id = ?))
+      ON CONFLICT(channel_id, subject) DO NOTHING
+    `).run(block.channel_id, item.subject, block.channel_id);
+    db.prepare(
+      'UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?'
+    ).run(chapter, block.channel_id, item.subject);
+
+    // (3) regenerate later still-draft blocks this week (same channel). nextChapter
+    // floors at the cursor and unions earlier-dated items, so they roll forward
+    // from here. Bounded to the 7-day generation window.
+    const later = db.prepare(`
+      SELECT id FROM ScheduledBlock
+      WHERE status = 'draft'
+        AND COALESCE(channel_id, (SELECT channel_id FROM BlockTemplate WHERE id = template_id)) = ?
+        AND target_date > ? AND target_date <= date(?, '+6 days')
+    `).all(block.channel_id, block.target_date, block.target_date);
+    for (const b of later) {
+      const full = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(b.id);
+      populateBlock(full);
+    }
+  });
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
 
   res.json(validateBlock(id));
 });

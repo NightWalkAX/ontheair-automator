@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
 import { mountShare, isMounted } from '../services/smbMount.js';
-import { scanAll, scanMediaRoot } from '../services/ingestion.js';
+import { scanAll, scanMediaRoot, cloneScannedResources } from '../services/ingestion.js';
 
 export const router = Router();
 
@@ -90,12 +90,18 @@ router.post('/roots', (req, res) => {
   }
   const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
   const created = [];
+  let clonedResources = 0;
   try {
     for (const cid of channels) {
       const info = ins.run(cid, Number(show_type_id), abs);
-      if (info.changes) created.push({ id: info.lastInsertRowid, channel_id: cid, show_type_id: Number(show_type_id), path: abs });
+      if (info.changes) {
+        created.push({ id: info.lastInsertRowid, channel_id: cid, show_type_id: Number(show_type_id), path: abs });
+        // Reuse an already-scanned copy of this folder from another channel so a
+        // re-add doesn't force a fresh ffprobe pass. No-op if never scanned yet.
+        clonedResources += cloneScannedResources(cid, Number(show_type_id), abs);
+      }
     }
-    res.status(201).json({ ok: true, created });
+    res.status(201).json({ ok: true, created, clonedResources });
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

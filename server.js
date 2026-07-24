@@ -16,6 +16,7 @@ import { router as channels } from './src/routes/channels.js';
 import { router as series } from './src/routes/series.js';
 import { router as showtypes } from './src/routes/showtypes.js';
 import { router as resources } from './src/routes/resources.js';
+import { router as catalog } from './src/routes/catalog.js';
 import { router as media } from './src/routes/media.js';
 import { router as blocks } from './src/routes/blocks.js';
 import { router as otav } from './src/routes/otav.js';
@@ -31,6 +32,7 @@ app.use('/api/channels', channels);
 app.use('/api/channels', series); // /:id/series* endpoints
 app.use('/api/showtypes', showtypes);
 app.use('/api/resources', resources);
+app.use('/api/catalog', catalog);
 app.use('/api/media', media);
 app.use('/api/blocks', blocks);
 app.use('/api/otav', otav);

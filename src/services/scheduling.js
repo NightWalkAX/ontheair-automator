@@ -319,6 +319,30 @@ function resyncMirrors(template_id, target_date, channelId, primaryBlockId) {
 }
 
 /**
+ * Interleave fillers around main content. Produces one gap before each main item
+ * and one trailing gap (main.length + 1 gaps), dealing fillers as evenly as
+ * possible with any remainder placed in the leading gaps, preserving both the
+ * main order and the filler order. Returns the merged resource sequence.
+ */
+export function spreadFillers(main, fillers) {
+  if (!main.length) return [...fillers];
+  if (!fillers.length) return [...main];
+  const gaps = main.length + 1;
+  const base = Math.floor(fillers.length / gaps);
+  let extra = fillers.length % gaps; // remainder spread over the leading gaps
+  const out = [];
+  let fi = 0;
+  for (let g = 0; g < gaps; g++) {
+    let take = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+    for (let k = 0; k < take && fi < fillers.length; k++) out.push(fillers[fi++]);
+    if (g < main.length) out.push(main[g]);
+  }
+  while (fi < fillers.length) out.push(fillers[fi++]); // safety: flush any remainder
+  return out;
+}
+
+/**
  * Populate a single ScheduledBlock. A primary airing (slot_order 0) picks main
  * content by cycling its series, fits fillers, preserves manual overrides, and
  * then re-syncs its mirror airings. A secondary airing strict-mirrors its
@@ -366,8 +390,11 @@ export function populateBlock(block) {
     'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, ?, 0)'
   );
   let order = kept.length;
-  for (const r of main) insert.run(block.id, r.id, order++);
-  for (const r of fillers) insert.run(block.id, r.id, order++);
+  // Spread fillers across the block instead of clumping them at the end: one
+  // gap before each main item and one after the last (main.length + 1 gaps),
+  // distributing fillers as evenly as possible (remainder to the leading gaps)
+  // while preserving filler order. With no main content, fillers just stream in.
+  for (const r of spreadFillers(main, fillers)) insert.run(block.id, r.id, order++);
 
   // Keep secondary airings identical to what we just built (same channel).
   resyncMirrors(template.id, block.target_date, channelId, block.id);

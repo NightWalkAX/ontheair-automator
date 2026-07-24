@@ -28,11 +28,14 @@ const { router: channels } = await import('../src/routes/channels.js');
 const { router: seriesRouter } = await import('../src/routes/series.js');
 const { router: showtypes } = await import('../src/routes/showtypes.js');
 const { router: resources } = await import('../src/routes/resources.js');
+const { router: catalog } = await import('../src/routes/catalog.js');
 const { router: media } = await import('../src/routes/media.js');
 const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
-const { fitFillers } = await import('../src/services/scheduling.js');
+const { fitFillers, spreadFillers } = await import('../src/services/scheduling.js');
+const { cloneScannedResources } = await import('../src/services/ingestion.js');
+const { latestEpisode } = await import('../src/services/playHistory.js');
 const { startFakeOtav } = await import('./fake-otav.mjs');
 
 let server, base, fakeOtav, mediaDir;
@@ -81,6 +84,7 @@ before(async () => {
   app.use('/api/channels', seriesRouter);
   app.use('/api/showtypes', showtypes);
   app.use('/api/resources', resources);
+  app.use('/api/catalog', catalog);
   app.use('/api/media', media);
   app.use('/api/blocks', blocks);
   app.use('/api/otav', otav);
@@ -398,4 +402,140 @@ test('deleting a media root drops its cataloged resources', async () => {
   assert.equal(after, 0, 'all docs resources dropped on root delete');
   // Lessons/movies/fillers survive (different show type).
   assert.ok(db.prepare('SELECT COUNT(*) c FROM Resource WHERE channel_id=? AND subject=?').get(c1, 'Math').c === 6, 'unrelated resources untouched');
+});
+
+// ---- Newer feature coverage ------------------------------------------------
+
+test('spreadFillers distributes fillers before, between, and after main items', () => {
+  const main = [{ id: 'M1' }, { id: 'M2' }, { id: 'M3' }];
+  const fillers = [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }, { id: 'f4' }];
+  const out = spreadFillers(main, fillers).map((r) => r.id);
+  // 4 fillers over 4 gaps → one per gap: f, M1, f, M2, f, M3, f
+  assert.deepEqual(out, ['f1', 'M1', 'f2', 'M2', 'f3', 'M3', 'f4']);
+  // A leading filler (before the first main) and a trailing filler (after last).
+  assert.ok(out[0].startsWith('f'), 'a filler leads the block');
+  assert.ok(out[out.length - 1].startsWith('f'), 'a filler trails the block');
+  // Main order and filler order are both preserved.
+  assert.deepEqual(out.filter((x) => x[0] === 'M'), ['M1', 'M2', 'M3']);
+  assert.deepEqual(out.filter((x) => x[0] === 'f'), ['f1', 'f2', 'f3', 'f4']);
+  // Even split across gaps (2 main → 3 gaps), one filler each.
+  const out2 = spreadFillers([{ id: 'M1' }, { id: 'M2' }], [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }]).map((r) => r.id);
+  assert.deepEqual(out2, ['f1', 'M1', 'f2', 'M2', 'f3']);
+  // Remainder goes to the leading gaps: 4 fillers → 3 gaps = [2,1,1].
+  const out3 = spreadFillers([{ id: 'M1' }, { id: 'M2' }], [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }, { id: 'f4' }]).map((r) => r.id);
+  assert.deepEqual(out3, ['f1', 'f2', 'M1', 'f3', 'M2', 'f4']);
+  // Degenerate cases.
+  assert.deepEqual(spreadFillers([], [{ id: 'f1' }]).map((r) => r.id), ['f1']);
+  assert.deepEqual(spreadFillers([{ id: 'M1' }], []).map((r) => r.id), ['M1']);
+});
+
+test('populated block interleaves fillers around main content', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const gen = await j('POST', '/api/blocks/generate?weekStart=2026-10-05'); // Monday
+  assert.equal(gen.status, 200);
+  const view = (await j('GET', '/api/blocks?week=2026-10-05')).data;
+  const primary = view.blocks.find((b) => b.channel_id === c1 && !b.is_mirror && b.template_name === 'Morning Lessons');
+  assert.ok(primary, 'a lessons block was generated');
+  const items = (await j('GET', `/api/blocks/${primary.id}`)).data.items;
+  const fillerIdx = items.map((it, i) => (it.is_filler ? i : -1)).filter((i) => i >= 0);
+  const mainIdx = items.map((it, i) => (!it.is_filler ? i : -1)).filter((i) => i >= 0);
+  if (fillerIdx.length && mainIdx.length) {
+    // At least one filler sits before the last main item (i.e. not all clumped at the tail).
+    assert.ok(fillerIdx.some((f) => f < Math.max(...mainIdx)), 'fillers are not all at the end');
+  }
+});
+
+test('clone on re-add: a scanned folder assigned to a new channel needs no re-scan', async () => {
+  const ch = await j('POST', '/api/channels', { name: 'Channel 3', api_ip: '127.0.0.1', api_port: fakeOtav.port });
+  const ch3 = ch.data.id;
+  const lessonsPath = join(mediaDir, 'lessons');
+  // Simulate the POST /roots assignment path: register the root, then clone.
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch3, stId('lessons'), lessonsPath);
+  const cloned = cloneScannedResources(ch3, stId('lessons'), lessonsPath);
+  assert.ok(cloned >= 18, `cloned all lesson chapters (${cloned})`);
+  const ch3Math = (await j('GET', `/api/resources?channel_id=${ch3}&subject=Math`)).data;
+  assert.equal(ch3Math.length, 6, 'channel 3 has Math without a fresh ffprobe scan');
+  // Series registered for the new channel too.
+  const reg = (await j('GET', `/api/channels/${ch3}/series`)).data.map((s) => s.subject).sort();
+  assert.ok(reg.includes('Math') && reg.includes('History') && reg.includes('Biology'));
+});
+
+test('latestEpisode returns the newest-added episode, not the highest chapter', () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const ins = db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler, channel_id, show_type_id, added_at)
+    VALUES (?, ?, 600, 'TVNews', ?, 0, ?, ?, ?)`);
+  // Chapter 1 is the most recently added; chapter 3 is the oldest.
+  ins.run('news1', '/tv/news1.mov', 1, c1, stId('tv_shows'), '2026-03-03T00:00:00.000Z');
+  ins.run('news2', '/tv/news2.mov', 2, c1, stId('tv_shows'), '2026-02-02T00:00:00.000Z');
+  ins.run('news3', '/tv/news3.mov', 3, c1, stId('tv_shows'), '2026-01-01T00:00:00.000Z');
+  const pick = latestEpisode(c1, 'TVNews');
+  assert.equal(pick.chapter, 1, 'newest added_at wins over highest chapter');
+});
+
+test('catalog editor: display-name override is non-destructive and resettable', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const cat = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const math = cat.groups.flatMap((g) => g.shows).find((s) => s.subject === 'Math');
+  assert.ok(math, 'Math show present in catalog');
+  const ep = math.episodes[0];
+  const serverName = db.prepare('SELECT name FROM Resource WHERE id=?').get(ep.id).name;
+
+  const put = await j('PUT', `/api/catalog/resource/${ep.id}`, { display_name: 'Álgebra — Clase 1' });
+  assert.equal(put.status, 200);
+  const cat2 = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const ep2 = cat2.groups.flatMap((g) => g.shows).find((s) => s.subject === 'Math').episodes.find((e) => e.id === ep.id);
+  assert.equal(ep2.display_name, 'Álgebra — Clase 1', 'display name overridden');
+  assert.equal(ep2.has_override, true);
+  assert.equal(db.prepare('SELECT name FROM Resource WHERE id=?').get(ep.id).name, serverName, 'server name untouched');
+
+  const reset = await j('POST', '/api/catalog/reset', { ids: [ep.id] });
+  assert.equal(reset.status, 200);
+  const cat3 = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const ep3 = cat3.groups.flatMap((g) => g.shows).find((s) => s.subject === 'Math').episodes.find((e) => e.id === ep.id);
+  assert.equal(ep3.display_name, serverName, 'reset falls back to server name');
+  assert.equal(ep3.has_override, false);
+});
+
+test('catalog editor: bulk merge + renumber gathers clips into one continuous show', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const bio = (await j('GET', `/api/resources?channel_id=${c1}&subject=Biology`)).data.sort((a, b) => a.chapter - b.chapter);
+  const ids = bio.map((r) => r.id);
+  const merge = await j('POST', '/api/catalog/bulk', { ids, op: 'set-subject', subject: 'Life Sciences' });
+  assert.equal(merge.status, 200, JSON.stringify(merge.data));
+  const renum = await j('POST', '/api/catalog/bulk', { ids, op: 'renumber' });
+  assert.equal(renum.status, 200);
+  const merged = (await j('GET', `/api/resources?channel_id=${c1}&subject=${encodeURIComponent('Life Sciences')}`)).data
+    .sort((a, b) => a.chapter - b.chapter);
+  assert.equal(merged.length, ids.length, 'all clips moved under the new show');
+  assert.deepEqual(merged.map((r) => r.chapter), merged.map((_, i) => i + 1), 'chapters are 1..N');
+  // The new show is registered in the channel series registry.
+  const reg = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
+  assert.ok(reg.includes('Life Sciences'));
+});
+
+test('set-episode: correct an episode from the schedule view, propagate cursor + later drafts', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const gen = await j('POST', '/api/blocks/generate?weekStart=2026-11-02'); // Monday
+  assert.equal(gen.status, 200);
+  const view = (await j('GET', '/api/blocks?week=2026-11-02')).data;
+  const mon = view.blocks.find((b) => b.channel_id === c1 && !b.is_mirror && b.target_date === '2026-11-02' && b.template_name === 'Morning Lessons');
+  assert.ok(mon, 'Monday lessons draft exists');
+  const detail = (await j('GET', `/api/blocks/${mon.id}`)).data;
+  const mathItem = detail.items.find((it) => it.subject === 'Math');
+  assert.ok(mathItem, 'block has a Math item');
+
+  const targetCh = 3;
+  const targetRes = db.prepare('SELECT id FROM Resource WHERE channel_id=? AND subject=? AND chapter=?').get(c1, 'Math', targetCh);
+  const set = await j('POST', `/api/blocks/${mon.id}/items/${mathItem.id}/set-episode`, { chapter: targetCh });
+  assert.equal(set.status, 200, JSON.stringify(set.data));
+
+  const after = (await j('GET', `/api/blocks/${mon.id}`)).data.items.find((it) => it.id === mathItem.id);
+  assert.equal(after.resource_id, targetRes.id, 'block item swapped to the chosen chapter');
+  assert.equal(after.is_manual_override, 1, 'swap marked as a manual override');
+  const cursor = (await j('GET', `/api/channels/${c1}/series/${encodeURIComponent('Math')}/cursor`)).data;
+  assert.equal(cursor.cursor, targetCh, 'series cursor moved to the corrected episode');
+  // Tuesday's still-draft block was regenerated and still fits.
+  const tue = (await j('GET', '/api/blocks?week=2026-11-02')).data.blocks
+    .find((b) => b.channel_id === c1 && !b.is_mirror && b.target_date === '2026-11-03' && b.template_name === 'Morning Lessons');
+  if (tue) assert.ok(tue.fits, 'later draft still fits after regeneration');
 });

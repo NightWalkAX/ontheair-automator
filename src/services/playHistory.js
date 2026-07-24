@@ -109,14 +109,17 @@ export function randomWithCooldown(channelId, candidates, asOfDate) {
 }
 
 /**
- * TV episodes on Sundays — the latest-added episode for a subject/channel.
- * "Latest" = highest chapter, tie-broken by newest added_at.
+ * TV episodes on Sundays — the latest-*added* episode for a subject/channel per
+ * SEED §4. "Latest" = most recently ingested (added_at), NOT the highest chapter
+ * number — ordering by chapter would always surface the final episode of the
+ * series as the "start", which is the bug this fixes. added_at is the file mtime
+ * stamped at scan time; id is the tiebreaker for equal mtimes.
  */
 export function latestEpisode(channelId, subject) {
   return db.prepare(`
     SELECT * FROM Resource
     WHERE channel_id = ? AND subject = ? AND is_filler = 0
-    ORDER BY chapter DESC, added_at DESC
+    ORDER BY added_at DESC, id DESC
     LIMIT 1
   `).get(channelId, subject) || null;
 }

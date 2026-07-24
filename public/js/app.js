@@ -133,6 +133,7 @@ $$('nav button').forEach((b) =>
     b.classList.add('active');
     $(`#tab-${b.dataset.tab}`).classList.add('active');
     if (b.dataset.tab === 'media') loadMediaTab();
+    if (b.dataset.tab === 'catalog') loadCatalogTab();
     if (b.dataset.tab === 'setup') loadSetupTab();
   })
 );
@@ -314,6 +315,27 @@ function renderItems() {
     if (!currentMirror) li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Drag to reorder' }));
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
     li.append(el('span', { className: 'grow', textContent: `${it.name}${it.is_manual_override ? ' *' : ''}` }));
+    // Per-item episode corrector for serial items: pick another chapter of the
+    // same show. The backend swaps the item, sets the series cursor, and
+    // regenerates later still-draft blocks this week so ordering follows.
+    if (!currentMirror && it.subject && it.id != null) {
+      const chapters = allResources
+        .filter((r) => r.subject === it.subject && !r.is_filler)
+        .sort((a, b) => a.chapter - b.chapter);
+      if (chapters.length > 1) {
+        const epSel = el('select', { className: 'ep-sel', title: `Episode of “${it.subject}”` });
+        for (const c of chapters) {
+          epSel.append(el('option', { value: c.chapter, textContent: `Ep ${c.chapter}`, selected: c.chapter === it.chapter }));
+        }
+        epSel.onchange = () => withBusy(null, async () => {
+          await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
+          toast('Episode set — cursor updated, later drafts regenerated', 'ok', it.subject);
+          await openBlock(currentBlock.block.id);
+          await loadSchedule();
+        });
+        li.append(epSel);
+      }
+    }
     li.append(el('span', { className: 'dur', textContent: fmt(it.duration) }));
     if (currentMirror) { list.append(li); return; }
     const up = el('button', { className: 'mini ghost', textContent: '↑', title: 'Move up' });
@@ -498,8 +520,14 @@ $('#btnAssignRoot').addEventListener('click', (e) => {
       path: folder,
     });
     const n = r.created?.length ?? 0;
-    toast(`Assigned folder to ${n} channel${n === 1 ? '' : 's'}`, 'ok');
+    const cloned = r.clonedResources ?? 0;
+    toast(
+      `Assigned folder to ${n} channel${n === 1 ? '' : 's'}`
+        + (cloned ? ` — cloned ${cloned} already-scanned clip(s), no scan needed` : ''),
+      'ok',
+    );
     await loadRoots();
+    await loadResources();
   });
 });
 
@@ -511,22 +539,46 @@ async function loadRoots() {
     tb.append(el('tr', {}, el('td', { colSpan: 4, className: 'muted', style: 'text-align:center;padding:22px', textContent: 'No media roots configured yet.' })));
     return;
   }
+  // The same folder assigned to N channels is N MediaRoot rows; collapse them to
+  // one row per (path, show type) with the channels shown as badges. scan/delete
+  // fan out across every underlying row id.
+  const groups = new Map();
   for (const r of rows) {
+    const key = `${r.path} ${r.show_type_id}`;
+    if (!groups.has(key)) groups.set(key, { path: r.path, show_type_name: r.show_type_name, channels: [] });
+    groups.get(key).channels.push(r); // each carries id + channel_name + channel_id
+  }
+  for (const g of groups.values()) {
     const tr = el('tr');
-    tr.append(el('td', { textContent: r.channel_name }), el('td', { textContent: r.show_type_name }), el('td', { className: 'path-cell', textContent: r.path }));
+    const chCell = el('td');
+    for (const c of g.channels) chCell.append(el('span', { className: 'badge', textContent: c.channel_name }));
+    tr.append(chCell, el('td', { textContent: g.show_type_name }), el('td', { className: 'path-cell', textContent: g.path }));
+    const label = g.path.split('/').pop();
+
     const btnScan = el('button', { className: 'mini ghost', textContent: 'scan' });
     btnScan.onclick = () => withBusy(btnScan, async () => {
-      const x = await api.send('POST', `/api/media/roots/${r.id}/scan`);
-      toast(`Ingested ${x.ingested} of ${x.scanned}`, 'ok', r.path.split('/').pop());
+      let ingested = 0, scanned = 0;
+      for (const c of g.channels) {
+        const x = await api.send('POST', `/api/media/roots/${c.id}/scan`);
+        ingested += x.ingested; scanned += x.scanned;
+      }
+      toast(`Ingested ${ingested} of ${scanned} across ${g.channels.length} channel(s)`, 'ok', label);
+      await loadResources();
     });
     const btnEdit = el('button', { className: 'mini ghost', textContent: 'edit' });
-    btnEdit.onclick = () => editRoot(r);
+    // Edit stays per-channel; when shared, edit the first assignment.
+    btnEdit.onclick = () => editRoot({ ...g.channels[0], path: g.path, show_type_name: g.show_type_name });
     const btnDel = el('button', { className: 'mini danger', textContent: 'delete' });
     btnDel.onclick = async () => {
-      if (!await confirmDialog('Delete media root', `Remove the root “${r.path}” and drop every resource it cataloged for ${r.channel_name}? This also removes those clips from any draft blocks.`, { confirmLabel: 'Delete', danger: true })) return;
+      const names = g.channels.map((c) => c.channel_name).join(', ');
+      if (!await confirmDialog('Delete media root', `Remove the root “${g.path}” from ${g.channels.length} channel(s) (${names}) and drop every resource it cataloged? This also removes those clips from any draft blocks.`, { confirmLabel: 'Delete', danger: true })) return;
       await withBusy(btnDel, async () => {
-        const res = await api.send('DELETE', `/api/media/roots/${r.id}`);
-        toast(`Root removed — ${res.deletedResources ?? 0} resource(s) dropped`, 'ok');
+        let dropped = 0;
+        for (const c of g.channels) {
+          const res = await api.send('DELETE', `/api/media/roots/${c.id}`);
+          dropped += res.deletedResources ?? 0;
+        }
+        toast(`Root removed — ${dropped} resource(s) dropped`, 'ok');
         await loadRoots();
         await loadResources();
       });
@@ -568,6 +620,171 @@ async function editRoot(r) {
   actions.append(cancel, save);
   $('#dialog').classList.remove('hidden');
 }
+
+// ---- Catalog Editor ("fake root") ------------------------------------------
+// A single text-input dialog built on the generic #dialog. Resolves the entered
+// string, or null on cancel.
+function inputDialog(title, label, initial = '') {
+  return new Promise((resolve) => {
+    $('#dialogTitle').textContent = title;
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    const input = el('input', { value: initial, className: 'dlg-input' });
+    content.append(el('label', { className: 'field' }, document.createTextNode(label), input));
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: 'primary', textContent: 'OK' });
+    cancel.onclick = () => { closeDialog(); resolve(null); };
+    ok.onclick = () => { closeDialog(); resolve(input.value); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
+    actions.append(cancel, ok);
+    $('#dialog').classList.remove('hidden');
+    input.focus();
+  });
+}
+
+let catData = null;              // { channel_id, groups: [...] }
+let catShowTypes = [];
+const catSelection = new Set();  // selected resource ids
+let catChannels = [];
+
+async function loadCatalogTab() {
+  if (!catChannels.length) catChannels = await api.get('/api/channels');
+  if (!catShowTypes.length) catShowTypes = await api.get('/api/showtypes');
+  const sel = $('#catChannel');
+  if (!sel.options.length) {
+    for (const c of catChannels) sel.append(el('option', { value: c.id, textContent: c.name }));
+  }
+  await loadCatalog();
+}
+
+async function loadCatalog() {
+  const channelId = Number($('#catChannel').value);
+  if (!channelId) return;
+  catSelection.clear();
+  catData = await api.get(`/api/catalog?channel_id=${channelId}`);
+  renderCatalog();
+}
+
+function updateCatCount() {
+  $('#catSelCount').textContent = `${catSelection.size} selected`;
+}
+
+// Ordered list of currently-selected resource ids as displayed (used by
+// renumber so "the order shown" maps to chapters 1..N).
+function selectedInOrder() {
+  const ids = [];
+  for (const g of catData.groups) for (const s of g.shows) for (const ep of s.episodes) {
+    if (catSelection.has(ep.id)) ids.push(ep.id);
+  }
+  return ids;
+}
+
+function renderCatalog() {
+  const host = $('#catalogTree');
+  host.innerHTML = '';
+  if (!catData || !catData.groups.length) {
+    host.append(el('p', { className: 'muted', textContent: 'Nothing cataloged for this channel yet — scan a media root first.' }));
+    return;
+  }
+  for (const g of catData.groups) {
+    const grp = el('div', { className: 'cat-group' });
+    grp.append(el('h3', { textContent: g.show_type_name }));
+    for (const show of g.shows) {
+      const box = el('div', { className: 'cat-show' });
+      const head = el('div', { className: 'cat-show-head' });
+      const selAll = el('input', { type: 'checkbox', title: 'Select all episodes of this show' });
+      selAll.onchange = () => {
+        for (const ep of show.episodes) { if (selAll.checked) catSelection.add(ep.id); else catSelection.delete(ep.id); }
+        renderCatalog();
+      };
+      head.append(selAll, el('strong', { textContent: show.subject ?? '(fillers)' }),
+        el('span', { className: 'muted', textContent: ` · ${show.episodes.length} clip(s)` }));
+      box.append(head);
+
+      const list = el('ol', { className: 'items cat-eps' });
+      for (const ep of show.episodes) {
+        const li = el('li', { className: ep.is_filler ? 'filler' : '' });
+        const cb = el('input', { type: 'checkbox', checked: catSelection.has(ep.id) });
+        cb.onchange = () => { if (cb.checked) catSelection.add(ep.id); else catSelection.delete(ep.id); updateCatCount(); };
+        li.append(cb);
+        // Chapter (episode order) — editable, writes to Resource.chapter.
+        if (!ep.is_filler) {
+          const chIn = el('input', { className: 'cat-ch', type: 'number', value: ep.chapter, title: 'Episode order (chapter)' });
+          chIn.onchange = () => withBusy(null, async () => {
+            await api.send('PUT', `/api/catalog/resource/${ep.id}`, { chapter: Number(chIn.value) });
+            toast('Chapter updated', 'ok');
+          });
+          li.append(chIn);
+        }
+        // Display name — editable, writes to the override layer (Resource.name stays).
+        const nameIn = el('input', { className: 'cat-name grow', value: ep.display_name, title: `Detected: ${ep.raw_name}` });
+        nameIn.onchange = () => withBusy(null, async () => {
+          await api.send('PUT', `/api/catalog/resource/${ep.id}`, { display_name: nameIn.value });
+          toast('Name updated', 'ok');
+        });
+        li.append(nameIn);
+        li.append(el('span', { className: 'dur', textContent: fmt(ep.duration) }));
+        if (ep.has_override) li.append(el('span', { className: 'badge', textContent: 'edited', title: 'Has local overrides' }));
+        list.append(li);
+      }
+      box.append(list);
+      grp.append(box);
+    }
+    host.append(grp);
+  }
+  updateCatCount();
+}
+
+async function catBulk(op, extra = {}, ids = [...catSelection]) {
+  if (!ids.length) return toast('Select some clips first', 'bad');
+  await api.send('POST', '/api/catalog/bulk', { ids, op, ...extra });
+  await loadCatalog();
+}
+
+$('#catChannel').addEventListener('change', loadCatalog);
+$('#btnCatReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadCatalog));
+$('#btnCatMerge').addEventListener('click', () => withBusy(null, async () => {
+  const subject = await inputDialog('Merge into show', 'Show name (subject) for the selected clips');
+  if (subject == null) return;
+  await catBulk('set-subject', { subject });
+  toast('Merged into show', 'ok');
+}));
+$('#btnCatRenumber').addEventListener('click', () => withBusy(null, async () => {
+  const ids = selectedInOrder();
+  await catBulk('renumber', {}, ids);
+  toast('Renumbered 1..N in shown order', 'ok');
+}));
+$('#btnCatRename').addEventListener('click', () => withBusy(null, async () => {
+  const template = await inputDialog('Rename by template', 'Template — tokens {name} {subject} {chapter} {n}', '{subject} — Ep {n}');
+  if (template == null) return;
+  await catBulk('template', { template }, selectedInOrder());
+  toast('Display names updated', 'ok');
+}));
+$('#btnCatReplace').addEventListener('click', () => withBusy(null, async () => {
+  const find = await inputDialog('Find & replace', 'Find (in display name)');
+  if (find == null || find === '') return;
+  const replace = await inputDialog('Find & replace', `Replace “${find}” with`);
+  if (replace == null) return;
+  await catBulk('find-replace', { field: 'display_name', find, replace });
+  toast('Replaced in display names', 'ok');
+}));
+$('#btnCatShowType').addEventListener('click', () => withBusy(null, async () => {
+  const names = catShowTypes.map((s) => `${s.id}=${s.name}`).join(', ');
+  const val = await inputDialog('Set show type', `Show type id (${names})`);
+  if (val == null || val === '') return;
+  await catBulk('set-showtype', { show_type_id: Number(val) });
+  toast('Show type updated', 'ok');
+}));
+$('#btnCatReset').addEventListener('click', () => withBusy(null, async () => {
+  const ids = [...catSelection];
+  if (!ids.length) return toast('Select some clips first', 'bad');
+  if (!await confirmDialog('Reset selection', `Restore detected show/episode and drop custom names for ${ids.length} clip(s)?`, { confirmLabel: 'Reset', danger: true })) return;
+  await api.send('POST', '/api/catalog/reset', { ids });
+  await loadCatalog();
+  toast('Reset to detected', 'ok');
+}));
 
 // ---- Channels & Templates --------------------------------------------------
 async function populateSelect(sel, url, labelKey) {

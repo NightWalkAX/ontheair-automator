@@ -23,6 +23,21 @@ export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
 
+// node:sqlite's DatabaseSync has no .transaction() helper (unlike better-sqlite3),
+// so wrap a function in BEGIN/COMMIT with ROLLBACK on error. Not re-entrant —
+// callers must not nest withTx.
+export function withTx(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // --- Schema -----------------------------------------------------------------
 // Created idempotently on startup. Deviations from SEED.md §3 are commented
 // inline; they are code-level refinements flagged in the approved plan, not a
@@ -179,6 +194,18 @@ export function initSchema() {
       resource_id INTEGER NOT NULL REFERENCES Resource(id)    ON DELETE CASCADE,
       channel_id  INTEGER NOT NULL REFERENCES ChannelType(id) ON DELETE CASCADE,
       played_at   TEXT NOT NULL                -- ISO datetime
+    );
+
+    -- Non-destructive "fake root" catalog editor layer. Lets the operator rename
+    -- clips for-screen and snapshot the detected subject/chapter so edits can be
+    -- reset. Resource.name / file_path (server truth) are never written by the
+    -- editor; Resource.subject/chapter (the scheduling/organization layer) are
+    -- edited in place and the pre-edit values are snapshotted here once.
+    CREATE TABLE IF NOT EXISTS ResourceOverride (
+      resource_id      INTEGER PRIMARY KEY REFERENCES Resource(id) ON DELETE CASCADE,
+      display_name     TEXT,        -- on-screen name; Resource.name stays untouched
+      detected_subject TEXT,        -- snapshot at first edit → enables reset
+      detected_chapter INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_resource_channel   ON Resource(channel_id, is_filler);

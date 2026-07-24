@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
 import { join, extname, basename, dirname } from 'node:path';
-import { db } from '../db.js';
+import { db, withTx } from '../db.js';
 import { loadConfig } from '../config.js';
 
 const execFileAsync = promisify(execFile);
@@ -33,28 +33,51 @@ function looksLikeFillerFolder(filePath) {
     .some((seg) => /^fillers?$/i.test(seg));
 }
 
-/**
- * Infer a series/subject label from a file's path: the immediate parent folder
- * name (the series folder). Files directly under the media root use that root's
- * last path segment.
- */
-function detectSubject(filePath, rootPath) {
-  const parent = dirname(filePath);
-  // Don't let the media root itself become a subject when files sit at its top
-  // level with no series folder — fall back to the root's own basename anyway,
-  // which is a reasonable label the admin can rename.
-  return basename(parent) || basename(rootPath) || null;
+/** True if a folder name is a bare "season" folder (Season 1 / S01 / Temporada 2). */
+function looksLikeSeasonFolder(name) {
+  return /^season\s*\d+/i.test(name) || /^s\d{1,3}$/i.test(name) || /^temporada\s*\d+/i.test(name);
 }
 
 /**
- * Infer a chapter number from a filename. Prefers an SxxEyy episode marker,
- * else the last standalone integer in the name. Returns 0 when none found
- * (single/standalone).
+ * Infer a series/subject label from a file's path: normally the immediate parent
+ * folder name (the series folder). When that parent is a bare "Season N" folder,
+ * climb to the grandparent (the show folder) so nested seasons group under one
+ * show instead of scattering into per-season subjects. Files directly under the
+ * media root fall back to the root's own basename. Free-standing season folders
+ * (no show folder above) keep the season label and can be merged in the editor.
+ */
+function detectSubject(filePath, rootPath) {
+  const parent = dirname(filePath);
+  const parentName = basename(parent);
+  if (parentName && looksLikeSeasonFolder(parentName)) {
+    const grandparent = basename(dirname(parent));
+    // Only climb when the grandparent is a real folder above the root, not the
+    // root itself or the filesystem root.
+    if (grandparent && dirname(parent) !== dirname(rootPath) && !looksLikeSeasonFolder(grandparent)) {
+      return grandparent;
+    }
+  }
+  // Don't let the media root itself become a subject when files sit at its top
+  // level with no series folder — fall back to the root's own basename anyway,
+  // which is a reasonable label the admin can rename.
+  return parentName || basename(rootPath) || null;
+}
+
+/**
+ * Infer a chapter number from a filename. Prefers an SxxEyy episode marker: for
+ * a single season (S01) the plain episode number, but for season ≥ 2 it is
+ * encoded as season*1000 + episode so multi-season shows sort in order and
+ * S01E05 / S02E05 don't collide once their seasons are gathered under one show.
+ * Else the last standalone integer in the name; 0 when none (single/standalone).
  */
 function detectChapter(fileName) {
   const base = basename(fileName, extname(fileName));
-  const ep = base.match(/[Ss]\d{1,3}[\s._-]*[Ee](\d{1,4})/);
-  if (ep) return Number(ep[1]);
+  const ep = base.match(/[Ss](\d{1,3})[\s._-]*[Ee](\d{1,4})/);
+  if (ep) {
+    const season = Number(ep[1]);
+    const episode = Number(ep[2]);
+    return season > 1 ? season * 1000 + episode : episode;
+  }
   const nums = base.match(/\d{1,4}/g);
   if (nums && nums.length) return Number(nums[nums.length - 1]);
   return 0;
@@ -132,6 +155,69 @@ function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
   for (const subject of subjects) {
     insert.run(channelId, subject, showTypeId ?? null, isSerialDefault ? 1 : 0, nextOrder.get(channelId).n);
   }
+}
+
+/**
+ * Clone already-cataloged Resource rows (and their overrides) from a donor
+ * channel into `newChannelId`, for a folder that was just assigned to another
+ * channel. Avoids a fresh ffprobe pass: the same physical files already have
+ * durations + operator subject/chapter/name fixes under some other channel.
+ * Matches the root path as a subtree (path itself or path/...). No-op (returns
+ * 0) when no donor exists — the caller then falls back to a normal scan.
+ * Returns the number of resources cloned.
+ */
+export function cloneScannedResources(newChannelId, showTypeId, path) {
+  const like = path.replace(/[\\%_]/g, (m) => '\\' + m) + '/%';
+  // Donor rows: same file (path or subtree) cataloged under a different channel.
+  const donors = db.prepare(`
+    SELECT * FROM Resource
+    WHERE channel_id != ? AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
+    GROUP BY file_path
+  `).all(newChannelId, path, like);
+  if (!donors.length) return 0;
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO Resource
+      (name, file_path, duration, subject, chapter, is_filler, audience_rating,
+       channel_id, show_type_id, added_at, last_used_at, sort_order)
+    VALUES
+      (@name, @file_path, @duration, @subject, @chapter, @is_filler, @audience_rating,
+       @channel_id, @show_type_id, @added_at, @last_used_at, @sort_order)
+  `);
+  const idFor = db.prepare('SELECT id FROM Resource WHERE channel_id = ? AND file_path = ?');
+  const getOverride = db.prepare('SELECT * FROM ResourceOverride WHERE resource_id = ?');
+  const putOverride = db.prepare(`
+    INSERT OR IGNORE INTO ResourceOverride
+      (resource_id, display_name, detected_subject, detected_chapter)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const subjects = new Set();
+  let cloned = 0;
+  withTx(() => {
+    for (const d of donors) {
+      const info = insert.run({
+        name: d.name, file_path: d.file_path, duration: d.duration,
+        subject: d.subject, chapter: d.chapter, is_filler: d.is_filler,
+        audience_rating: d.audience_rating, channel_id: newChannelId,
+        show_type_id: showTypeId ?? d.show_type_id, added_at: d.added_at,
+        last_used_at: d.last_used_at ?? null, sort_order: d.sort_order ?? null,
+      });
+      if (!info.changes) continue; // already present for this channel
+      cloned++;
+      if (d.subject) subjects.add(d.subject);
+      const ov = getOverride.get(d.id);
+      if (ov) {
+        const newId = idFor.get(newChannelId, d.file_path)?.id;
+        if (newId) putOverride.run(newId, ov.display_name, ov.detected_subject, ov.detected_chapter);
+      }
+    }
+  });
+
+  const showType = db.prepare('SELECT code FROM ShowType WHERE id = ?').get(showTypeId);
+  const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
+  registerSeries(newChannelId, subjects, showTypeId, isSerialDefault);
+  return cloned;
 }
 
 /**
