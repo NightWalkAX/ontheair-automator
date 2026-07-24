@@ -129,8 +129,10 @@ router.put('/resource/:id', (req, res) => {
 
 // POST /api/catalog/bulk { ids:[], op, ... } — multi-rename / arrangement tools.
 //   set-subject     { subject }            merge/rename a show
-//   assign-to-show  { subject }            join a show, re-deriving season+order
-//                                          from each filename (auto season folders)
+//   assign-to-show  { subject, season? }   join a show, re-deriving order from
+//                                          each filename; season is forced when
+//                                          `season` is present (null clears it),
+//                                          else re-derived (auto season folders)
 //   set-season      { season }             set the season folder (null = none)
 //   renumber        (ids in target order)  assign chapters 1..N in the given order
 //   set-showtype    { show_type_id }
@@ -160,14 +162,23 @@ router.post('/bulk', (req, res) => {
         break;
       }
       case 'assign-to-show': {
-        // Drag-a-folder-onto-a-show: every clip joins `subject`, and its season
-        // + play order are re-derived from the filename so detected seasons turn
-        // into season subfolders automatically (S02E.. → Season 2, chapter 2005).
+        // Drag-a-folder-onto-a-show: every clip joins `subject`. Play order is
+        // always re-derived from the filename's episode number. The season is
+        // either forced (when the body carries `season` — the operator answered
+        // "file these as Season N", e.g. merging a mis-detected season-as-show)
+        // or re-derived from the filename (S02E.. → Season 2). Either way the
+        // chapter is re-encoded from the CHOSEN season so it sorts in broadcast
+        // order and never collides with the show's other seasons — the season
+        // must ride into `chapter`, not just the `season` column.
         const subject = req.body.subject || null;
+        const forceSeason = Object.prototype.hasOwnProperty.call(req.body, 'season');
+        const forcedSeason = req.body.season === null || req.body.season === ''
+          ? null : (Number(req.body.season) | 0);
         for (const id of ids) {
           const r = rowFor.get(id);
           if (!r) continue;
-          const { season, episode } = parseEpisode(r.name);
+          const { season: parsedSeason, episode } = parseEpisode(r.name);
+          const season = forceSeason ? forcedSeason : parsedSeason;
           const chapter = encodeChapter(season, episode);
           db.prepare('UPDATE Resource SET subject = ?, season = ?, chapter = ? WHERE id = ?')
             .run(subject, season, chapter, id);
@@ -176,10 +187,20 @@ router.post('/bulk', (req, res) => {
         break;
       }
       case 'set-season': {
-        // Assign (or clear, null) the season folder for the selected clips.
+        // Assign (or clear, null) the season folder for the selected clips. The
+        // chapter is re-encoded from the NEW season while preserving each clip's
+        // episode number (the low 3 digits), so a forced season sorts in its own
+        // band and can't collide with season 1's plain episode numbers.
         const season = req.body.season === null || req.body.season === undefined || req.body.season === ''
           ? null : (Number(req.body.season) | 0);
-        for (const id of ids) db.prepare('UPDATE Resource SET season = ? WHERE id = ?').run(season, id);
+        for (const id of ids) {
+          const r = rowFor.get(id);
+          if (!r) continue;
+          const raw = r.chapter | 0;
+          const episode = raw >= 1000 ? raw % 1000 : raw;
+          const chapter = encodeChapter(season, episode);
+          db.prepare('UPDATE Resource SET season = ?, chapter = ? WHERE id = ?').run(season, chapter, id);
+        }
         break;
       }
       case 'renumber': {

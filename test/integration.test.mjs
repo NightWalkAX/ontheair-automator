@@ -669,3 +669,46 @@ test('catalog editor: assign-to-show, set-season, and reset round-trip', async (
   assert.equal(back.subject, 'movies', 'reset restores detected subject');
   assert.equal(back.season, null, 'reset restores detected (null) season');
 });
+
+test('merge season-as-show: forced season rides into chapter and the empty source registry row is removable', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // A show whose episodes carry no season marker in the filename (season came
+  // from a folder), sitting under its own subject — the "season detected as a
+  // whole show" case. Two clips, plain episode numbers 1 and 2.
+  db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, season, chapter, is_filler, channel_id, show_type_id, approved, added_at)
+              VALUES ('Episode 1','/m/GoodShow S3/Episode 1.mov',600,'GoodShow Season 3',NULL,1,0,?,?,1,'2026-01-01T00:00:00Z')`).run(c1, stId('tv_shows'));
+  db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, season, chapter, is_filler, channel_id, show_type_id, approved, added_at)
+              VALUES ('Episode 2','/m/GoodShow S3/Episode 2.mov',600,'GoodShow Season 3',NULL,2,0,?,?,1,'2026-01-01T00:00:00Z')`).run(c1, stId('tv_shows'));
+  db.prepare(`INSERT OR IGNORE INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+              VALUES (?, 'GoodShow Season 3', ?, 1, 1, 50)`).run(c1, stId('tv_shows'));
+  const ids = db.prepare("SELECT id FROM Resource WHERE channel_id=? AND subject='GoodShow Season 3' ORDER BY chapter").all(c1).map((r) => r.id);
+  assert.equal(ids.length, 2);
+
+  // Merge into the real parent as Season 3. The forced season must be encoded
+  // into chapter (3000 + episode) so it can't collide with the parent's season 1.
+  const merge = await j('POST', '/api/catalog/bulk', { ids, op: 'assign-to-show', subject: 'GoodShow', season: 3 });
+  assert.equal(merge.status, 200);
+  const rows = db.prepare("SELECT season, chapter FROM Resource WHERE id IN (?,?) ORDER BY chapter").all(...ids);
+  assert.deepEqual(rows.map((r) => r.season), [3, 3], 'both filed under the forced season');
+  assert.deepEqual(rows.map((r) => r.chapter), [3001, 3002], 'season encoded into chapter for global order');
+
+  // The old source series lingers in the registry until cleaned up.
+  const before = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
+  assert.ok(before.includes('GoodShow Season 3'), 'orphan registry row still present after merge');
+
+  // DELETE removes it now that no clip uses the subject.
+  const del = await j('DELETE', `/api/channels/${c1}/series/${encodeURIComponent('GoodShow Season 3')}`);
+  assert.equal(del.status, 200);
+  assert.equal(del.data.deleted, 1);
+  const after = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
+  assert.ok(!after.includes('GoodShow Season 3'), 'orphan registry row gone');
+  assert.ok(after.includes('GoodShow'), 'parent show remains registered');
+});
+
+test('series delete refuses while clips still use the subject', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const inUse = await j('DELETE', `/api/channels/${c1}/series/${encodeURIComponent('History')}`);
+  assert.equal(inUse.status, 409, 'cannot delete a series that still has clips');
+  const reg = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
+  assert.ok(reg.includes('History'), 'in-use series untouched');
+});
