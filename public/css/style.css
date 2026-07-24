@@ -586,3 +586,38 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .cat-series-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
 .cat-selall { margin: 0 0 8px; }
 .crumb-title { margin: 0 4px; }
+
+/* search field in the toolbar */
+.cat-search-field { min-width: 220px; }
+.cat-search-field input { width: 100%; }
+
+/* approval badges + status dots */
+.badge-ok   { background: color-mix(in srgb, #16a34a 22%, transparent); color: #166534; }
+.badge-warn { background: color-mix(in srgb, #f59e0b 24%, transparent); color: #92400e; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.dot-ok   { background: #16a34a; }
+.dot-warn { background: #f59e0b; }
+.cat-approve { font-size: 12px; opacity: .85; }
+
+/* two-pane drag & drop layout */
+.cat-2pane { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.cat-pane { min-width: 0; border: 1px solid var(--line, #d9dee6); border-radius: 9px; padding: 10px; }
+.cat-pane-series { background: color-mix(in srgb, currentColor 3%, transparent); }
+.cat-pane-head { font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.cat-grip { cursor: grab; opacity: .45; flex: 0 0 auto; user-select: none; }
+.cat-eps li[draggable="true"], .cat-lib-row { cursor: grab; }
+.cat-eps li.dragging, .cat-lib-row.dragging { opacity: .45; }
+.cat-drop.drop-hot { outline: 2px dashed #16a34a; outline-offset: 3px; border-radius: 7px; }
+.cat-lib.drop-cold { outline: 2px dashed #ef4444; outline-offset: 3px; border-radius: 7px; }
+.cat-empty { padding: 18px 8px; text-align: center; }
+.cat-lib { list-style: none; margin: 0; padding: 0; max-height: 52vh; overflow-y: auto; }
+.cat-lib-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+.cat-lib-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+.cat-lib-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 780px) { .cat-2pane { grid-template-columns: 1fr; } }
+
+@media (prefers-color-scheme: dark) {
+  .badge-ok   { color: #86efac; }
+  .badge-warn { color: #fcd34d; }
+}

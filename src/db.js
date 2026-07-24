@@ -91,6 +91,10 @@ export function initSchema() {
       chapter         INTEGER NOT NULL DEFAULT 0,
       is_filler       INTEGER NOT NULL DEFAULT 0,
       audience_rating INTEGER,
+      -- Review gate: a resource is unavailable to the scheduling engine until the
+      -- operator has reviewed/organized it in the Catalog Editor and approved it.
+      -- New scans arrive unapproved (default 0); re-scans preserve the flag.
+      approved        INTEGER NOT NULL DEFAULT 0,
       -- Refinements flagged in the plan:
       channel_id      INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
       show_type_id    INTEGER REFERENCES ShowType(id)    ON DELETE SET NULL,
@@ -238,6 +242,12 @@ export function initSchema() {
   addColumnIfMissing('Resource', 'added_at', 'TEXT');
   addColumnIfMissing('Resource', 'last_used_at', 'TEXT');   // filler repeat-heat
   addColumnIfMissing('Resource', 'sort_order', 'INTEGER');  // manual chapter order
+  // Review gate. New rows default to 0 (unapproved). On a DB that predates this
+  // column, the media was already in use, so backfill existing rows to approved
+  // once — only new scans thereafter arrive unapproved.
+  if (addColumnIfMissing('Resource', 'approved', 'INTEGER NOT NULL DEFAULT 0')) {
+    db.exec('UPDATE Resource SET approved = 1');
+  }
   addColumnIfMissing('ChannelSeries', 'cursor_chapter', 'INTEGER'); // per-series progression cursor
 
   seedShowTypes();
@@ -379,6 +389,7 @@ function rebuildResourceForSharedFolders() {
       chapter         INTEGER NOT NULL DEFAULT 0,
       is_filler       INTEGER NOT NULL DEFAULT 0,
       audience_rating INTEGER,
+      approved        INTEGER NOT NULL DEFAULT 0,
       channel_id      INTEGER REFERENCES ChannelType(id) ON DELETE CASCADE,
       show_type_id    INTEGER REFERENCES ShowType(id)    ON DELETE SET NULL,
       added_at        TEXT,
@@ -388,9 +399,9 @@ function rebuildResourceForSharedFolders() {
     );
     INSERT INTO Resource_new
       (id, name, file_path, duration, subject, chapter, is_filler, audience_rating,
-       channel_id, show_type_id, added_at, last_used_at, sort_order)
+       approved, channel_id, show_type_id, added_at, last_used_at, sort_order)
       SELECT id, name, file_path, duration, subject, chapter, is_filler, audience_rating,
-             channel_id, show_type_id, added_at, last_used_at, sort_order
+             COALESCE(approved, 1), channel_id, show_type_id, added_at, last_used_at, sort_order
       FROM Resource;
     DROP TABLE Resource;
     ALTER TABLE Resource_new RENAME TO Resource;
@@ -420,11 +431,14 @@ function backfillScheduledBlockChannel() {
   `);
 }
 
+// Returns true if the column was just added (so callers can backfill once).
 function addColumnIfMissing(table, column, type) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    return true;
   }
+  return false;
 }
 
 export { DB_PATH };

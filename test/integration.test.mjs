@@ -135,6 +135,10 @@ test('channel + ingestion detects series/chapters and auto-flags fillers', async
   }
   assert.equal(ingested, LESSON_SERIES.length * LESSON_CH.length + 4 + FILLER_DURS.length);
 
+  // New scans arrive unapproved (the review gate). The operator approves after
+  // organizing — simulate that here so downstream generation has content.
+  db.exec('UPDATE Resource SET approved = 1');
+
   const all = (await j('GET', `/api/resources?channel_id=${chId}`)).data;
   // Duration through the fake probe.
   const m0 = all.find((r) => basename(r.file_path) === 'Movie0_5400.mov');
@@ -339,6 +343,7 @@ test('shared folder: the same files catalog independently under a second channel
     const scan = await j('POST', `/api/media/roots/${rid}/scan`);
     assert.equal(scan.status, 200);
   }
+  db.exec('UPDATE Resource SET approved = 1'); // operator-approved after review
   // Channel 2 has its own Math chapters (same file_path as channel 1, distinct rows).
   const ch2Math = (await j('GET', `/api/resources?channel_id=${ch2Id}&subject=Math`)).data;
   assert.equal(ch2Math.length, 6, 'channel 2 cataloged its own copy of Math');
@@ -452,6 +457,7 @@ test('clone on re-add: a scanned folder assigned to a new channel needs no re-sc
   // Simulate the POST /roots assignment path: register the root, then clone.
   db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch3, stId('lessons'), lessonsPath);
   const cloned = cloneScannedResources(ch3, stId('lessons'), lessonsPath);
+  db.exec('UPDATE Resource SET approved = 1'); // operator-approved after review
   assert.ok(cloned >= 18, `cloned all lesson chapters (${cloned})`);
   const ch3Math = (await j('GET', `/api/resources?channel_id=${ch3}&subject=Math`)).data;
   assert.equal(ch3Math.length, 6, 'channel 3 has Math without a fresh ffprobe scan');
@@ -462,8 +468,8 @@ test('clone on re-add: a scanned folder assigned to a new channel needs no re-sc
 
 test('latestEpisode returns the newest-added episode, not the highest chapter', () => {
   const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
-  const ins = db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler, channel_id, show_type_id, added_at)
-    VALUES (?, ?, 600, 'TVNews', ?, 0, ?, ?, ?)`);
+  const ins = db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler, approved, channel_id, show_type_id, added_at)
+    VALUES (?, ?, 600, 'TVNews', ?, 0, 1, ?, ?, ?)`);
   // Chapter 1 is the most recently added; chapter 3 is the oldest.
   ins.run('news1', '/tv/news1.mov', 1, c1, stId('tv_shows'), '2026-03-03T00:00:00.000Z');
   ins.run('news2', '/tv/news2.mov', 2, c1, stId('tv_shows'), '2026-02-02T00:00:00.000Z');
@@ -582,4 +588,29 @@ test('set-episode: correct an episode from the schedule view, propagate cursor +
   const tue = (await j('GET', '/api/blocks?week=2026-11-02')).data.blocks
     .find((b) => b.channel_id === c1 && !b.is_mirror && b.target_date === '2026-11-03' && b.template_name === 'Morning Lessons');
   if (tue) assert.ok(tue.fits, 'later draft still fits after regeneration');
+});
+
+test('approval gate: only approved resources reach the scheduler', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const fillerIds = db.prepare('SELECT id FROM Resource WHERE channel_id=? AND is_filler=1').all(c1).map((r) => r.id);
+  assert.ok(fillerIds.length, 'channel has fillers');
+
+  // Un-approve every filler → the fitter has nothing available to place.
+  const off = await j('POST', '/api/catalog/bulk', { ids: fillerIds, op: 'set-approved', approved: 0 });
+  assert.equal(off.status, 200);
+  const none = fitFillers(c1, 1000);
+  assert.equal(none.items.length, 0, 'unapproved fillers are invisible to the fitter');
+
+  // The catalog GET reflects the approval flag (drives the UI badges).
+  const cat = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const aFiller = cat.groups.flatMap((g) => g.shows).flatMap((s) => s.episodes).find((e) => e.is_filler);
+  assert.equal(aFiller.approved, false, 'GET exposes approved:false');
+  // set-approved must not create a spurious "edited" override.
+  assert.equal(aFiller.has_override, false, 'approval toggle does not mark the clip edited');
+
+  // Re-approve → placeable again (restores state for any later tests).
+  const on = await j('POST', '/api/catalog/bulk', { ids: fillerIds, op: 'set-approved', approved: 1 });
+  assert.equal(on.status, 200);
+  const some = fitFillers(c1, 1000);
+  assert.ok(some.items.length > 0, 're-approved fillers are placeable again');
 });

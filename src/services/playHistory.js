@@ -29,12 +29,12 @@ export function nextSequential(channelId, subject) {
   return (
     db.prepare(`
       SELECT * FROM Resource
-      WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND chapter >= ?
+      WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND approved = 1 AND chapter >= ?
       ORDER BY chapter ASC LIMIT 1
     `).get(channelId, subject, target) ||
     db.prepare(`
       SELECT * FROM Resource
-      WHERE channel_id = ? AND subject = ? AND is_filler = 0
+      WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND approved = 1
       ORDER BY chapter ASC LIMIT 1
     `).get(channelId, subject) ||
     null
@@ -118,7 +118,7 @@ export function randomWithCooldown(channelId, candidates, asOfDate) {
 export function latestEpisode(channelId, subject) {
   return db.prepare(`
     SELECT * FROM Resource
-    WHERE channel_id = ? AND subject = ? AND is_filler = 0
+    WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND approved = 1
     ORDER BY added_at DESC, id DESC
     LIMIT 1
   `).get(channelId, subject) || null;

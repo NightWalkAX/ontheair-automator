@@ -44,7 +44,7 @@ router.get('/', (req, res) => {
   if (channelId == null) return res.status(400).json({ error: 'channel_id is required' });
 
   const rows = db.prepare(`
-    SELECT r.id, r.name, r.subject, r.chapter, r.duration, r.is_filler,
+    SELECT r.id, r.name, r.subject, r.chapter, r.duration, r.is_filler, r.approved,
            r.show_type_id, r.file_path,
            st.name AS show_type_name, st.code AS show_type_code,
            ov.display_name AS display_name,
@@ -69,7 +69,7 @@ router.get('/', (req, res) => {
     g.shows.get(showKey).episodes.push({
       id: r.id, name: r.name, display_name: r.display_name || r.name,
       raw_name: r.name, subject: r.subject, chapter: r.chapter, duration: r.duration,
-      is_filler: !!r.is_filler, has_override: !!r.has_override,
+      is_filler: !!r.is_filler, approved: !!r.approved, has_override: !!r.has_override,
       file_path: r.file_path, show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
     });
   }
@@ -115,7 +115,10 @@ router.post('/bulk', (req, res) => {
   const setDisplay = db.prepare('UPDATE ResourceOverride SET display_name = ? WHERE resource_id = ?');
 
   const run = () => {
-    for (const id of ids) ensureOverride(id);
+    // set-approved is a pure availability flag — it doesn't touch the
+    // organization fields, so don't snapshot an override (would falsely badge
+    // the clip as "edited").
+    if (op !== 'set-approved') for (const id of ids) ensureOverride(id);
     switch (op) {
       case 'set-subject': {
         const subject = req.body.subject || null;
@@ -156,6 +159,13 @@ router.post('/bulk', (req, res) => {
           if (f) db.prepare('UPDATE Resource SET is_filler = 1, subject = NULL, chapter = 0 WHERE id = ?').run(id);
           else db.prepare('UPDATE Resource SET is_filler = 0 WHERE id = ?').run(id);
         }
+        break;
+      }
+      case 'set-approved': {
+        // Review gate toggle. Only approved resources are visible to the
+        // scheduling engine (see services/scheduling.js + playHistory.js).
+        const a = req.body.approved ? 1 : 0;
+        for (const id of ids) db.prepare('UPDATE Resource SET approved = ? WHERE id = ?').run(a, id);
         break;
       }
       case 'find-replace': {

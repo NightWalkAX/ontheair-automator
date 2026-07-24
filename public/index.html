@@ -114,7 +114,7 @@
   <section id="tab-catalog" class="tab">
     <div class="section-head">
       <h2>Catalog Editor</h2>
-      <p>Browse your media like a file explorer — directories and files, seasons and all. Set episode order (type the numbers, then “Fix order”), merge folders into one series (files stay in their folders), rename for-screen, and delete duplicates. Non-destructive: files on disk are never moved or renamed.</p>
+      <p>Organize how the scheduler sees this channel. Open a series to set episode order, rename for-screen, and drag clips in or out. Create a new (serial) series with “＋ New series”. <strong>Nothing airs until you approve it</strong> — approved clips are the only ones the scheduler can use. Non-destructive: files on disk are never moved or renamed.</p>
     </div>
 
     <div class="toolbar">
@@ -123,10 +123,9 @@
       </label>
       <button id="btnCatReload" class="ghost">↻ Reload</button>
       <span class="spacer"></span>
-      <div class="view-toggle">
-        <button id="catViewSeries" class="seg active">🎬 Series (engine)</button>
-        <button id="catViewFolders" class="seg">📂 Folders</button>
-      </div>
+      <label class="field cat-search-field"><span>Search</span>
+        <input id="catSearch" type="search" placeholder="Search series…" />
+      </label>
     </div>
 
     <div class="panel">

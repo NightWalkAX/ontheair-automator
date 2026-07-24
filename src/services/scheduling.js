@@ -97,7 +97,7 @@ function ruleFor(showCode, isSerial) {
  * and capped at maxDuration so a single main item can never overrun the slot.
  */
 function candidates(channelId, subject, maxDuration) {
-  const clauses = ['channel_id = ?', 'is_filler = 0'];
+  const clauses = ['channel_id = ?', 'is_filler = 0', 'approved = 1'];
   const params = [channelId];
   if (subject) { clauses.push('subject = ?'); params.push(subject); }
   if (maxDuration) { clauses.push('duration <= ?'); params.push(maxDuration); }
@@ -110,7 +110,7 @@ function candidates(channelId, subject, maxDuration) {
 
 function serialIterator(channelId, subject, block) {
   const chapters = db.prepare(
-    'SELECT * FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0 ORDER BY chapter ASC, id ASC'
+    'SELECT * FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND approved = 1 ORDER BY chapter ASC, id ASC'
   ).all(channelId, subject);
   if (!chapters.length) return { peek: () => null, consume: () => {} };
 
@@ -211,7 +211,7 @@ export function fitFillers(channelId, remaining) {
   const maxUnderrun = cfg.maxUnderrunSeconds ?? 5;
 
   const fillers = db.prepare(
-    'SELECT * FROM Resource WHERE channel_id = ? AND is_filler = 1'
+    'SELECT * FROM Resource WHERE channel_id = ? AND is_filler = 1 AND approved = 1'
   ).all(channelId);
 
   if (remaining <= 0) {
