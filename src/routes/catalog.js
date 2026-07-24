@@ -221,7 +221,26 @@ router.post('/bulk', (req, res) => {
       }
       case 'set-showtype': {
         const stId = req.body.show_type_id != null ? Number(req.body.show_type_id) : null;
-        for (const id of ids) db.prepare('UPDATE Resource SET show_type_id = ? WHERE id = ?').run(stId, id);
+        const affected = new Map(); // subject -> channel_id, for registry realignment
+        for (const id of ids) {
+          const r = rowFor.get(id);
+          if (r?.subject) affected.set(r.subject, r.channel_id);
+          db.prepare('UPDATE Resource SET show_type_id = ? WHERE id = ?').run(stId, id);
+        }
+        // Keep each affected series' registry row pointing at the show type its
+        // clips actually live under now. Without this, moving a whole show to
+        // another type leaves the ChannelSeries row on the old type, so the show
+        // lingers as an empty folder there. Only realign when the series' clips
+        // now all sit under a single type (a partial move stays ambiguous).
+        for (const [subject, channelId] of affected) {
+          const types = db.prepare(
+            'SELECT DISTINCT show_type_id AS st FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0'
+          ).all(channelId, subject);
+          if (types.length === 1) {
+            db.prepare('UPDATE ChannelSeries SET show_type_id = ? WHERE channel_id = ? AND subject = ?')
+              .run(types[0].st, channelId, subject);
+          }
+        }
         break;
       }
       case 'set-filler': {

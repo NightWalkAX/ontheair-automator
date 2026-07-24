@@ -1520,6 +1520,13 @@ async function setShowType() {
   if (val == null || val === '') return;
   await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-showtype', show_type_id: Number(val) });
   await loadCatalog();
+  // If we were inside a show and its clips all moved to another type, the show
+  // is gone from this type — step back to the show list so we're not stranded
+  // on an empty view.
+  const realShow = engSubject != null && engSubject !== UNSORTED && engSubject !== FILLERS;
+  const reg = catReg.get(engSubject);
+  const regType = reg ? catShowTypes.find((s) => s.id === reg.show_type_id)?.name : null;
+  if (realShow && !epsOfShow(engType, engSubject).length && regType !== engType) goType(engType);
   toast('Show type updated', 'ok');
 }
 async function resetScope() {
