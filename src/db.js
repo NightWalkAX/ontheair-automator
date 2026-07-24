@@ -7,6 +7,7 @@
 // surface (`db`, prepared-statement style) is intentionally close.
 
 import { DatabaseSync } from 'node:sqlite';
+import { parseEpisode } from './services/episodeParse.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -88,6 +89,10 @@ export function initSchema() {
       file_path       TEXT NOT NULL,          -- absolute local mount path
       duration        INTEGER NOT NULL,       -- seconds
       subject         TEXT,
+      -- Season number parsed from the filename (S02E.., 03x.., "Season 2 …").
+      -- A pure display/organization level (the "season folder" inside a show);
+      -- ordering is by the chapter column. Null = no season info (standalone clip).
+      season          INTEGER,
       chapter         INTEGER NOT NULL DEFAULT 0,
       is_filler       INTEGER NOT NULL DEFAULT 0,
       audience_rating INTEGER,
@@ -209,7 +214,8 @@ export function initSchema() {
       resource_id      INTEGER PRIMARY KEY REFERENCES Resource(id) ON DELETE CASCADE,
       display_name     TEXT,        -- on-screen name; Resource.name stays untouched
       detected_subject TEXT,        -- snapshot at first edit → enables reset
-      detected_chapter INTEGER
+      detected_chapter INTEGER,
+      detected_season  INTEGER      -- season snapshot → reset restores it too
     );
 
     CREATE INDEX IF NOT EXISTS idx_resource_channel   ON Resource(channel_id, is_filler);
@@ -258,6 +264,24 @@ export function initSchema() {
   rebuildResourceForSharedFolders();
   backfillTemplateChannels();
   backfillScheduledBlockChannel();
+  migrateSeasonSupport();
+}
+
+// Season support. Runs AFTER rebuildResourceForSharedFolders so its table
+// rebuild (old DBs only) can't drop the column. New scans fill `season` from the
+// filename; existing rows are backfilled once by re-parsing their stored name.
+function migrateSeasonSupport() {
+  if (addColumnIfMissing('Resource', 'season', 'INTEGER')) backfillSeasons();
+  addColumnIfMissing('ResourceOverride', 'detected_season', 'INTEGER');
+}
+
+function backfillSeasons() {
+  const rows = db.prepare('SELECT id, name FROM Resource WHERE is_filler = 0').all();
+  const upd = db.prepare('UPDATE Resource SET season = ? WHERE id = ?');
+  for (const r of rows) {
+    const { season } = parseEpisode(r.name);
+    if (season != null) upd.run(season, r.id);
+  }
 }
 
 // The fixed, non-deletable catalogue of show types. Seeded by `code` so names

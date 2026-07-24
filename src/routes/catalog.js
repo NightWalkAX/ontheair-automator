@@ -9,21 +9,38 @@
 // reset. display_name is a pure on-screen label layered over Resource.name.
 
 import { Router } from 'express';
+import { dirname } from 'node:path';
 import { db, withTx } from '../db.js';
+import { parseEpisode, encodeChapter } from '../services/episodeParse.js';
 
 export const router = Router();
 
-// Snapshot the current subject/chapter into ResourceOverride the first time a
-// resource is edited, so "reset to detected" can restore them. No-op if a row
-// already exists (INSERT OR IGNORE preserves the earliest snapshot).
+// Snapshot the current subject/season/chapter into ResourceOverride the first
+// time a resource is edited, so "reset to detected" can restore them. No-op if a
+// row already exists (INSERT OR IGNORE preserves the earliest snapshot).
 function ensureOverride(id) {
-  const r = db.prepare('SELECT subject, chapter FROM Resource WHERE id = ?').get(id);
+  const r = db.prepare('SELECT subject, chapter, season FROM Resource WHERE id = ?').get(id);
   if (!r) return false;
   db.prepare(`
-    INSERT OR IGNORE INTO ResourceOverride (resource_id, detected_subject, detected_chapter)
-    VALUES (?, ?, ?)
-  `).run(id, r.subject, r.chapter);
+    INSERT OR IGNORE INTO ResourceOverride (resource_id, detected_subject, detected_chapter, detected_season)
+    VALUES (?, ?, ?, ?)
+  `).run(id, r.subject, r.chapter, r.season);
   return true;
+}
+
+// The on-disk folder segments a file lives in, relative to the deepest MediaRoot
+// of its channel that contains it. Powers the Library pane's file-browser view
+// (which mirrors the real folder tree, since filenames alone often omit the show
+// name). Returns [] for a file sitting directly in a media root.
+function relDirs(filePath, roots) {
+  let best = '';
+  for (const r of roots) {
+    if ((filePath === r || filePath.startsWith(r + '/')) && r.length > best.length) best = r;
+  }
+  const rest = best ? filePath.slice(best.length + 1) : filePath;
+  const dir = dirname(rest);
+  if (!dir || dir === '.' || dir === '/') return [];
+  return dir.split('/').filter(Boolean);
 }
 
 // Register a (channel, subject) pair in ChannelSeries so renamed/merged shows
@@ -44,7 +61,7 @@ router.get('/', (req, res) => {
   if (channelId == null) return res.status(400).json({ error: 'channel_id is required' });
 
   const rows = db.prepare(`
-    SELECT r.id, r.name, r.subject, r.chapter, r.duration, r.is_filler, r.approved,
+    SELECT r.id, r.name, r.subject, r.season, r.chapter, r.duration, r.is_filler, r.approved,
            r.show_type_id, r.file_path,
            st.name AS show_type_name, st.code AS show_type_code,
            ov.display_name AS display_name,
@@ -53,8 +70,13 @@ router.get('/', (req, res) => {
     LEFT JOIN ShowType st ON st.id = r.show_type_id
     LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
     WHERE r.channel_id = ?
-    ORDER BY st.name, r.subject, r.chapter, r.name
+    ORDER BY st.name, r.subject, r.season, r.chapter, r.name
   `).all(channelId);
+
+  // MediaRoot paths for this channel, longest-first, to strip into on-disk
+  // folder segments (rel_dirs) that the Library pane browses.
+  const roots = db.prepare('SELECT path FROM MediaRoot WHERE channel_id = ?')
+    .all(channelId).map((x) => x.path);
 
   // Group into show_type → subject → [episodes].
   const groups = new Map();
@@ -68,9 +90,10 @@ router.get('/', (req, res) => {
     if (!g.shows.has(showKey)) g.shows.set(showKey, { subject: r.subject, episodes: [] });
     g.shows.get(showKey).episodes.push({
       id: r.id, name: r.name, display_name: r.display_name || r.name,
-      raw_name: r.name, subject: r.subject, chapter: r.chapter, duration: r.duration,
+      raw_name: r.name, subject: r.subject, season: r.season, chapter: r.chapter, duration: r.duration,
       is_filler: !!r.is_filler, approved: !!r.approved, has_override: !!r.has_override,
-      file_path: r.file_path, show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
+      file_path: r.file_path, rel_dirs: relDirs(r.file_path, roots),
+      show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
     });
   }
   const out = [...groups.values()].map((g) => ({ ...g, shows: [...g.shows.values()] }));
@@ -92,6 +115,10 @@ router.put('/resource/:id', (req, res) => {
       db.prepare('UPDATE Resource SET subject = ?, chapter = ? WHERE id = ?').run(subject, chapter, id);
       if (b.subject !== undefined) ensureSeries(cur.channel_id, subject);
     }
+    if (b.season !== undefined) {
+      const season = b.season === null || b.season === '' ? null : (Number(b.season) | 0);
+      db.prepare('UPDATE Resource SET season = ? WHERE id = ?').run(season, id);
+    }
     if (b.display_name !== undefined) {
       db.prepare('UPDATE ResourceOverride SET display_name = ? WHERE resource_id = ?')
         .run(b.display_name || null, id);
@@ -101,11 +128,14 @@ router.put('/resource/:id', (req, res) => {
 });
 
 // POST /api/catalog/bulk { ids:[], op, ... } — multi-rename / arrangement tools.
-//   set-subject   { subject }            merge/rename a show
-//   renumber      (ids in target order)  assign chapters 1..N in the given order
-//   set-showtype  { show_type_id }
-//   find-replace  { field, find, replace } string replace on display_name|subject
-//   template      { template }           display_name = tokens {name}{subject}{chapter}{n}
+//   set-subject     { subject }            merge/rename a show
+//   assign-to-show  { subject }            join a show, re-deriving season+order
+//                                          from each filename (auto season folders)
+//   set-season      { season }             set the season folder (null = none)
+//   renumber        (ids in target order)  assign chapters 1..N in the given order
+//   set-showtype    { show_type_id }
+//   find-replace    { field, find, replace } string replace on display_name|subject
+//   template        { template }           display_name = tokens {name}{subject}{chapter}{n}
 router.post('/bulk', (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
   const op = String(req.body?.op || '');
@@ -127,6 +157,29 @@ router.post('/bulk', (req, res) => {
           db.prepare('UPDATE Resource SET subject = ? WHERE id = ?').run(subject, id);
           if (r) ensureSeries(r.channel_id, subject);
         }
+        break;
+      }
+      case 'assign-to-show': {
+        // Drag-a-folder-onto-a-show: every clip joins `subject`, and its season
+        // + play order are re-derived from the filename so detected seasons turn
+        // into season subfolders automatically (S02E.. → Season 2, chapter 2005).
+        const subject = req.body.subject || null;
+        for (const id of ids) {
+          const r = rowFor.get(id);
+          if (!r) continue;
+          const { season, episode } = parseEpisode(r.name);
+          const chapter = encodeChapter(season, episode);
+          db.prepare('UPDATE Resource SET subject = ?, season = ?, chapter = ? WHERE id = ?')
+            .run(subject, season, chapter, id);
+          ensureSeries(r.channel_id, subject);
+        }
+        break;
+      }
+      case 'set-season': {
+        // Assign (or clear, null) the season folder for the selected clips.
+        const season = req.body.season === null || req.body.season === undefined || req.body.season === ''
+          ? null : (Number(req.body.season) | 0);
+        for (const id of ids) db.prepare('UPDATE Resource SET season = ? WHERE id = ?').run(season, id);
         break;
       }
       case 'renumber': {
@@ -220,8 +273,8 @@ router.post('/reset', (req, res) => {
     for (const id of ids) {
       const o = ov.get(id);
       if (!o) continue;
-      db.prepare('UPDATE Resource SET subject = ?, chapter = ? WHERE id = ?')
-        .run(o.detected_subject, o.detected_chapter ?? 0, id);
+      db.prepare('UPDATE Resource SET subject = ?, chapter = ?, season = ? WHERE id = ?')
+        .run(o.detected_subject, o.detected_chapter ?? 0, o.detected_season ?? null, id);
       db.prepare('DELETE FROM ResourceOverride WHERE resource_id = ?').run(id);
     }
   });

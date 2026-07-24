@@ -614,3 +614,58 @@ test('approval gate: only approved resources reach the scheduler', async () => {
   const some = fitFillers(c1, 1000);
   assert.ok(some.items.length > 0, 're-approved fillers are placeable again');
 });
+
+test('seasonal detection: seasons parsed into a folder level + exposed with rel_dirs', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // A multi-season show, one show folder with SxxEyy episodes across two seasons.
+  const dir = join(mediaDir, 'tvshows', 'Cosmos');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'Cosmos_S01E01_600.mov'), 'x');
+  writeFileSync(join(dir, 'Cosmos_S02E01_600.mov'), 'x');
+  writeFileSync(join(dir, 'Cosmos_S02E02_600.mov'), 'x');
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)')
+    .run(c1, stId('tv_shows'), join(mediaDir, 'tvshows'));
+  const root = (await j('GET', '/api/media/roots')).data.find((r) => r.path === join(mediaDir, 'tvshows'));
+  await j('POST', `/api/media/roots/${root.id}/scan`);
+  db.exec('UPDATE Resource SET approved = 1');
+
+  const cat = (await j('GET', `/api/catalog?channel_id=${c1}`)).data;
+  const cosmos = cat.groups.flatMap((g) => g.shows).find((s) => s.subject === 'Cosmos');
+  assert.ok(cosmos, 'Cosmos show present in the catalog');
+  const seasons = [...new Set(cosmos.episodes.map((e) => e.season))].sort();
+  assert.deepEqual(seasons, [1, 2], 'two season folders detected from the filenames');
+  const s2e2 = cosmos.episodes.find((e) => e.name.includes('S02E02'));
+  assert.equal(s2e2.season, 2, 'season parsed');
+  assert.equal(s2e2.chapter, 2002, 'season-2 episode encoded for global play order');
+  assert.deepEqual(s2e2.rel_dirs, ['Cosmos'], 'rel_dirs mirrors the on-disk folder (Library browser)');
+});
+
+test('catalog editor: assign-to-show, set-season, and reset round-trip', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const movieIds = db.prepare("SELECT id FROM Resource WHERE channel_id=? AND subject='movies'").all(c1).map((r) => r.id);
+  assert.equal(movieIds.length, 4, 'four standalone movies to file under a show');
+
+  // Drag-a-folder-onto-a-show: subject set, season/order re-derived (season-less
+  // movie names stay season-less).
+  const assign = await j('POST', '/api/catalog/bulk', { ids: movieIds, op: 'assign-to-show', subject: 'Retro Cinema' });
+  assert.equal(assign.status, 200);
+  for (const id of movieIds) {
+    const r = db.prepare('SELECT subject, season FROM Resource WHERE id=?').get(id);
+    assert.equal(r.subject, 'Retro Cinema');
+    assert.equal(r.season, null, 'season-less movies get no season folder');
+  }
+  const reg = (await j('GET', `/api/channels/${c1}/series`)).data.find((s) => s.subject === 'Retro Cinema');
+  assert.ok(reg, 'assign-to-show registers the new show as a series');
+
+  // set-season files them explicitly into Season 1.
+  const setS = await j('POST', '/api/catalog/bulk', { ids: movieIds, op: 'set-season', season: 1 });
+  assert.equal(setS.status, 200);
+  assert.equal(db.prepare('SELECT season FROM Resource WHERE id=?').get(movieIds[0]).season, 1);
+
+  // Reset restores the snapshot taken at the first edit (subject 'movies', no season).
+  const reset = await j('POST', '/api/catalog/reset', { ids: movieIds });
+  assert.equal(reset.status, 200);
+  const back = db.prepare('SELECT subject, season FROM Resource WHERE id=?').get(movieIds[0]);
+  assert.equal(back.subject, 'movies', 'reset restores detected subject');
+  assert.equal(back.season, null, 'reset restores detected (null) season');
+});

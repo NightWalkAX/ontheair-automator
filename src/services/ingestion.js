@@ -11,6 +11,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { join, extname, basename, dirname } from 'node:path';
 import { db, withTx } from '../db.js';
 import { loadConfig } from '../config.js';
+import { parseEpisode, encodeChapter } from './episodeParse.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,23 +64,15 @@ function detectSubject(filePath, rootPath) {
 }
 
 /**
- * Infer a chapter number from a filename. Prefers an SxxEyy episode marker: for
- * a single season (S01) the plain episode number, but for season ≥ 2 it is
- * encoded as season*1000 + episode so multi-season shows sort in order and
- * S01E05 / S02E05 don't collide once their seasons are gathered under one show.
- * Else the last standalone integer in the name; 0 when none (single/standalone).
+ * Infer { season, chapter } from a filename. Season is parsed from SxxEyy / NxNN
+ * / "Season N Episode M" markers (see services/episodeParse.js) and stored as a
+ * display/organization level (the "season folder" inside a show); chapter is the
+ * global monotonic ordering key the engine plays by. Season-less content gets a
+ * null season and its plain episode number as the chapter.
  */
-function detectChapter(fileName) {
-  const base = basename(fileName, extname(fileName));
-  const ep = base.match(/[Ss](\d{1,3})[\s._-]*[Ee](\d{1,4})/);
-  if (ep) {
-    const season = Number(ep[1]);
-    const episode = Number(ep[2]);
-    return season > 1 ? season * 1000 + episode : episode;
-  }
-  const nums = base.match(/\d{1,4}/g);
-  if (nums && nums.length) return Number(nums[nums.length - 1]);
-  return 0;
+function detectEpisode(fileName) {
+  const { season, episode } = parseEpisode(basename(fileName, extname(fileName)));
+  return { season, chapter: encodeChapter(season, episode) };
 }
 
 /** Probe a single file's duration (seconds, rounded) via ffprobe. */
@@ -121,18 +114,19 @@ let _upsertStmt = null;
 function upsert(row) {
   if (!_upsertStmt) {
     _upsertStmt = db.prepare(`
-      INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler,
+      INSERT INTO Resource (name, file_path, duration, subject, season, chapter, is_filler,
                             audience_rating, channel_id, show_type_id, added_at)
-      VALUES (@name, @file_path, @duration, @subject, @chapter, @is_filler,
+      VALUES (@name, @file_path, @duration, @subject, @season, @chapter, @is_filler,
               @audience_rating, @channel_id, @show_type_id, @added_at)
       ON CONFLICT(channel_id, file_path) DO UPDATE SET
         duration     = excluded.duration,
         is_filler    = excluded.is_filler,
         show_type_id = excluded.show_type_id,
         added_at     = excluded.added_at,
-        -- A clip re-scanned as a filler loses its old series/chapter; otherwise
-        -- keep the operator's subject/chapter edits (never clobbered by re-scan).
+        -- A clip re-scanned as a filler loses its old series/season/chapter;
+        -- otherwise keep the operator's edits (never clobbered by re-scan).
         subject      = CASE WHEN excluded.is_filler = 1 THEN NULL ELSE subject END,
+        season       = CASE WHEN excluded.is_filler = 1 THEN NULL ELSE season END,
         chapter      = CASE WHEN excluded.is_filler = 1 THEN 0    ELSE chapter END
     `);
   }
@@ -181,10 +175,10 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
 
   const insert = db.prepare(`
     INSERT OR IGNORE INTO Resource
-      (name, file_path, duration, subject, chapter, is_filler, audience_rating,
+      (name, file_path, duration, subject, season, chapter, is_filler, audience_rating,
        channel_id, show_type_id, added_at, last_used_at, sort_order)
     VALUES
-      (@name, @file_path, @duration, @subject, @chapter, @is_filler, @audience_rating,
+      (@name, @file_path, @duration, @subject, @season, @chapter, @is_filler, @audience_rating,
        @channel_id, @show_type_id, @added_at, @last_used_at, @sort_order)
   `);
   const idFor = db.prepare('SELECT id FROM Resource WHERE channel_id = ? AND file_path = ?');
@@ -201,7 +195,7 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
     for (const d of donors) {
       const info = insert.run({
         name: d.name, file_path: d.file_path, duration: d.duration,
-        subject: d.subject, chapter: d.chapter, is_filler: d.is_filler,
+        subject: d.subject, season: d.season ?? null, chapter: d.chapter, is_filler: d.is_filler,
         audience_rating: d.audience_rating, channel_id: newChannelId,
         show_type_id: showTypeId ?? d.show_type_id, added_at: d.added_at,
         last_used_at: d.last_used_at ?? null, sort_order: d.sort_order ?? null,
@@ -253,13 +247,14 @@ export async function scanMediaRoot(mediaRoot) {
       const isFiller = typeIsFiller || (looksLikeFillerFolder(file) ? 1 : 0);
       const info = await stat(file);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
-      const chapter = isFiller ? 0 : detectChapter(file);
+      const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file);
       if (subject) subjects.add(subject);
       upsert({
         name: basename(file, extname(file)),
         file_path: file,
         duration,
         subject,
+        season,
         chapter,
         is_filler: isFiller,
         audience_rating: null,

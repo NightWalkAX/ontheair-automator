@@ -615,6 +615,14 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .cat-lib-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
 .cat-lib-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* file-browser folders (both panes) + library breadcrumb */
+.cat-folder { border-radius: 7px; }
+.cat-folder .cat-dir-name { font-weight: 600; }
+.cat-subhead { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.cat-lib-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 13px; }
+.cat-lib-folder .cat-lib-name { font-weight: 600; }
+.cat-pane.drop-hot { outline: 2px dashed #16a34a; outline-offset: -2px; }
+
 @media (max-width: 780px) { .cat-2pane { grid-template-columns: 1fr; } }
 
 @media (prefers-color-scheme: dark) {
