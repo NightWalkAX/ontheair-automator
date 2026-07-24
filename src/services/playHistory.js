@@ -43,37 +43,46 @@ export function nextSequential(channelId, subject) {
 
 /**
  * Series progression cursor. Returns the chapter number a serial series should
- * play next on a channel, as of a given date. It is `1 + MAX(chapter)` over BOTH
- * what has already aired (PlayHistory) AND what is already scheduled in blocks
- * dated strictly before `beforeDate`. Considering already-scheduled earlier days
- * is what lets a whole week of drafts roll a series forward day by day, since
- * PlayHistory isn't written until content actually airs. Using MAX() makes it
- * naturally idempotent to mirrored/duplicated airings on the same earlier day.
+ * play next on a channel, as of a given date.
+ *
+ * `cursor_chapter` (when set) is AUTHORITATIVE: it is the chapter the admin wants
+ * this series to start from, and it wins over all-time aired history — so resetting
+ * a series back to episode 1 actually schedules episode 1, even if it aired before.
+ * The cursor is folded forward on approval (recordBlockPlays bumps it), so it always
+ * reflects real progression. Within a generation, the series still rolls forward day
+ * by day past whatever was already scheduled earlier IN THE SAME 7-day window — the
+ * window bound keeps a prior week's leftover drafts from leaking into progression.
+ *
+ * With no cursor yet (a never-approved series), fall back to `1 + MAX(chapter)` over
+ * aired PlayHistory (all time) plus earlier-in-window scheduled items.
  */
 export function nextChapter(channelId, subject, beforeDate) {
-  const row = db.prepare(`
-    SELECT MAX(chapter) AS last FROM (
-      SELECT r.chapter AS chapter
-        FROM PlayHistory ph JOIN Resource r ON r.id = ph.resource_id
-        WHERE ph.channel_id = ? AND r.subject = ?
-      UNION ALL
-      SELECT r.chapter AS chapter
-        FROM ScheduleItem si
-        JOIN ScheduledBlock sb ON sb.id = si.block_id
-        JOIN Resource r ON r.id = si.resource_id
-        WHERE r.channel_id = ? AND r.subject = ? AND sb.target_date < ?
-    )
-  `).get(channelId, subject, channelId, subject, beforeDate);
+  // Highest chapter already placed earlier in the current 7-day window.
+  const win = db.prepare(`
+    SELECT MAX(r.chapter) AS m
+    FROM ScheduleItem si
+    JOIN ScheduledBlock sb ON sb.id = si.block_id
+    JOIN Resource r ON r.id = si.resource_id
+    WHERE r.channel_id = ? AND r.subject = ?
+      AND sb.target_date < ? AND sb.target_date >= date(?, '-6 days')
+  `).get(channelId, subject, beforeDate, beforeDate);
+  const earlierMax = win?.m ?? null;
 
-  // A manually-set cursor acts as a floor: cursor_chapter is the chapter the
-  // admin wants to play next, so treat (cursor - 1) as already played. History
-  // and earlier-this-week drafts still roll the series forward from there.
   const cur = db.prepare(
     'SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ?'
   ).get(channelId, subject);
-  const cursorFloor = cur?.cursor_chapter != null ? cur.cursor_chapter - 1 : 0;
+  const cursor = cur?.cursor_chapter ?? null;
 
-  return Math.max(row?.last ?? 0, cursorFloor) + 1;
+  if (cursor != null) {
+    // Start at the cursor; roll forward past anything already placed this window.
+    return Math.max(cursor, (earlierMax ?? cursor - 1) + 1);
+  }
+
+  const hist = db.prepare(`
+    SELECT MAX(r.chapter) AS m FROM PlayHistory ph JOIN Resource r ON r.id = ph.resource_id
+    WHERE ph.channel_id = ? AND r.subject = ?
+  `).get(channelId, subject);
+  return Math.max(hist?.m ?? 0, earlierMax ?? 0) + 1;
 }
 
 /**
