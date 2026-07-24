@@ -656,8 +656,11 @@ function inputDialog(title, label, initial = '', suggestions = null) {
 // episodes. The right (Library) pane mirrors the real on-disk folder tree for
 // the current show type — because filenames alone often omit the show name, so
 // the folder context is what tells you what a clip is. Drag a folder or clip
-// from the Library onto a show/season to organize it (seasons auto-created from
-// S02E.. markers); multi-select checkboxes on the left drive bulk edits.
+// from the Library onto a show to organize it — you're asked which season the
+// clips belong to (blank keeps the seasons parsed from their filenames), or drop
+// straight onto a season folder to skip the question. A whole show that turned
+// out to be one season of another can be folded in with "Merge into show…".
+// Multi-select checkboxes on the left drive bulk edits.
 // Nothing is available to the scheduler until it is approved here.
 // Non-destructive: files on disk are never moved or renamed.
 
@@ -912,7 +915,7 @@ function renderBulkBar() {
   bar.append(
     mk('✓ Approve', 'primary', () => setApproved(1), `Approve ${scope} — makes them available to the scheduler`),
     mk('✕ Unapprove', 'ghost', () => setApproved(0), `Remove approval from ${scope}`),
-    mk('→ Move to show', 'ghost', mergeScope, `Move ${scope} into a show`),
+    mk('⤵ Merge into show…', 'ghost', mergeScope, `Move ${scope} into a show — optionally as one season of it (fixes a season detected as its own show)`),
     mk('🗓 Set season…', 'ghost', setSeasonScope, `Set the season folder for ${scope}`),
     mk('🔢 Fix order', 'ghost', fixOrder, 'Apply the play-order numbers you typed'),
     mk('1..N Renumber', 'ghost', renumberScope, 'Number the selected/shown clips 1..N'),
@@ -984,9 +987,15 @@ function renderEnginePane(pane) {
   else if (!realShow) renderEpisodeList(pane, epsOfShow(engType, engSubject).slice().sort(bySeq), { reorder: false });
   else if (engSeason == null) renderShowRoot(pane);
   else renderEpisodeList(pane, epsOfShow(engType, engSubject).filter((e) => e.season === engSeason).sort(bySeq), { reorder: true });
-  // Inside a real show, the pane itself accepts library drops (auto-season at the
-  // show root; a specific season when one is open).
-  if (realShow) wirePaneDrop(pane, () => assignToShow(catDrag?.ids || [], engSubject, engSeason == null ? undefined : engSeason));
+  // Inside a real show, the pane itself accepts library drops. At the show root
+  // we ask which season the clips belong to; when a specific season is already
+  // open that season is the drop target, so no need to ask.
+  if (realShow) wirePaneDrop(pane, () => {
+    const ids = catDrag?.ids || [];
+    return engSeason == null
+      ? promptSeasonAssign(ids, engSubject)
+      : assignToShow(ids, engSubject, engSeason);
+  });
 }
 
 function folderCheckbox(eps) {
@@ -1020,7 +1029,7 @@ function showRow(s) {
   li.append(el('span', { className: 'muted cat-nav-count', textContent: `${total} ep` }), approvalBadge(approved, total));
   const reg = !s.pseudo && catReg.get(s.subject);
   if (reg && reg.is_serial) li.append(el('span', { className: 'badge', textContent: `next #${nextUp(s.subject) ?? '—'}`, title: 'Episode the scheduler plays next' }));
-  if (!s.pseudo) wireFolderDrop(li, () => assignToShow(catDrag?.ids || [], s.subject));
+  if (!s.pseudo) wireFolderDrop(li, () => promptSeasonAssign(catDrag?.ids || [], s.subject));
   return li;
 }
 
@@ -1239,12 +1248,54 @@ async function reorderFromDom(ol) {
 async function assignToShow(ids, subject, season) {
   catDrag = null;
   if (!ids || !ids.length || !subject) return;
+  // season: undefined = re-derive from filenames; null = no season; a number =
+  // force that season. It must go in the SAME assign-to-show call so the server
+  // encodes it into `chapter` (a bare set-season would leave chapter colliding).
+  const body = { ids, op: 'assign-to-show', subject };
+  if (season !== undefined) body.season = season;
   await withBusy(null, async () => {
-    await api.send('POST', '/api/catalog/bulk', { ids, op: 'assign-to-show', subject });
-    if (season != null) await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-season', season });
+    await api.send('POST', '/api/catalog/bulk', body);
     await loadCatalog();
-    toast(`Moved ${ids.length} clip(s) into “${subject}”${season != null ? ` · Season ${season}` : ''}`, 'ok');
+    const label = season != null && season !== '' ? ` · Season ${season}` : '';
+    toast(`Moved ${ids.length} clip(s) into “${subject}”${label}`, 'ok');
   });
+}
+
+// Best-effort season number for clips about to join a show: an explicit season
+// already parsed onto the clips, else a "Season N"/"S0N" segment in their
+// on-disk folders, else the trailing number of a source subject like the
+// mis-detected "Cosmos Season 3". '' when nothing hints at a season.
+function detectSeasonHint(ids, sourceSubject = null) {
+  const eps = catEpisodes.filter((e) => ids.includes(e.id));
+  const seasons = new Set(eps.map((e) => e.season).filter((s) => s != null));
+  if (seasons.size === 1) return String([...seasons][0]);
+  const seasonRe = /(?:season|temporada|s)\s*0*(\d{1,3})/i;
+  for (const e of eps) for (const seg of e.rel_dirs || []) {
+    const m = seasonRe.exec(seg);
+    if (m) return m[1];
+  }
+  if (sourceSubject) {
+    const m = seasonRe.exec(sourceSubject) || /(\d{1,3})\s*$/.exec(sourceSubject);
+    if (m) return m[1];
+  }
+  return '';
+}
+
+// Ask the operator whether these clips form a season of `subject`, then assign
+// them. Blank answer = keep the seasons parsed from the filenames; a number =
+// file them all under that season. Cancel aborts. Returns true if it ran.
+async function promptSeasonAssign(ids, subject, opts = {}) {
+  if (!ids || !ids.length || !subject) return false;
+  const hint = detectSeasonHint(ids, opts.sourceSubject);
+  const val = await inputDialog(
+    'Add as a season?',
+    `Season number to file these ${ids.length} clip(s) under “${subject}” — leave blank to keep the seasons from their filenames`,
+    hint,
+  );
+  if (val == null) return false;
+  const season = val.trim() === '' ? undefined : (Number(val) | 0);
+  await assignToShow(ids, subject, season);
+  return true;
 }
 async function moveToSubject(ids, subject) {
   if (!ids || !ids.length) return;
@@ -1314,13 +1365,40 @@ async function setApproved(approved) {
   await loadCatalog();
   toast(approved ? `Approved ${ids.length} clip(s)` : `Removed approval from ${ids.length} clip(s)`, 'ok');
 }
+// Move the scoped clips into a show, optionally filing them as one season of it.
+// The headline use is fixing a season that was mis-detected as its own show:
+// open that show, hit Merge, pick the real parent + the season number, and the
+// now-empty source show's registry row is cleaned up automatically.
 async function mergeScope() {
   const ids = scopeIds();
   if (!ids.length) return toast('Nothing to move', 'bad');
-  const existing = [...new Set(catEpisodes.map((e) => e.subject).filter(Boolean))].sort();
-  const subject = await inputDialog('Move into show', `Show name for ${ids.length} clip(s)`, '', existing);
-  if (subject == null || subject === '') return;
-  await moveToSubject(ids, subject);
+  // A whole-show merge = we're inside a real show with nothing individually
+  // selected; that source show is the one we may need to clean up afterwards.
+  const wholeShow = !catSel.size && engSubject != null && engSubject !== UNSORTED && engSubject !== FILLERS;
+  const sourceSubject = wholeShow ? engSubject : null;
+  const existing = [...new Set(catEpisodes.map((e) => e.subject).filter(Boolean))]
+    .filter((s) => s !== sourceSubject).sort();
+  const subject = await inputDialog('Merge into show', `Move ${ids.length} clip(s) into which show?`, '', existing);
+  if (subject == null || subject.trim() === '') return;
+  const target = subject.trim();
+
+  const hint = detectSeasonHint(ids, sourceSubject);
+  const val = await inputDialog(
+    'As which season?',
+    `File these clips as which season of “${target}”? — leave blank to keep the seasons from their filenames`,
+    hint,
+  );
+  if (val == null) return;
+  const season = val.trim() === '' ? undefined : (Number(val) | 0);
+
+  await assignToShow(ids, target, season); // reloads catEpisodes
+  if (sourceSubject && !catEpisodes.some((e) => e.subject === sourceSubject)) {
+    // Emptied the source show — drop its lingering registry row so it stops
+    // showing as an empty series folder.
+    try { await api.send('DELETE', `/api/channels/${catChannelId}/series/${encodeURIComponent(sourceSubject)}`); } catch { /* stays as an empty folder if it refuses */ }
+    await loadCatalog();
+  }
+  if (sourceSubject) goShow(target);
 }
 async function setSeasonScope() {
   const ids = scopeIds();

@@ -76,6 +76,23 @@ router.put('/:id/series', (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/channels/:id/series/:subject — drop a registry row. Used to clean
+// up a mis-detected "season as its own show" after its clips have been merged
+// into the real parent show. Refuses (409) while any non-filler resource still
+// carries the subject, so an in-use series can never silently disappear.
+router.delete('/:id/series/:subject', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subject = decodeURIComponent(req.params.subject);
+  const inUse = db.prepare(
+    'SELECT COUNT(*) AS n FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0'
+  ).get(channelId, subject).n;
+  if (inUse) return res.status(409).json({ error: `series still has ${inUse} clip(s)` });
+  const info = db.prepare(
+    'DELETE FROM ChannelSeries WHERE channel_id = ? AND subject = ?'
+  ).run(channelId, subject);
+  res.json({ ok: true, deleted: info.changes });
+});
+
 // GET /api/channels/:id/series/:subject/chapters — ordered chapters for a series.
 router.get('/:id/series/:subject/chapters', (req, res) => {
   const channelId = Number(req.params.id);
