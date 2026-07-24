@@ -241,6 +241,12 @@ function emptyState(icon, title, hint) {
 }
 
 $('#btnReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadSchedule));
+$('#btnDownload').addEventListener('click', () => {
+  // Printable schedule (fillers excluded) for the current week + channel filter.
+  // No channel filter → one combined document covering every channel.
+  const week = $('#weekStart').value || isoToday();
+  window.open(`/api/blocks/export?week=${week}${scheduleChannelQuery()}`, '_blank');
+});
 $('#btnGenerate').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}${scheduleChannelQuery()}`);
   const n = r.results?.length ?? 0;
@@ -329,7 +335,7 @@ function renderItems() {
         }
         epSel.onchange = () => withBusy(null, async () => {
           await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
-          toast('Episode set — cursor updated, later drafts regenerated', 'ok', it.subject);
+          toast(`Starting at Ep ${epSel.value} — this block and later drafts rebuilt`, 'ok', it.subject);
           await openBlock(currentBlock.block.id);
           await loadSchedule();
         });

@@ -193,60 +193,22 @@ export function pickMainContent(template, block, blockSecs) {
 }
 
 /**
- * Filler packer. Given `remaining` seconds to fill, choose fillers whose total
- * duration is as close to `remaining` as possible WITHOUT exceeding it, and not
- * more than maxUnderrun below it.
+ * Build a reusable filler packer for a channel. Loads the approved filler pool
+ * once, groups it by duration (each group LRU-ordered so repeats spread across
+ * distinct clips), and returns a `pack(target)` closure plus a `hasFillers` flag.
  *
- * Unbounded knapsack over integer-second durations — fillers MAY repeat, which
- * is what lets a small/coarse filler pool still fill a block to the second
- * (the previous subset-sum packer left large underruns when it ran out of
- * distinct fillers). "Repeat heat": among fillers of the same duration we hand
- * out the least-recently-used first (Resource.last_used_at, stamped on approval),
- * so repeats spread across the pool instead of hammering one clip.
- *
- * Returns { items, total, fits }.
+ * `pack(target)` runs an unbounded knapsack over integer-second durations —
+ * fillers MAY repeat, which lets a small/coarse pool fill a gap to the second —
+ * and returns { items, total } for the LARGEST reachable total <= target (0s
+ * overrun ceiling), preferring fewer/longer fillers. The LRU rotation cursor is
+ * SHARED across successive pack() calls, so filling several gaps in one block
+ * spreads repeats over the whole pool instead of hammering one clip per gap.
  */
-export function fitFillers(channelId, remaining) {
-  const cfg = loadConfig().filler || {};
-  const maxUnderrun = cfg.maxUnderrunSeconds ?? 5;
-
+export function makeFillerPacker(channelId) {
   const fillers = db.prepare(
     'SELECT * FROM Resource WHERE channel_id = ? AND is_filler = 1 AND approved = 1'
   ).all(channelId);
 
-  if (remaining <= 0) {
-    return { items: [], total: 0, fits: remaining >= -maxUnderrun };
-  }
-  if (!fillers.length) {
-    return { items: [], total: 0, fits: remaining <= maxUnderrun };
-  }
-
-  // Distinct usable durations, ascending.
-  const durations = [...new Set(fillers.map((f) => f.duration))]
-    .filter((d) => d > 0 && d <= remaining)
-    .sort((a, b) => a - b);
-
-  // Unbounded knapsack: reach[t] = t seconds is exactly composable from fillers.
-  // fromDur[t] records a duration used to reach t, preferring the LARGEST that
-  // fits so we favour fewer, longer fillers over many tiny ones.
-  const reach = new Array(remaining + 1).fill(false);
-  const fromDur = new Array(remaining + 1).fill(0);
-  reach[0] = true;
-  for (let t = 1; t <= remaining; t++) {
-    for (let k = durations.length - 1; k >= 0; k--) {
-      const d = durations[k];
-      if (d <= t && reach[t - d]) { reach[t] = true; fromDur[t] = d; break; }
-    }
-  }
-
-  // Largest reachable total <= remaining (0s overrun ceiling).
-  let best = 0;
-  for (let t = remaining; t >= 0; t--) {
-    if (reach[t]) { best = t; break; }
-  }
-
-  // Group fillers by duration, each ordered least-recently-used first so repeats
-  // are handed out round-robin across distinct clips of the same length.
   const byDur = new Map();
   for (const f of fillers) {
     if (!byDur.has(f.duration)) byDur.set(f.duration, []);
@@ -255,21 +217,124 @@ export function fitFillers(channelId, remaining) {
   for (const arr of byDur.values()) {
     arr.sort((a, b) => String(a.last_used_at || '').localeCompare(String(b.last_used_at || '')));
   }
+  const allDurations = [...byDur.keys()].filter((d) => d > 0).sort((a, b) => a - b);
+  const cursor = new Map(); // duration -> LRU rotation offset, shared across pack() calls
 
-  // Reconstruct the duration sequence, then assign concrete filler rows,
-  // rotating within each duration's LRU-ordered group.
-  const durSeq = [];
-  for (let t = best; t > 0; t -= fromDur[t]) durSeq.push(fromDur[t]);
-  const cursor = new Map();
-  const items = durSeq.map((d) => {
-    const arr = byDur.get(d);
-    const i = (cursor.get(d) || 0) % arr.length;
-    cursor.set(d, (cursor.get(d) || 0) + 1);
-    return arr[i];
-  }).reverse();
+  function pack(target) {
+    if (target <= 0 || !fillers.length) return { items: [], total: 0 };
+    const durations = allDurations.filter((d) => d <= target);
+    if (!durations.length) return { items: [], total: 0 };
 
-  const underrun = remaining - best;
-  return { items, total: best, fits: underrun <= maxUnderrun };
+    // reach[t] = t seconds is exactly composable; fromDur[t] records a duration
+    // used to reach t, preferring the LARGEST that fits (fewer, longer fillers).
+    const reach = new Array(target + 1).fill(false);
+    const fromDur = new Array(target + 1).fill(0);
+    reach[0] = true;
+    for (let t = 1; t <= target; t++) {
+      for (let k = durations.length - 1; k >= 0; k--) {
+        const d = durations[k];
+        if (d <= t && reach[t - d]) { reach[t] = true; fromDur[t] = d; break; }
+      }
+    }
+    let best = 0;
+    for (let t = target; t >= 0; t--) { if (reach[t]) { best = t; break; } }
+
+    const durSeq = [];
+    for (let t = best; t > 0; t -= fromDur[t]) durSeq.push(fromDur[t]);
+    const items = durSeq.map((d) => {
+      const arr = byDur.get(d);
+      const i = (cursor.get(d) || 0) % arr.length;
+      cursor.set(d, (cursor.get(d) || 0) + 1);
+      return arr[i];
+    }).reverse();
+    return { items, total: best };
+  }
+
+  return { pack, hasFillers: fillers.length > 0 };
+}
+
+/**
+ * Filler packer (single-shot). Choose fillers whose total duration is as close
+ * to `remaining` as possible without exceeding it, within maxUnderrun.
+ * Returns { items, total, fits }.
+ */
+export function fitFillers(channelId, remaining) {
+  const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
+  const packer = makeFillerPacker(channelId);
+  if (remaining <= 0) return { items: [], total: 0, fits: remaining >= -maxUnderrun };
+  if (!packer.hasFillers) return { items: [], total: 0, fits: remaining <= maxUnderrun };
+  const { items, total } = packer.pack(remaining);
+  return { items, total, fits: remaining - total <= maxUnderrun };
+}
+
+// Quarter-hour boundary, in seconds. Main content is aligned to :00/:15/:30/:45.
+const QUARTER_SECS = 15 * 60;
+
+/** Seconds-of-day for an 'HH:MM' clock time. */
+function timeOfDaySeconds(hhmm) {
+  const [h, m] = String(hhmm || '00:00').split(':').map(Number);
+  return (h || 0) * 3600 + (m || 0) * 60;
+}
+
+/**
+ * Quarter-hour aligned block builder. Places the block's main content so each
+ * main item STARTS on the next :00/:15/:30/:45 clock boundary at or after the
+ * running position, padding the gap before it with fillers ("use fillers to get
+ * there"). Fillers therefore land before the first item (only when the block
+ * doesn't start on a boundary), between items (alignment gaps), and after the
+ * last item (trailing gap) — bookends plus in-between, driven by alignment.
+ *
+ * Alignment is best-effort ("if possible"): a gap the coarse filler pool can't
+ * hit exactly just leaves the next item slightly early, and the running clock
+ * self-corrects at the following boundary. The TRAILING gap does the precise
+ * fill, so the block-level 0s-overrun / maxUnderrun tolerance still holds.
+ *
+ * Returns { items, total } — the ordered resource sequence and its duration.
+ */
+export function buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer) {
+  const series = templateSeries(template, channelId);
+  const iters = series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
+
+  const items = [];
+  const usedIds = new Set();
+  let total = 0; // placed seconds so far (main + fillers), i.e. offset from block start
+  let active = iters.slice();
+
+  while (active.length) {
+    let progressed = false;
+    const stillActive = [];
+    for (const it of active) {
+      const r = it.peek();
+      if (!r || usedIds.has(r.id)) continue;
+      // Filler gap needed to push this item's start onto the next quarter mark.
+      const abs = startSecs + total;
+      const gap = (Math.ceil(abs / QUARTER_SECS) * QUARTER_SECS) - abs;
+      // Skip if the item can't fit even once aligned (gap upper-bounds the fill).
+      if (total + gap + r.duration > blockSecs) continue;
+      if (gap > 0) {
+        const fill = packer.pack(gap);
+        for (const f of fill.items) items.push(f);
+        total += fill.total; // actual filler secs (<= gap; drift self-corrects next mark)
+      }
+      items.push(r);
+      total += r.duration;
+      usedIds.add(r.id);
+      it.consume();
+      progressed = true;
+      stillActive.push(it);
+    }
+    active = stillActive;
+    if (!progressed) break;
+  }
+
+  // Trailing fillers fill to the block end and carry the tolerance guarantee.
+  const trailing = blockSecs - total;
+  if (trailing > 0) {
+    const fill = packer.pack(trailing);
+    for (const f of fill.items) items.push(f);
+    total += fill.total;
+  }
+  return { items, total };
 }
 
 // --- Block population -------------------------------------------------------
@@ -380,33 +445,48 @@ export function populateBlock(block) {
   ).all(block.id);
   const keptSecs = kept.reduce((s, i) => s + i.duration, 0);
 
-  const main = kept.length ? [] : pickMainContent(template, block, blockSecs);
-  const mainSecs = main.reduce((s, r) => s + r.duration, 0);
-
-  const remaining = blockSecs - keptSecs - mainSecs;
-  const { items: fillers, total: fillerSecs, fits } = fitFillers(channelId, remaining);
-
   const insert = db.prepare(
     'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, ?, 0)'
   );
-  let order = kept.length;
-  // Spread fillers across the block instead of clumping them at the end: one
-  // gap before each main item and one after the last (main.length + 1 gaps),
-  // distributing fillers as evenly as possible (remainder to the leading gaps)
-  // while preserving filler order. With no main content, fillers just stream in.
-  for (const r of spreadFillers(main, fillers)) insert.run(block.id, r.id, order++);
+  const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
+  let mainCount = 0;
+  let fillerCount = 0;
+  let placedSecs = 0;
+
+  if (kept.length) {
+    // A manual override is pinned (single-block regenerate): don't rebuild main
+    // content, just top up around it. Fillers stream in after the kept items.
+    const remaining = blockSecs - keptSecs;
+    const { items: fillers } = fitFillers(channelId, remaining);
+    let order = kept.length;
+    for (const r of fillers) insert.run(block.id, r.id, order++);
+    fillerCount = fillers.length;
+    placedSecs = keptSecs + fillers.reduce((s, r) => s + r.duration, 0);
+  } else {
+    // Fresh build: place main content on quarter-hour marks, packing fillers
+    // before/between/after to hit each mark and the block end.
+    const startSecs = timeOfDaySeconds(start);
+    const packer = makeFillerPacker(channelId);
+    const { items: seq, total } = buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer);
+    let order = 0;
+    for (const r of seq) {
+      insert.run(block.id, r.id, order++);
+      if (r.is_filler) fillerCount++; else mainCount++;
+    }
+    placedSecs = total;
+  }
 
   // Keep secondary airings identical to what we just built (same channel).
   resyncMirrors(template.id, block.target_date, channelId, block.id);
 
-  const underrun = blockSecs - (keptSecs + mainSecs + fillerSecs);
+  const underrun = blockSecs - placedSecs;
   return {
     blockId: block.id,
     blockSeconds: blockSecs,
-    mainCount: main.length,
-    fillerCount: fillers.length,
+    mainCount,
+    fillerCount,
     underrun,
-    fits,
+    fits: underrun >= 0 && underrun <= maxUnderrun,
     mirrored: false,
   };
 }
@@ -468,10 +548,28 @@ export function rollForwardTemplates(weekStart = new Date(), channelId = null) {
 }
 
 /**
- * Generate a full week: roll forward templates, then populate each block.
- * Pass a channelId to restrict generation to a single channel (per-channel tab).
+ * Wipe every DRAFT block (and its items, via ON DELETE CASCADE) in the 7-day
+ * window for the scope, so a regenerate always rebuilds from scratch. Approved
+ * and exported blocks are committed history and are left untouched.
+ */
+function wipeDraftBlocks(weekStart, channelId) {
+  const clauses = ["status = 'draft'", 'target_date BETWEEN ? AND ?'];
+  const params = [dateStr(0, weekStart), dateStr(6, weekStart)];
+  if (channelId != null) {
+    clauses.push("COALESCE(channel_id, (SELECT channel_id FROM BlockTemplate WHERE id = template_id)) = ?");
+    params.push(Number(channelId));
+  }
+  db.prepare(`DELETE FROM ScheduledBlock WHERE ${clauses.join(' AND ')}`).run(...params);
+}
+
+/**
+ * Generate a full week: delete the existing draft schedule for the scope, roll
+ * forward templates, then populate each freshly-created draft block. Approved/
+ * exported blocks survive the wipe and are not repopulated. Pass a channelId to
+ * restrict generation to a single channel (per-channel tab).
  */
 export function generateWeek(weekStart = new Date(), channelId = null) {
+  wipeDraftBlocks(weekStart, channelId);
   const blocks = rollForwardTemplates(weekStart, channelId);
-  return blocks.map((b) => populateBlock(b)).filter(Boolean);
+  return blocks.filter((b) => b.status === 'draft').map((b) => populateBlock(b)).filter(Boolean);
 }

@@ -579,9 +579,13 @@ test('set-episode: correct an episode from the schedule view, propagate cursor +
   const set = await j('POST', `/api/blocks/${mon.id}/items/${mathItem.id}/set-episode`, { chapter: targetCh });
   assert.equal(set.status, 200, JSON.stringify(set.data));
 
-  const after = (await j('GET', `/api/blocks/${mon.id}`)).data.items.find((it) => it.id === mathItem.id);
-  assert.equal(after.resource_id, targetRes.id, 'block item swapped to the chosen chapter');
-  assert.equal(after.is_manual_override, 1, 'swap marked as a manual override');
+  // Calibration rebuilds the block from the cursor rather than pinning one item:
+  // the block's first Math clip is now the chosen chapter, freshly generated.
+  const afterItems = (await j('GET', `/api/blocks/${mon.id}`)).data.items;
+  const firstMath = afterItems.find((it) => it.subject === 'Math');
+  assert.ok(firstMath, 'block still has a Math item after rebuild');
+  assert.equal(firstMath.resource_id, targetRes.id, 'first Math clip is the chosen chapter');
+  assert.equal(firstMath.is_manual_override, 0, 'rebuilt item is not a manual pin');
   const cursor = (await j('GET', `/api/channels/${c1}/series/${encodeURIComponent('Math')}/cursor`)).data;
   assert.equal(cursor.cursor, targetCh, 'series cursor moved to the corrected episode');
   // Tuesday's still-draft block was regenerated and still fits.
@@ -711,4 +715,65 @@ test('series delete refuses while clips still use the subject', async () => {
   assert.equal(inUse.status, 409, 'cannot delete a series that still has clips');
   const reg = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
   assert.ok(reg.includes('History'), 'in-use series untouched');
+});
+
+test('quarter-hour alignment: main content starts on :00/:15/:30/:45 marks', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const gen = await j('POST', '/api/blocks/generate?weekStart=2026-12-07'); // Monday
+  assert.equal(gen.status, 200);
+  const view = (await j('GET', '/api/blocks?week=2026-12-07')).data;
+  const primary = view.blocks.find((b) => b.channel_id === c1 && !b.is_mirror && b.template_name === 'Morning Lessons');
+  assert.ok(primary, 'a lessons block exists');
+  assert.equal(primary.start_time, '08:00', 'block starts on the hour');
+
+  const items = (await j('GET', `/api/blocks/${primary.id}`)).data.items;
+  // Walk durations; every MAIN item must begin on a 15-minute clock boundary.
+  let offset = 0;
+  const mainOffsets = [];
+  for (const it of items) {
+    if (!it.is_filler) mainOffsets.push(offset);
+    offset += it.duration;
+  }
+  assert.ok(mainOffsets.length >= 2, 'block has multiple main items');
+  for (const off of mainOffsets) {
+    assert.equal(off % 900, 0, `main item at offset ${off}s lands on a quarter-hour mark`);
+  }
+});
+
+test('regenerate always wipes drafts and rebuilds from scratch', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  await j('POST', '/api/blocks/generate?weekStart=2026-12-14'); // Monday
+  const before = (await j('GET', '/api/blocks?week=2026-12-14')).data.blocks;
+  const primary = before.find((b) => b.channel_id === c1 && !b.is_mirror && b.template_name === 'Morning Lessons');
+  assert.ok(primary, 'a draft block exists');
+
+  // Inject a manual override item, then regenerate the week.
+  const detail = (await j('GET', `/api/blocks/${primary.id}`)).data;
+  const anExtra = detail.items[0].resource_id;
+  const withManual = detail.items.map((i) => ({ resource_id: i.resource_id }))
+    .concat([{ resource_id: anExtra, is_manual_override: 1 }]);
+  await j('PUT', `/api/blocks/${primary.id}/items`, { items: withManual });
+
+  const regen = await j('POST', '/api/blocks/generate?weekStart=2026-12-14');
+  assert.equal(regen.status, 200);
+  const after = (await j('GET', '/api/blocks?week=2026-12-14')).data.blocks;
+  // Same number of blocks (wipe+recreate, not duplicated).
+  assert.equal(after.length, before.length, 'block count is stable across regenerate');
+  // The rebuilt block has no manual override lingering.
+  const rebuilt = after.find((b) => b.channel_id === c1 && !b.is_mirror && b.template_name === 'Morning Lessons');
+  const rebuiltItems = (await j('GET', `/api/blocks/${rebuilt.id}`)).data.items;
+  assert.ok(rebuiltItems.every((i) => i.is_manual_override === 0), 'manual overrides wiped on regenerate');
+});
+
+test('export: printable schedule is HTML, excludes fillers, shows air times', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  await j('POST', `/api/blocks/generate?weekStart=2026-12-21&channel_id=${c1}`); // Monday, one channel
+  const res = await fetch(base + `/api/blocks/export?week=2026-12-21&channel_id=${c1}`);
+  assert.equal(res.status, 200);
+  assert.ok((res.headers.get('content-type') || '').includes('text/html'), 'served as HTML');
+  const html = await res.text();
+  assert.ok(html.includes('Air time'), 'has an air-time column');
+  assert.ok(/Math|History|Biology/.test(html), 'lists main programming');
+  // Filler clip names (f0_30, f1_45, ...) must not appear in the export.
+  assert.ok(!/f\d+_\d+\.mov/.test(html) && !/>f\d+_/.test(html), 'fillers excluded from the export');
 });
