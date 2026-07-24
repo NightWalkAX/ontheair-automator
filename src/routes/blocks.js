@@ -298,6 +298,142 @@ router.get('/', (req, res) => {
   res.json({ week: dates, blocks });
 });
 
+// GET /api/blocks/export?week=YYYY-MM-DD&channel_id=N — a printable, print-to-PDF
+// friendly HTML schedule for the 7-day window. Fillers are excluded; each main
+// clip shows its real on-air clock time (computed from the block start plus the
+// running duration of everything before it, fillers included). Omit channel_id
+// for a single combined document covering every channel.
+router.get('/export', (req, res) => {
+  const start = req.query.week ? new Date(String(req.query.week) + 'T00:00:00') : new Date();
+  const channelId = req.query.channel_id ? Number(req.query.channel_id) : null;
+  const dates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  const clauses = ['sb.target_date BETWEEN ? AND ?'];
+  const params = [dates[0], dates[6]];
+  if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
+  const blocks = db.prepare(`
+    SELECT sb.id, sb.target_date, sb.status,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           bt.name AS template_name,
+           COALESCE(s.start_time, bt.start_time) AS start_time,
+           COALESCE(s.end_time, bt.end_time)     AS end_time,
+           COALESCE(s.slot_order, 0)             AS slot_order,
+           c.name AS channel_name
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    JOIN ChannelType   c  ON c.id = COALESCE(sb.channel_id, bt.channel_id)
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY c.name, sb.target_date, start_time, slot_order
+  `).all(...params);
+
+  const itemsOf = db.prepare(`
+    SELECT r.name, r.duration, r.is_filler, r.subject, r.chapter
+    FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+    WHERE si.block_id = ? ORDER BY si.play_order
+  `);
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const hhmmss = (secs) => {
+    const s = ((secs % 86400) + 86400) % 86400;
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return [h, m, ss].map((n) => String(n).padStart(2, '0')).join(':');
+  };
+  const dur = (secs) => {
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    return (h ? [h, m, s] : [m, s]).map((n) => String(n).padStart(2, '0')).join(':');
+  };
+  const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayLabel = (d) => `${WD[new Date(d + 'T00:00:00').getDay()]} ${d}`;
+
+  // Group blocks: channel -> date -> [block]
+  const byChannel = new Map();
+  for (const b of blocks) {
+    if (!byChannel.has(b.channel_name)) byChannel.set(b.channel_name, new Map());
+    const byDate = byChannel.get(b.channel_name);
+    if (!byDate.has(b.target_date)) byDate.set(b.target_date, []);
+    byDate.get(b.target_date).push(b);
+  }
+
+  const scopeLabel = channelId != null
+    ? (blocks[0]?.channel_name || `Channel ${channelId}`)
+    : 'All channels';
+  let body = '';
+  if (!blocks.length) {
+    body = `<p class="empty">No blocks scheduled for the week of ${esc(dates[0])}.</p>`;
+  }
+  for (const [channelName, byDate] of byChannel) {
+    body += `<section class="channel"><h1>${esc(channelName)}</h1>`;
+    for (const d of dates) {
+      const dayBlocks = byDate.get(d);
+      if (!dayBlocks || !dayBlocks.length) continue;
+      body += `<h2>${esc(dayLabel(d))}</h2>`;
+      for (const b of dayBlocks) {
+        const rows = itemsOf.all(b.id);
+        const mains = [];
+        let offset = 0; // seconds from block start, counting fillers too
+        const blockStart = (() => { const [h, m] = b.start_time.split(':').map(Number); return h * 3600 + m * 60; })();
+        for (const it of rows) {
+          if (!it.is_filler) {
+            const label = it.subject
+              ? `${it.subject}${it.chapter ? ` — Ep ${it.chapter}` : ''}${it.name ? ` (${it.name})` : ''}`
+              : it.name;
+            mains.push({ air: hhmmss(blockStart + offset), label, dur: dur(it.duration) });
+          }
+          offset += it.duration;
+        }
+        const mirror = b.slot_order > 0 ? ' <span class="mirror">🔁 repeat airing</span>' : '';
+        body += `<div class="block"><h3>${esc(b.start_time)}–${esc(b.end_time)} · ${esc(b.template_name)} `
+          + `<span class="status">${esc(b.status)}</span>${mirror}</h3>`;
+        if (!mains.length) {
+          body += `<p class="empty">No main programming (fillers only).</p></div>`;
+          continue;
+        }
+        body += '<table><thead><tr><th>Air time</th><th>Programme</th><th>Duration</th></tr></thead><tbody>';
+        for (const m of mains) body += `<tr><td class="t">${m.air}</td><td>${esc(m.label)}</td><td class="t">${m.dur}</td></tr>`;
+        body += '</tbody></table></div>';
+      }
+    }
+    body += '</section>';
+  }
+
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Schedule — ${esc(scopeLabel)} — week of ${esc(dates[0])}</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #111; margin: 0; padding: 24px; background: #fff; }
+  .bar { position: sticky; top: 0; display: flex; gap: 12px; align-items: center; padding: 8px 0 16px; background: #fff; }
+  .bar h1 { font-size: 18px; margin: 0; flex: 1; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid #888; border-radius: 6px; background: #f4f4f4; cursor: pointer; }
+  section.channel { margin: 0 0 28px; page-break-after: always; }
+  section.channel:last-child { page-break-after: auto; }
+  h1 { font-size: 20px; border-bottom: 2px solid #111; padding-bottom: 4px; }
+  h2 { font-size: 15px; margin: 18px 0 6px; color: #333; }
+  .block { margin: 0 0 10px; }
+  .block h3 { font-size: 13px; font-weight: 600; margin: 8px 0 3px; color: #222; }
+  .status { font-weight: 400; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #666; }
+  .mirror { font-weight: 400; font-size: 11px; color: #666; }
+  table { border-collapse: collapse; width: 100%; max-width: 720px; }
+  th, td { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid #e2e2e2; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #666; }
+  td.t, th:first-child, th:last-child { font-variant-numeric: tabular-nums; }
+  td.t { white-space: nowrap; }
+  .empty { color: #888; font-style: italic; }
+  @media print { .bar { display: none; } body { padding: 0; } }
+</style></head><body>
+<div class="bar"><h1>Schedule · ${esc(scopeLabel)} · week of ${esc(dates[0])}</h1>
+<button onclick="window.print()">🖨 Print / Save as PDF</button></div>
+${body}
+</body></html>`;
+
+  res.type('html').send(html);
+});
+
 // GET /api/blocks/:id — full block with ordered items + validation.
 router.get('/:id', (req, res) => {
   const v = validateBlock(Number(req.params.id));
@@ -332,10 +468,11 @@ router.put('/:id/items', (req, res) => {
 });
 
 // POST /api/blocks/:id/items/:itemId/set-episode { chapter }
-// Correct which episode of a serial show plays in this block, then propagate:
-// (1) swap the item to the chosen chapter (marked manual), (2) set the series
-// cursor so future generations continue from there, (3) regenerate later
-// still-draft blocks this week for the same channel so their ordering follows.
+// Calibrate where a serial show starts. Sets the series cursor to the chosen
+// chapter (and marks the series serial), then wipes + rebuilds this block and
+// every later still-draft block this week for the same channel so the whole
+// run rolls forward from the corrected episode. Rebuilding (rather than pinning
+// a single item) keeps multi-episode blocks intact and propagates cleanly.
 router.post('/:id/items/:itemId/set-episode', (req, res) => {
   const id = Number(req.params.id);
   const itemId = Number(req.params.itemId);
@@ -370,32 +507,33 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
 
   try {
   withTx(() => {
-    // (1) swap this block's item and mark it a manual override.
-    db.prepare(
-      'UPDATE ScheduleItem SET resource_id = ?, is_manual_override = 1 WHERE id = ?'
-    ).run(target.id, itemId);
-
-    // (2) set the series cursor (ensure a row exists first), so future
-    // generations continue from the corrected episode.
+    // (1) set the series cursor (ensure a row exists, mark it serial), so this
+    // block and future generations start from the corrected episode.
     db.prepare(`
       INSERT INTO ChannelSeries (channel_id, subject, is_serial, is_active, play_order)
       VALUES (?, ?, 1, 1, (SELECT COALESCE(MAX(play_order), -1) + 1 FROM ChannelSeries WHERE channel_id = ?))
-      ON CONFLICT(channel_id, subject) DO NOTHING
+      ON CONFLICT(channel_id, subject) DO UPDATE SET is_serial = 1
     `).run(block.channel_id, item.subject, block.channel_id);
     db.prepare(
       'UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?'
     ).run(chapter, block.channel_id, item.subject);
 
-    // (3) regenerate later still-draft blocks this week (same channel). nextChapter
-    // floors at the cursor and unions earlier-dated items, so they roll forward
-    // from here. Bounded to the 7-day generation window.
-    const later = db.prepare(`
-      SELECT id FROM ScheduledBlock
-      WHERE status = 'draft'
-        AND COALESCE(channel_id, (SELECT channel_id FROM BlockTemplate WHERE id = template_id)) = ?
-        AND target_date > ? AND target_date <= date(?, '+6 days')
+    // (2) wipe + rebuild this block and every later still-draft block this week
+    // (same channel), primary airings first so mirrors copy a populated source.
+    // nextChapter floors at the cursor and unions earlier-dated items, so the
+    // run rolls forward from the corrected episode. Bounded to the 7-day window.
+    const scope = db.prepare(`
+      SELECT sb.id, COALESCE(s.slot_order, 0) AS slot_order
+      FROM ScheduledBlock sb
+      JOIN BlockTemplate bt ON bt.id = sb.template_id
+      LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+      WHERE sb.status = 'draft'
+        AND COALESCE(sb.channel_id, bt.channel_id) = ?
+        AND sb.target_date >= ? AND sb.target_date <= date(?, '+6 days')
+      ORDER BY sb.target_date, sb.template_id, slot_order
     `).all(block.channel_id, block.target_date, block.target_date);
-    for (const b of later) {
+    for (const b of scope) db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(b.id);
+    for (const b of scope) {
       const full = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(b.id);
       populateBlock(full);
     }
