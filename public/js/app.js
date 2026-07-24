@@ -652,11 +652,16 @@ function inputDialog(title, label, initial = '', suggestions = null) {
 }
 
 let catEpisodes = [];            // flat list of resources for the channel (with file_path)
+let catReg = new Map();          // subject -> ChannelSeries row (engine flags + cursor)
 let catShowTypes = [];
 let catChannels = [];
-let catRoot = '';                // longest common directory of the channel's files
-let catPath = '';                // directory currently being browsed
-const catFolderSel = new Set();  // sub-folder paths checked (folder-level actions)
+let catChannelId = null;
+let catView = 'series';          // 'series' (engine) | 'folders' (disk explorer)
+let catSeriesSel = null;         // subject currently opened in series view
+let catRoot = '';                // folders view: common directory root
+let catPath = '';                // folders view: current directory
+const catFolderSel = new Set();  // folders view: checked sub-folder paths
+const catFileSel = new Set();    // selected resource ids (both views)
 let catOrderInputs = [];         // { id, input } for the files shown (Fix order)
 
 async function loadCatalogTab() {
@@ -671,7 +676,6 @@ async function loadCatalogTab() {
 
 const dirOf = (p) => p.slice(0, p.lastIndexOf('/'));
 
-// Longest common directory across a set of file paths (the browser's root).
 function commonDir(paths) {
   if (!paths.length) return '';
   let parts = dirOf(paths[0]).split('/');
@@ -687,28 +691,249 @@ function commonDir(paths) {
 async function loadCatalog() {
   const channelId = Number($('#catChannel').value);
   if (!channelId) return;
-  const data = await api.get(`/api/catalog?channel_id=${channelId}`);
+  catChannelId = channelId;
+  const [data, reg] = await Promise.all([
+    api.get(`/api/catalog?channel_id=${channelId}`),
+    api.get(`/api/channels/${channelId}/series`),
+  ]);
   catEpisodes = [];
   for (const g of data.groups) for (const show of g.shows) for (const ep of show.episodes) catEpisodes.push(ep);
+  catReg = new Map(reg.map((r) => [r.subject, r]));
   catRoot = commonDir(catEpisodes.map((e) => e.file_path));
-  // Keep the current directory if it's still inside the tree; else start at root.
   if (!catPath || !(catPath === catRoot || catPath.startsWith(catRoot + '/')) || !pathExists(catPath)) catPath = catRoot;
+  catFileSel.clear();
   catFolderSel.clear();
-  renderCrumb();
-  renderBrowser();
+  renderCatalog();
 }
 
-// A directory still exists if any file lives at or under it.
+function setCatView(v) {
+  catView = v;
+  catSeriesSel = null;
+  catFileSel.clear();
+  catFolderSel.clear();
+  $('#catViewSeries').classList.toggle('active', v === 'series');
+  $('#catViewFolders').classList.toggle('active', v === 'folders');
+  renderCatalog();
+}
+
+function renderCatalog() {
+  if (catView === 'folders') { renderCrumbFolders(); renderBrowser(); }
+  else catRenderSeries();
+}
+
+// ---- shared episode row ----------------------------------------------------
+// Renders a file/episode line with: select checkbox, order number, editable
+// display name, series/filler/edited badges, duration, delete. `showSeries`
+// adds the series badge (used in folder view where series isn't obvious).
+function episodeRow(ep, { showSeries = false } = {}) {
+  const li = el('li', { className: ep.is_filler ? 'filler' : '' });
+  const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: catFileSel.has(ep.id), title: 'Select this clip' });
+  cb.onchange = () => { if (cb.checked) catFileSel.add(ep.id); else catFileSel.delete(ep.id); renderCatBulkBar(); };
+  li.append(cb);
+  const ord = el('input', { className: 'cat-ord', type: 'number', value: ep.chapter, title: 'Play order — type numbers, then “Fix order”' });
+  catOrderInputs.push({ id: ep.id, input: ord });
+  li.append(ord);
+  const nameIn = el('input', { className: 'cat-name grow', value: ep.display_name, title: `File on disk: ${ep.raw_name}` });
+  nameIn.onchange = () => withBusy(null, async () => { await api.send('PUT', `/api/catalog/resource/${ep.id}`, { display_name: nameIn.value }); ep.display_name = nameIn.value; toast('Name saved', 'ok'); });
+  li.append(nameIn);
+  if (showSeries && ep.subject) li.append(el('span', { className: 'badge', textContent: ep.subject, title: 'Series' }));
+  if (ep.is_filler) li.append(el('span', { className: 'badge', textContent: 'filler' }));
+  if (ep.has_override) li.append(el('span', { className: 'badge', textContent: 'edited', title: 'Has local overrides' }));
+  li.append(el('span', { className: 'dur', textContent: fmt(ep.duration) }));
+  const del = el('button', { className: 'mini danger', textContent: '🗑', title: 'Delete this clip from the catalog (for duplicates)' });
+  del.onclick = () => deleteResource(ep);
+  li.append(del);
+  return li;
+}
+
+// Ids to act on: selected clips if any, else the supplied fallback list.
+const targetIds = (fallback) => (catFileSel.size ? [...catFileSel] : fallback);
+
+// =====================  SERIES (ENGINE) VIEW  ===============================
+const episodesOfSeries = (subject) => catEpisodes
+  .filter((e) => !e.is_filler && e.subject === subject)
+  .sort((a, b) => a.chapter - b.chapter || a.id - b.id);
+
+// The engine's next-up chapter for a serial series (cursor, else lowest chapter).
+function nextUp(subject) {
+  const reg = catReg.get(subject);
+  const eps = episodesOfSeries(subject);
+  const lo = eps.length ? eps[0].chapter : null;
+  return reg && reg.cursor_chapter != null ? reg.cursor_chapter : lo;
+}
+
+function seriesGroups() {
+  const groups = new Map(); // show_type_name -> [{subject,count,show_type_id}]
+  const seen = new Map();
+  const fillers = catEpisodes.filter((e) => e.is_filler);
+  const unsorted = catEpisodes.filter((e) => !e.is_filler && e.subject == null);
+  for (const e of catEpisodes) {
+    if (e.is_filler || e.subject == null) continue;
+    const gk = e.show_type_name || 'Unassigned';
+    if (!groups.has(gk)) groups.set(gk, []);
+    const key = `${gk} ${e.subject}`;
+    if (!seen.has(key)) { const o = { subject: e.subject, show_type_id: e.show_type_id, count: 0 }; seen.set(key, o); groups.get(gk).push(o); }
+    seen.get(key).count++;
+  }
+  for (const arr of groups.values()) arr.sort((a, b) => a.subject.localeCompare(b.subject));
+  return { groups, fillers, unsorted };
+}
+
+function catRenderSeries() {
+  if (catSeriesSel) return renderSeriesDetail(catSeriesSel);
+  renderSeriesList();
+}
+
+function renderSeriesList() {
+  $('#catCrumb').textContent = '';
+  $('#catCrumb').append(el('span', { className: 'muted', textContent: 'How the scheduler groups this channel. Tick “serial” to make a series play in order (works for movies too); open one to fix episode order & next-up.' }));
+  const bulk = $('#catBulkBar'); bulk.innerHTML = '';
+  const host = $('#catBrowser'); host.innerHTML = '';
+  if (!catEpisodes.length) { host.append(el('p', { className: 'muted', textContent: 'Nothing cataloged for this channel yet — scan a media root on the Media tab first.' })); return; }
+  const { groups, fillers, unsorted } = seriesGroups();
+
+  const seriesRow = (subject, count, showTypeId) => {
+    const reg = catReg.get(subject);
+    const isSerial = reg ? !!reg.is_serial : false;
+    const li = el('li', { className: 'cat-series-row' });
+    const name = el('button', { className: 'cat-dir-name grow', textContent: `🎬 ${subject}` });
+    name.onclick = () => { catSeriesSel = subject; catFileSel.clear(); catRenderSeries(); };
+    li.append(name);
+    li.append(el('span', { className: 'muted cat-nav-count', textContent: `${count} ep` }));
+    if (isSerial) li.append(el('span', { className: 'badge', textContent: `next #${nextUp(subject) ?? '—'}`, title: 'Episode the scheduler will play next' }));
+    const serial = el('label', { className: 'chk', title: 'Play episodes in order (serialize) — enable for movies too' });
+    const scb = el('input', { type: 'checkbox', checked: isSerial });
+    scb.onchange = () => withBusy(null, () => setSerial(subject, showTypeId, scb.checked));
+    serial.append(scb, document.createTextNode(' serial'));
+    li.append(serial);
+    return li;
+  };
+
+  for (const [typeName, arr] of groups) {
+    host.append(el('div', { className: 'cat-nav-type', textContent: typeName }));
+    const ul = el('ul', { className: 'cat-fs' });
+    for (const s of arr) ul.append(seriesRow(s.subject, s.count, s.show_type_id));
+    host.append(ul);
+  }
+  if (unsorted.length) {
+    host.append(el('div', { className: 'cat-nav-type', textContent: 'Unsorted (no series)' }));
+    const ul = el('ul', { className: 'cat-fs' });
+    const li = el('li', { className: 'cat-series-row' });
+    const b = el('button', { className: 'cat-dir-name grow', textContent: '🗂 Unsorted clips' });
+    b.onclick = () => { catSeriesSel = ' unsorted'; catFileSel.clear(); catRenderSeries(); };
+    li.append(b, el('span', { className: 'muted cat-nav-count', textContent: `${unsorted.length} clip(s)` }));
+    ul.append(li); host.append(ul);
+  }
+  if (fillers.length) {
+    host.append(el('div', { className: 'cat-nav-type', textContent: 'Fillers' }));
+    const ul = el('ul', { className: 'cat-fs' });
+    const li = el('li', { className: 'cat-series-row' });
+    const b = el('button', { className: 'cat-dir-name grow', textContent: '🎞 Fillers' });
+    b.onclick = () => { catSeriesSel = ' fillers'; catFileSel.clear(); catRenderSeries(); };
+    li.append(b, el('span', { className: 'muted cat-nav-count', textContent: `${fillers.length} clip(s)` }));
+    ul.append(li); host.append(ul);
+  }
+}
+
+function seriesSelEpisodes() {
+  if (catSeriesSel === ' fillers') return catEpisodes.filter((e) => e.is_filler).sort((a, b) => a.display_name.localeCompare(b.display_name));
+  if (catSeriesSel === ' unsorted') return catEpisodes.filter((e) => !e.is_filler && e.subject == null).sort((a, b) => a.display_name.localeCompare(b.display_name));
+  return episodesOfSeries(catSeriesSel);
+}
+
+function renderSeriesDetail(subject) {
+  const eps = seriesSelEpisodes();
+  const special = subject === ' fillers' || subject === ' unsorted';
+  const title = subject === ' fillers' ? '🎞 Fillers' : subject === ' unsorted' ? '🗂 Unsorted clips' : subject;
+
+  // Breadcrumb + series-level engine controls.
+  const crumb = $('#catCrumb'); crumb.innerHTML = '';
+  const back = el('button', { className: 'mini ghost', textContent: '← Series' });
+  back.onclick = () => { catSeriesSel = null; catFileSel.clear(); catRenderSeries(); };
+  crumb.append(back, el('strong', { className: 'crumb-title', textContent: title }), el('span', { className: 'muted', textContent: ` · ${eps.length} clip(s)` }));
+
+  if (!special) {
+    const reg = catReg.get(subject);
+    const showTypeId = reg?.show_type_id ?? eps[0]?.show_type_id ?? null;
+    const isSerial = reg ? !!reg.is_serial : false;
+    const isActive = reg ? reg.is_active !== 0 : true;
+
+    const serial = el('label', { className: 'chk', title: 'Play episodes in order (serialize). Enable this to make a movie series sequential.' });
+    const scb = el('input', { type: 'checkbox', checked: isSerial });
+    scb.onchange = () => withBusy(null, () => setSerial(subject, showTypeId, scb.checked));
+    serial.append(scb, document.createTextNode(' serial'));
+
+    const active = el('label', { className: 'chk', title: 'Include this series when generating schedules' });
+    const acb = el('input', { type: 'checkbox', checked: isActive });
+    acb.onchange = () => withBusy(null, () => setActive(subject, showTypeId, acb.checked));
+    active.append(acb, document.createTextNode(' active'));
+
+    const ren = el('button', { className: 'mini ghost', textContent: '✏️ rename series' });
+    ren.onclick = () => renameSeries(subject);
+    crumb.append(serial, active, ren);
+
+    if (isSerial) {
+      const nu = el('input', { className: 'cat-ord', type: 'number', value: nextUp(subject) ?? '', title: 'Next episode the scheduler will play' });
+      const setnu = el('button', { className: 'mini ghost', textContent: 'set next-up' });
+      setnu.onclick = () => withBusy(null, async () => { await api.send('PUT', `/api/channels/${catChannelId}/series/${encodeURIComponent(subject)}/cursor`, { chapter: Number(nu.value) }); await loadCatalog(); toast('Next-up set', 'ok'); });
+      crumb.append(el('span', { className: 'muted', textContent: 'next-up:' }), nu, setnu);
+    }
+  }
+
+  renderCatBulkBar();
+
+  const host = $('#catBrowser'); host.innerHTML = '';
+  catOrderInputs = [];
+  if (!eps.length) { host.append(el('p', { className: 'muted', textContent: 'No clips in this series.' })); return; }
+  const selAll = el('label', { className: 'chk cat-selall' });
+  const sab = el('input', { type: 'checkbox' });
+  sab.onchange = () => { if (sab.checked) eps.forEach((e) => catFileSel.add(e.id)); else catFileSel.clear(); renderSeriesDetail(subject); };
+  selAll.append(sab, document.createTextNode(' select all'));
+  host.append(selAll);
+  const ul = el('ol', { className: 'items cat-eps' });
+  for (const ep of eps) ul.append(episodeRow(ep));
+  host.append(ul);
+}
+
+async function setSerial(subject, showTypeId, isSerial) {
+  const reg = catReg.get(subject) || {};
+  await api.send('PUT', `/api/channels/${catChannelId}/series`, { series: [{
+    subject, is_serial: isSerial ? 1 : 0,
+    is_active: reg.is_active === 0 ? 0 : 1,
+    play_order: reg.play_order ?? 0,
+    show_type_id: reg.show_type_id ?? showTypeId ?? null,
+  }] });
+  await loadCatalog();
+  toast(isSerial ? `“${subject}” now plays in order` : `“${subject}” no longer serial`, 'ok');
+}
+async function setActive(subject, showTypeId, isActive) {
+  const reg = catReg.get(subject) || {};
+  await api.send('PUT', `/api/channels/${catChannelId}/series`, { series: [{
+    subject, is_serial: reg.is_serial ? 1 : 0,
+    is_active: isActive ? 1 : 0,
+    play_order: reg.play_order ?? 0,
+    show_type_id: reg.show_type_id ?? showTypeId ?? null,
+  }] });
+  await loadCatalog();
+  toast(isActive ? 'Series activated' : 'Series deactivated', 'ok');
+}
+async function renameSeries(subject) {
+  const next = await inputDialog('Rename series', 'New series name', subject);
+  if (next == null || next === '' || next === subject) return;
+  const ids = episodesOfSeries(subject).map((e) => e.id);
+  await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-subject', subject: next });
+  catSeriesSel = next;
+  await loadCatalog();
+  toast('Series renamed', 'ok');
+}
+
+// =====================  FOLDERS (DISK) VIEW  ================================
 function pathExists(path) {
   return catEpisodes.some((e) => dirOf(e.file_path) === path || e.file_path.startsWith(path + '/'));
 }
-
-// Files directly inside `path`, in episode order.
 const filesAt = (path) => catEpisodes
   .filter((e) => dirOf(e.file_path) === path)
   .sort((a, b) => a.chapter - b.chapter || a.display_name.localeCompare(b.display_name));
-
-// Immediate sub-folders of `path`, with recursive clip counts + series summary.
 function foldersAt(path) {
   const prefix = path + '/';
   const map = new Map();
@@ -716,35 +941,24 @@ function foldersAt(path) {
     if (!e.file_path.startsWith(prefix)) continue;
     const rest = e.file_path.slice(prefix.length);
     const slash = rest.indexOf('/');
-    if (slash === -1) continue; // a direct file, not a sub-folder
+    if (slash === -1) continue;
     const name = rest.slice(0, slash);
     const fp = prefix + name;
     if (!map.has(fp)) map.set(fp, { name, path: fp, count: 0, subjects: new Set(), fillers: 0 });
-    const f = map.get(fp);
-    f.count++;
-    if (e.subject) f.subjects.add(e.subject);
-    if (e.is_filler) f.fillers++;
+    const f = map.get(fp); f.count++; if (e.subject) f.subjects.add(e.subject); if (e.is_filler) f.fillers++;
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
-
-const idsUnder = (path) => catEpisodes
-  .filter((e) => e.file_path === path || e.file_path.startsWith(path + '/'))
-  .map((e) => e.id);
-
-// Folder-level target ids: the checked folders, else everything under the dir.
+const idsUnder = (path) => catEpisodes.filter((e) => e.file_path === path || e.file_path.startsWith(path + '/')).map((e) => e.id);
 function folderScopeIds() {
-  if (catFolderSel.size) {
-    const s = new Set();
-    for (const p of catFolderSel) idsUnder(p).forEach((i) => s.add(i));
-    return [...s];
-  }
+  const base = new Set(catFileSel);
+  if (catFolderSel.size) for (const p of catFolderSel) idsUnder(p).forEach((i) => base.add(i));
+  if (base.size) return [...base];
   return idsUnder(catPath);
 }
+function navTo(path) { catPath = path; catFolderSel.clear(); renderCatalog(); }
 
-function navTo(path) { catPath = path; catFolderSel.clear(); renderCrumb(); renderBrowser(); }
-
-function renderCrumb() {
+function renderCrumbFolders() {
   const bar = $('#catCrumb');
   bar.innerHTML = '';
   if (!catEpisodes.length) return;
@@ -760,35 +974,14 @@ function renderCrumb() {
   for (const s of rel) { acc += '/' + s; bar.append(el('span', { className: 'crumb-sep', textContent: '/' }), seg(s, acc)); }
 }
 
-function renderCatBulkBar() {
-  const bar = $('#catBulkBar');
-  bar.innerHTML = '';
-  if (!catEpisodes.length) return;
-  const mk = (label, cls, fn, title) => { const b = el('button', { className: `mini ${cls}`, textContent: label, title }); b.onclick = () => withBusy(null, fn); return b; };
-  const scope = catFolderSel.size ? `${catFolderSel.size} selected folder(s)` : 'this folder';
-  bar.append(
-    mk('🔗 Merge → series', 'ghost', mergeFolders, `Put every clip in ${scope} into one series (files stay in their folders)`),
-    mk('🔢 Fix order', 'primary', fixOrder, 'Apply the order numbers you typed to the files listed here'),
-    mk('✏️ Rename…', 'ghost', renameFiles, 'Set display names for the files here from a template'),
-    mk('🔎 Replace…', 'ghost', replaceFiles, 'Find & replace in the display names here'),
-    mk('🎞 Mark filler', 'ghost', () => markFiller(1), `Mark ${scope} as fillers`),
-    mk('📺 Unmark', 'ghost', () => markFiller(0), `Unmark fillers in ${scope}`),
-    mk('🎬 Show type…', 'ghost', setShowType, `Set the show type for ${scope}`),
-    mk('↺ Reset', 'danger', resetScope, `Restore detected names/order for ${scope}`),
-  );
-  if (catFolderSel.size) bar.append(el('span', { className: 'muted', style: 'margin-left:auto', textContent: `${catFolderSel.size} folder(s) selected` }));
-}
-
 function renderBrowser() {
   const host = $('#catBrowser');
   host.innerHTML = '';
   renderCatBulkBar();
   if (!catEpisodes.length) { host.append(el('p', { className: 'muted', textContent: 'Nothing cataloged for this channel yet — scan a media root on the Media tab first.' })); return; }
-
   const folders = foldersAt(catPath);
   const files = filesAt(catPath);
   catOrderInputs = [];
-
   if (folders.length) {
     const fu = el('ul', { className: 'cat-fs' });
     for (const f of folders) {
@@ -799,49 +992,67 @@ function renderBrowser() {
       const name = el('button', { className: 'cat-dir-name grow', textContent: `📁 ${f.name}` });
       name.onclick = () => navTo(f.path);
       li.append(name);
-      const meta = f.subjects.size === 1 ? `series: ${[...f.subjects][0]}`
-        : f.subjects.size > 1 ? `${f.subjects.size} series`
-        : (f.fillers ? 'fillers' : 'unsorted');
+      const meta = f.subjects.size === 1 ? `series: ${[...f.subjects][0]}` : f.subjects.size > 1 ? `${f.subjects.size} series` : (f.fillers ? 'fillers' : 'unsorted');
       li.append(el('span', { className: 'badge', textContent: meta }));
       li.append(el('span', { className: 'muted cat-nav-count', textContent: `${f.count} clip(s)` }));
       fu.append(li);
     }
     host.append(fu);
   }
-
   if (files.length) {
     const fl = el('ol', { className: 'items cat-eps' });
-    for (const ep of files) {
-      const li = el('li', { className: ep.is_filler ? 'filler' : '' });
-      const ord = el('input', { className: 'cat-ord', type: 'number', value: ep.chapter, title: 'Order — type the numbers, then click “Fix order”' });
-      catOrderInputs.push({ id: ep.id, input: ord });
-      li.append(ord);
-      const nameIn = el('input', { className: 'cat-name grow', value: ep.display_name, title: `File on disk: ${ep.raw_name}` });
-      nameIn.onchange = () => withBusy(null, async () => { await api.send('PUT', `/api/catalog/resource/${ep.id}`, { display_name: nameIn.value }); ep.display_name = nameIn.value; toast('Name saved', 'ok'); });
-      li.append(nameIn);
-      if (ep.subject) li.append(el('span', { className: 'badge', textContent: ep.subject, title: 'Series' }));
-      if (ep.is_filler) li.append(el('span', { className: 'badge', textContent: 'filler' }));
-      if (ep.has_override) li.append(el('span', { className: 'badge', textContent: 'edited', title: 'Has local overrides' }));
-      li.append(el('span', { className: 'dur', textContent: fmt(ep.duration) }));
-      const del = el('button', { className: 'mini danger', textContent: '🗑', title: 'Delete this clip from the catalog (for duplicates)' });
-      del.onclick = () => deleteResource(ep);
-      li.append(del);
-      fl.append(li);
-    }
+    for (const ep of files) fl.append(episodeRow(ep, { showSeries: true }));
     host.append(fl);
   }
-
   if (!folders.length && !files.length) host.append(el('p', { className: 'muted', textContent: 'This folder is empty.' }));
 }
 
-// ---- Catalog actions -------------------------------------------------------
-async function mergeFolders() {
-  const ids = folderScopeIds();
-  if (!ids.length) return toast('No clips to merge here', 'bad');
+// ---- Bulk action bar (context-aware) ---------------------------------------
+function renderCatBulkBar() {
+  const bar = $('#catBulkBar');
+  bar.innerHTML = '';
+  if (!catEpisodes.length) return;
+  const mk = (label, cls, fn, title) => { const b = el('button', { className: `mini ${cls}`, textContent: label, title }); b.onclick = () => withBusy(null, fn); return b; };
+  const selN = catFileSel.size;
+  const scope = selN ? `${selN} selected clip(s)`
+    : (catView === 'folders' ? (catFolderSel.size ? `${catFolderSel.size} folder(s)` : 'this folder') : 'this series');
+
+  if (catView === 'folders') {
+    bar.append(mk('🔗 Merge → series', 'ghost', mergeScope, `Put ${scope} into one series (files stay in their folders)`));
+  } else if (catSeriesSel && catSeriesSel !== ' fillers') {
+    bar.append(mk('→ Move to series', 'ghost', mergeScope, `Move ${scope} into another series`));
+  }
+  bar.append(
+    mk('🔢 Fix order', 'primary', fixOrder, 'Apply the play-order numbers you typed to the clips listed here'),
+    mk('1..N Renumber', 'ghost', renumberScope, 'Number the listed clips 1..N in shown order'),
+    mk('✏️ Rename…', 'ghost', renameScope, 'Set display names from a template'),
+    mk('🔎 Replace…', 'ghost', replaceScope, 'Find & replace in display names'),
+    mk('🎞 Mark filler', 'ghost', () => markFiller(1), `Mark ${scope} as fillers`),
+    mk('📺 Unmark', 'ghost', () => markFiller(0), `Unmark fillers in ${scope}`),
+    mk('🎬 Show type…', 'ghost', setShowType, `Set the show type for ${scope}`),
+    mk('↺ Reset', 'danger', resetScope, `Restore detected names/order for ${scope}`),
+  );
+  if (selN) bar.append(el('span', { className: 'muted', style: 'margin-left:auto', textContent: `${selN} selected` }));
+}
+
+// Scope helpers: series view acts on selected clips else the whole series;
+// folder view acts on selected clips/folders else the current folder.
+function shownEpisodes() { return catView === 'folders' ? filesAt(catPath) : seriesSelEpisodes(); }
+function scopeIds() {
+  if (catFileSel.size) return [...catFileSel];
+  if (catView === 'folders') return folderScopeIds();
+  return shownEpisodes().map((e) => e.id);
+}
+
+// ---- Actions ---------------------------------------------------------------
+async function mergeScope() {
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing to merge here', 'bad');
   const existing = [...new Set(catEpisodes.map((e) => e.subject).filter(Boolean))].sort();
   const subject = await inputDialog('Merge into series', `Series name for ${ids.length} clip(s)`, '', existing);
   if (subject == null || subject === '') return;
   await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-subject', subject });
+  if (catView === 'series') catSeriesSel = subject;
   await loadCatalog();
   toast(`Merged ${ids.length} clip(s) into “${subject}”`, 'ok');
 }
@@ -852,36 +1063,43 @@ async function fixOrder() {
   await loadCatalog();
   toast('Order fixed', 'ok');
 }
-async function renameFiles() {
-  const files = filesAt(catPath);
-  if (!files.length) return toast('No files here', 'bad');
+async function renumberScope() {
+  const ids = (catFileSel.size ? shownEpisodes().filter((e) => catFileSel.has(e.id)) : shownEpisodes()).map((e) => e.id);
+  if (!ids.length) return toast('Nothing to renumber', 'bad');
+  await api.send('POST', '/api/catalog/bulk', { ids, op: 'renumber' });
+  await loadCatalog();
+  toast('Renumbered 1..N', 'ok');
+}
+async function renameScope() {
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing here', 'bad');
   const template = await inputDialog('Rename by template', 'Tokens: {name} {subject} {chapter} {n}', '{subject} — Ep {n}');
   if (template == null) return;
-  await api.send('POST', '/api/catalog/bulk', { ids: files.map((f) => f.id), op: 'template', template });
+  await api.send('POST', '/api/catalog/bulk', { ids, op: 'template', template });
   await loadCatalog();
   toast('Display names updated', 'ok');
 }
-async function replaceFiles() {
-  const files = filesAt(catPath);
-  if (!files.length) return toast('No files here', 'bad');
+async function replaceScope() {
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing here', 'bad');
   const find = await inputDialog('Find & replace', 'Find (in display name)');
   if (find == null || find === '') return;
   const replace = await inputDialog('Find & replace', `Replace “${find}” with`);
   if (replace == null) return;
-  await api.send('POST', '/api/catalog/bulk', { ids: files.map((f) => f.id), op: 'find-replace', field: 'display_name', find, replace });
+  await api.send('POST', '/api/catalog/bulk', { ids, op: 'find-replace', field: 'display_name', find, replace });
   await loadCatalog();
   toast('Replaced', 'ok');
 }
 async function markFiller(is_filler) {
-  const ids = folderScopeIds();
-  if (!ids.length) return toast('No clips here', 'bad');
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing here', 'bad');
   await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-filler', is_filler });
   await loadCatalog();
   toast(is_filler ? 'Marked as filler' : 'Unmarked filler', 'ok');
 }
 async function setShowType() {
-  const ids = folderScopeIds();
-  if (!ids.length) return toast('No clips here', 'bad');
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing here', 'bad');
   const names = catShowTypes.map((s) => `${s.id} = ${s.name}`).join(', ');
   const val = await inputDialog('Set show type', `Show type id (${names})`);
   if (val == null || val === '') return;
@@ -890,8 +1108,8 @@ async function setShowType() {
   toast('Show type updated', 'ok');
 }
 async function resetScope() {
-  const ids = folderScopeIds();
-  if (!ids.length) return toast('No clips here', 'bad');
+  const ids = scopeIds();
+  if (!ids.length) return toast('Nothing here', 'bad');
   if (!await confirmDialog('Reset', `Restore detected series/order and drop custom names for ${ids.length} clip(s)?`, { confirmLabel: 'Reset', danger: true })) return;
   await api.send('POST', '/api/catalog/reset', { ids });
   await loadCatalog();
@@ -906,8 +1124,10 @@ async function deleteResource(ep) {
   });
 }
 
-$('#catChannel').addEventListener('change', () => { catPath = ''; loadCatalog(); });
+$('#catChannel').addEventListener('change', () => { catPath = ''; catSeriesSel = null; loadCatalog(); });
 $('#btnCatReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadCatalog));
+$('#catViewSeries').addEventListener('click', () => setCatView('series'));
+$('#catViewFolders').addEventListener('click', () => setCatView('folders'));
 
 // ---- Channels & Templates --------------------------------------------------
 async function populateSelect(sel, url, labelKey) {

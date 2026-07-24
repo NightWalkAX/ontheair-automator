@@ -576,4 +576,13 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .cat-eps li { display: flex; align-items: center; gap: 8px; }
 .cat-eps .cat-ord { width: 68px; }
 .cat-eps .cat-name { flex: 1; min-width: 120px; }
+.cat-eps .cat-sel { flex: 0 0 auto; }
 .dlg-input { width: 100%; }
+/* series (engine) view */
+.view-toggle { display: inline-flex; border: 1px solid var(--line, #d9dee6); border-radius: 8px; overflow: hidden; }
+.view-toggle .seg { border: 0; background: none; padding: 6px 12px; cursor: pointer; color: inherit; font: inherit; }
+.view-toggle .seg.active { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600; }
+.cat-series-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 7px; }
+.cat-series-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+.cat-selall { margin: 0 0 8px; }
+.crumb-title { margin: 0 4px; }
