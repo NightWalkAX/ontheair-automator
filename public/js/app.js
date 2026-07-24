@@ -1006,9 +1006,11 @@ function renderEnginePane(pane) {
   // open that season is the drop target, so no need to ask.
   if (realShow) wirePaneDrop(pane, () => {
     const ids = catDrag?.ids || [];
-    return engSeason == null
-      ? promptSeasonAssign(ids, engSubject)
-      : assignToShow(ids, engSubject, engSeason);
+    // Always ask which season, defaulting to the one currently open. Dropping
+    // onto a specific season used to silently dump everything into it; now the
+    // operator can accept the default (add to this season) or type a different/
+    // new number (split into a new season) — or blank to keep filename seasons.
+    return promptSeasonAssign(ids, engSubject, { defaultSeason: engSeason });
   });
 }
 
@@ -1055,14 +1057,24 @@ function renderShowRoot(pane) {
     if (q && !(`season ${s.season}`.includes(q) || s.eps.some((e) => matchEp(e, q)))) continue;
     ul.append(seasonRow(s));
   }
-  if (ul.children.length) pane.append(ul);
+  // Explicit "new season" drop target: dropping a library folder/clip here files
+  // it as a fresh season, so operators aren't forced into an existing one. (Drop
+  // onto a season folder above = add to that season.)
+  if (!q) ul.append(newSeasonRow(seasonList));
+  pane.append(ul);
   const eps = q ? noSeason.filter((e) => matchEp(e, q)) : noSeason;
   if (eps.length) {
     if (seasonList.length) pane.append(el('div', { className: 'cat-subhead muted', textContent: 'No season' }));
     renderEpisodeList(pane, eps, { reorder: true });
-  } else if (!seasonList.length && !ul.children.length) {
-    pane.append(el('div', { className: 'muted cat-empty', textContent: 'Empty — drag folders/clips from the library →' }));
   }
+}
+
+function newSeasonRow(seasonList) {
+  const li = el('li', { className: 'cat-dir cat-folder cat-newseason' });
+  const next = seasonList.reduce((m, s) => Math.max(m, s.season || 0), 0) + 1;
+  li.append(el('span', { className: 'cat-dir-name grow muted', textContent: `📁＋ New season ${next} — drop clips here` }));
+  wireFolderDrop(li, () => promptSeasonAssign(catDrag?.ids || [], engSubject, { defaultSeason: next }));
+  return li;
 }
 
 function seasonRow(s) {
@@ -1325,10 +1337,10 @@ function detectSeasonHint(ids, sourceSubject = null) {
 // file them all under that season. Cancel aborts. Returns true if it ran.
 async function promptSeasonAssign(ids, subject, opts = {}) {
   if (!ids || !ids.length || !subject) return false;
-  const hint = detectSeasonHint(ids, opts.sourceSubject);
+  const hint = opts.defaultSeason != null ? String(opts.defaultSeason) : detectSeasonHint(ids, opts.sourceSubject);
   const val = await inputDialog(
-    'Add as a season?',
-    `Season number to file these ${ids.length} clip(s) under “${subject}” — leave blank to keep the seasons from their filenames`,
+    'Which season?',
+    `File these ${ids.length} clip(s) under “${subject}” as which season? Type a number — a new one starts a new season, an existing one adds to it — or leave blank to keep the seasons from their filenames.`,
     hint,
   );
   if (val == null) return false;
