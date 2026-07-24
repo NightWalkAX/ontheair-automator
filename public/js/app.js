@@ -680,6 +680,7 @@ let engSeason = null;            // season number within a show, or null (show r
 let libPath = [];
 
 const catSel = new Set();        // selected resource ids (multi-edit, left panel)
+let catAnchorId = null;          // last-clicked episode id — anchor for shift-range selection
 let catOrderInputs = [];         // { id, input } refs for "Fix order"
 let catDrag = null;              // { kind:'lib'|'reorder', ids:[...] }
 
@@ -838,10 +839,10 @@ function scopeIds() {
 }
 
 // ---- navigation ------------------------------------------------------------
-function goRoot() { engType = null; engSubject = null; engSeason = null; libPath = []; catSel.clear(); catSearch = ''; renderCatalog(); }
-function goType(name) { engType = name; engSubject = null; engSeason = null; libPath = []; catSel.clear(); catSearch = ''; renderCatalog(); }
-function goShow(key) { engSubject = key; engSeason = null; catSel.clear(); catSearch = ''; renderCatalog(); }
-function goSeason(s) { engSeason = s; catSel.clear(); renderCatalog(); }
+function goRoot() { engType = null; engSubject = null; engSeason = null; libPath = []; catSel.clear(); catAnchorId = null; catSearch = ''; renderCatalog(); }
+function goType(name) { engType = name; engSubject = null; engSeason = null; libPath = []; catSel.clear(); catAnchorId = null; catSearch = ''; renderCatalog(); }
+function goShow(key) { engSubject = key; engSeason = null; catSel.clear(); catAnchorId = null; catSearch = ''; renderCatalog(); }
+function goSeason(s) { engSeason = s; catSel.clear(); catAnchorId = null; renderCatalog(); }
 
 // ---- breadcrumb + per-series controls --------------------------------------
 function renderCrumb() {
@@ -887,7 +888,9 @@ function appendSeriesControls(crumb, subject) {
 
   const ren = el('button', { className: 'mini ghost', textContent: '✏️ rename' });
   ren.onclick = () => renameSeries(subject);
-  crumb.append(serial, active, ren);
+  const del = el('button', { className: 'mini danger', textContent: '🗑 delete', title: 'Delete this series (clips move to Unsorted; files on disk are untouched)' });
+  del.onclick = () => deleteSeries(subject);
+  crumb.append(serial, active, ren, del);
 
   if (isSerial) {
     const nu = el('input', { className: 'cat-ord', type: 'number', value: nextUp(subject) ?? '', title: 'Next episode the scheduler will play' });
@@ -1093,12 +1096,37 @@ function episodeRow(ep, { reorder = false } = {}) {
   const li = el('li', { className: ep.is_filler ? 'filler' : '', draggable: reorder });
   li.dataset.id = ep.id;
   if (reorder) {
-    li.addEventListener('dragstart', (e) => { catDrag = { kind: 'reorder', ids: [ep.id] }; e.dataTransfer.effectAllowed = 'move'; li.classList.add('dragging'); });
-    li.addEventListener('dragend', () => { catDrag = null; li.classList.remove('dragging'); });
+    li.addEventListener('dragstart', (e) => {
+      const ol = li.closest('ol.cat-eps');
+      // A drag grabbing one of several selected rows carries them all (in list
+      // order); otherwise just the grabbed row.
+      const ids = (catSel.has(ep.id) && catSel.size > 1 && ol)
+        ? [...ol.querySelectorAll('li[data-id]')].map((x) => Number(x.dataset.id)).filter((id) => catSel.has(id))
+        : [ep.id];
+      catDrag = { kind: 'reorder', ids };
+      e.dataTransfer.effectAllowed = 'move';
+      if (ol) ids.forEach((id) => ol.querySelector(`li[data-id="${id}"]`)?.classList.add('dragging'));
+    });
+    li.addEventListener('dragend', () => {
+      catDrag = null;
+      li.closest('ol.cat-eps')?.querySelectorAll('li.dragging').forEach((x) => x.classList.remove('dragging'));
+    });
     li.append(el('span', { className: 'cat-grip', textContent: '⠿', title: 'Drag to reorder' }));
   }
-  const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: catSel.has(ep.id), title: 'Select this clip' });
-  cb.onchange = () => { if (cb.checked) catSel.add(ep.id); else catSel.delete(ep.id); renderBulkBar(); };
+  const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: catSel.has(ep.id), title: 'Select — Shift-click to select a range' });
+  cb.addEventListener('click', (e) => {
+    const ol = cb.closest('ol.cat-eps');
+    if (e.shiftKey && catAnchorId != null && ol) {
+      const order = [...ol.querySelectorAll('li[data-id]')].map((x) => Number(x.dataset.id));
+      const a = order.indexOf(catAnchorId), b = order.indexOf(ep.id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        for (let i = lo; i <= hi; i++) { if (cb.checked) catSel.add(order[i]); else catSel.delete(order[i]); }
+      }
+    } else if (cb.checked) catSel.add(ep.id); else catSel.delete(ep.id);
+    catAnchorId = ep.id;
+    renderCatalog();
+  });
   li.append(cb);
   li.append(approveToggle(ep));
   const ord = el('input', { className: 'cat-ord', type: 'number', value: ep.chapter, title: 'Play order — type numbers, then “Fix order”' });
@@ -1232,14 +1260,14 @@ document.addEventListener('dragover', (e) => {
   if (catDrag?.kind !== 'reorder') return;
   const ol = e.target.closest && e.target.closest('.cat-drop');
   if (!ol) return;
-  const dragging = ol.querySelector('li.dragging');
-  if (!dragging) return;
+  const dragging = [...ol.querySelectorAll('li.dragging')];
+  if (!dragging.length) return;
   e.preventDefault();
   const after = [...ol.querySelectorAll('li[data-id]:not(.dragging)')].find((li) => {
     const r = li.getBoundingClientRect();
     return e.clientY < r.top + r.height / 2;
   });
-  if (after) ol.insertBefore(dragging, after); else ol.append(dragging);
+  for (const d of dragging) { if (after) ol.insertBefore(d, after); else ol.append(d); }
 });
 
 // After a reorder drop, persist the DOM order. Season-aware: within a season the
@@ -1363,8 +1391,31 @@ async function renameSeries(subject) {
       play_order: reg.play_order ?? catReg.size, show_type_id: reg.show_type_id ?? showTypeIdOfName(engType),
     }] });
     await loadCatalog();
+    // Drop the old registry row now that every clip has moved off it, else it
+    // lingers as an empty series folder (the "renamed but old one stayed" bug).
+    if (ids.length && !catEpisodes.some((e) => e.subject === subject)) {
+      try { await api.send('DELETE', `/api/channels/${catChannelId}/series/${encodeURIComponent(subject)}`); }
+      catch { /* leave as an empty folder if the server refuses */ }
+      await loadCatalog();
+    }
     goShow(next);
     toast('Series renamed', 'ok');
+  });
+}
+
+async function deleteSeries(subject) {
+  const nonFiller = epsOfShow(engType, subject).filter((e) => !e.is_filler);
+  const extra = nonFiller.length
+    ? ` Its ${nonFiller.length} clip(s) will be moved to Unsorted (files on disk are not touched).`
+    : '';
+  if (!await confirmDialog('Delete series', `Delete series “${subject}”?${extra}`, { confirmLabel: 'Delete', danger: true })) return;
+  await withBusy(null, async () => {
+    if (nonFiller.length)
+      await api.send('POST', '/api/catalog/bulk', { ids: nonFiller.map((e) => e.id), op: 'set-subject', subject: null });
+    await api.send('DELETE', `/api/channels/${catChannelId}/series/${encodeURIComponent(subject)}`);
+    await loadCatalog();
+    goType(engType);
+    toast('Series deleted', 'ok');
   });
 }
 
