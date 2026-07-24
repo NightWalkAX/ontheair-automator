@@ -749,6 +749,17 @@ function epsOfShow(typeName, key) {
 function approvalOf(list) {
   return { approved: list.filter((e) => e.approved).length, total: list.length };
 }
+
+// Every real show name on the channel, sorted — the union of subjects that have
+// clips AND registry-only shows created but not yet filled (a just-made empty
+// series lives only in catReg, so a clips-only list would hide it as a merge
+// target). `except` drops the source show from its own merge list.
+function allShowSubjects(except = null) {
+  const s = new Set(catEpisodes.map((e) => e.subject).filter(Boolean));
+  for (const subject of catReg.keys()) if (subject) s.add(subject);
+  if (except != null) s.delete(except);
+  return [...s].sort();
+}
 function matchEp(e, q) {
   return !q || (e.display_name || '').toLowerCase().includes(q)
     || (e.name || '').toLowerCase().includes(q)
@@ -1307,7 +1318,7 @@ async function moveToSubject(ids, subject) {
 }
 
 async function newSeries() {
-  const existing = [...new Set(catEpisodes.map((e) => e.subject).filter(Boolean))].sort();
+  const existing = allShowSubjects();
   const name = await inputDialog('New series', 'Series name (a show folder to drag clips into)', '', existing);
   if (name == null || name.trim() === '') return;
   const subject = name.trim();
@@ -1376,8 +1387,7 @@ async function mergeScope() {
   // selected; that source show is the one we may need to clean up afterwards.
   const wholeShow = !catSel.size && engSubject != null && engSubject !== UNSORTED && engSubject !== FILLERS;
   const sourceSubject = wholeShow ? engSubject : null;
-  const existing = [...new Set(catEpisodes.map((e) => e.subject).filter(Boolean))]
-    .filter((s) => s !== sourceSubject).sort();
+  const existing = allShowSubjects(sourceSubject);
   const subject = await inputDialog('Merge into show', `Move ${ids.length} clip(s) into which show?`, '', existing);
   if (subject == null || subject.trim() === '') return;
   const target = subject.trim();
