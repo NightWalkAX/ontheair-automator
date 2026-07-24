@@ -93,6 +93,30 @@ router.delete('/:id/series/:subject', (req, res) => {
   res.json({ ok: true, deleted: info.changes });
 });
 
+// POST /api/channels/:id/series/reset-cursors — reset every series' next-up to
+// its first (lowest) chapter, so the next generation starts each show from
+// episode 1. Ensures a registry row exists for each subject that has chapters.
+router.post('/:id/series/reset-cursors', (req, res) => {
+  const channelId = Number(req.params.id);
+  const subjects = db.prepare(`
+    SELECT subject, MIN(chapter) AS lo FROM Resource
+    WHERE channel_id = ? AND is_filler = 0 AND subject IS NOT NULL
+    GROUP BY subject
+  `).all(channelId);
+
+  const setCursor = db.prepare(
+    'UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?'
+  );
+  let reset = 0;
+  for (const s of subjects) {
+    if (s.lo == null) continue;
+    ensureSeriesRow(channelId, s.subject);
+    setCursor.run(s.lo, channelId, s.subject);
+    reset++;
+  }
+  res.json({ ok: true, reset });
+});
+
 // GET /api/channels/:id/series/:subject/chapters — ordered chapters for a series.
 router.get('/:id/series/:subject/chapters', (req, res) => {
   const channelId = Number(req.params.id);

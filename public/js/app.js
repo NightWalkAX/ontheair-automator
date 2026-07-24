@@ -1566,6 +1566,15 @@ async function deleteResource(ep) {
 
 $('#catChannel').addEventListener('change', () => { engType = null; engSubject = null; engSeason = null; libPath = []; catSel.clear(); catSearch = ''; loadCatalog(); });
 $('#btnCatReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadCatalog));
+$('#btnResetNextUps').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const ok = await confirmDialog('Reset all next-ups',
+    'Set every series on this channel back to its first episode? The next schedule you generate will start each show from episode 1.',
+    { confirmLabel: 'Reset to Ep 1' });
+  if (!ok) return;
+  const r = await api.send('POST', `/api/channels/${catChannelId}/series/reset-cursors`);
+  await loadCatalog();
+  toast(`Reset ${r.reset} series to their first episode`, 'ok', 'Next-ups reset');
+}));
 $('#catSearch').addEventListener('input', (e) => { catSearch = e.currentTarget.value; renderCatalog(); });
 
 // ---- Channels & Templates --------------------------------------------------

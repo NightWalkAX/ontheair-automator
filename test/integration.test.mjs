@@ -777,3 +777,25 @@ test('export: printable schedule is HTML, excludes fillers, shows air times', as
   // Filler clip names (f0_30, f1_45, ...) must not appear in the export.
   assert.ok(!/f\d+_\d+\.mov/.test(html) && !/>f\d+_/.test(html), 'fillers excluded from the export');
 });
+
+test('reset-cursors: next-ups go back to episode 1 and scheduling honours it', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const lo = db.prepare("SELECT MIN(chapter) AS lo FROM Resource WHERE channel_id=? AND subject='Math' AND is_filler=0").get(c1).lo;
+
+  // Push Math's cursor forward, then reset all next-ups.
+  await j('PUT', `/api/channels/${c1}/series/${encodeURIComponent('Math')}/cursor`, { chapter: 5 });
+  const reset = await j('POST', `/api/channels/${c1}/series/reset-cursors`);
+  assert.equal(reset.status, 200);
+  assert.ok(reset.data.reset >= 3, 'reset several series');
+  const cur = (await j('GET', `/api/channels/${c1}/series/${encodeURIComponent('Math')}/cursor`)).data;
+  assert.equal(cur.cursor, lo, 'Math next-up is back to its first chapter');
+
+  // Generate a clean, well-separated week — Math must start at episode 1 even
+  // though earlier weeks aired/scheduled higher chapters.
+  await j('POST', `/api/blocks/generate?weekStart=2027-01-04&channel_id=${c1}`); // Monday
+  const view = (await j('GET', `/api/blocks?week=2027-01-04&channel_id=${c1}`)).data;
+  const mon = view.blocks.find((b) => !b.is_mirror && b.target_date === '2027-01-04' && b.template_name === 'Morning Lessons');
+  assert.ok(mon, 'Monday lessons block generated');
+  const firstMath = (await j('GET', `/api/blocks/${mon.id}`)).data.items.find((it) => it.subject === 'Math');
+  assert.equal(firstMath.chapter, lo, 'scheduler selects episode 1 after a reset');
+});
