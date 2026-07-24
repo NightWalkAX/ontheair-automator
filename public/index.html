@@ -122,20 +122,19 @@
         <select id="catChannel"></select>
       </label>
       <button id="btnCatReload" class="ghost">↻ Reload</button>
-      <span class="spacer"></span>
-      <span id="catSelCount" class="muted">0 selected</span>
     </div>
 
-    <div class="toolbar" id="catBulkBar">
-      <button id="btnCatMerge" class="ghost" title="Set the show (subject) for the selected clips">🗂 Merge into show…</button>
-      <button id="btnCatRenumber" class="ghost" title="Assign chapters 1..N in the order shown">🔢 Renumber selection</button>
-      <button id="btnCatRename" class="ghost" title="Build display names from a template">✏️ Rename by template…</button>
-      <button id="btnCatReplace" class="ghost" title="Find &amp; replace in display names / show">🔎 Find &amp; replace…</button>
-      <button id="btnCatShowType" class="ghost" title="Change the show type of the selection">🎬 Set show type…</button>
-      <button id="btnCatReset" class="danger" title="Restore detected show/episode and drop custom names">↺ Reset selection</button>
+    <div class="split catalog-split">
+      <div class="panel">
+        <h3>📂 Shows</h3>
+        <div id="catNav" class="tree cat-nav"></div>
+      </div>
+      <div class="panel">
+        <div id="catShowHead" class="cat-show-title muted">Pick a show on the left.</div>
+        <div class="toolbar cat-bulk" id="catBulkBar"></div>
+        <ol id="catEpList" class="items cat-eps"></ol>
+      </div>
     </div>
-
-    <div id="catalogTree" class="catalog"></div>
   </section>
 
   <!-- ===== Channels & Templates ===== -->

@@ -22,9 +22,8 @@ const VIDEO_EXTS = new Set([
 const SERIAL_DEFAULT_CODES = new Set(['lessons', 'tv_shows']);
 
 // A clip is auto-classified as a filler when it lives inside a folder named
-// "Filler"/"Fillers" AND runs shorter than this. (Explicitly assigning a root to
-// the Fillers show type still marks its clips regardless of duration.)
-const FILLER_MAX_SECONDS = 15 * 60; // 900s
+// "Filler"/"Fillers", at any duration. (Explicitly assigning a root to the
+// Fillers show type marks its clips regardless of folder name too.)
 
 /** True if any segment of the path is (case-insensitively) "filler"/"fillers". */
 function looksLikeFillerFolder(filePath) {
@@ -130,7 +129,11 @@ function upsert(row) {
         duration     = excluded.duration,
         is_filler    = excluded.is_filler,
         show_type_id = excluded.show_type_id,
-        added_at     = excluded.added_at
+        added_at     = excluded.added_at,
+        -- A clip re-scanned as a filler loses its old series/chapter; otherwise
+        -- keep the operator's subject/chapter edits (never clobbered by re-scan).
+        subject      = CASE WHEN excluded.is_filler = 1 THEN NULL ELSE subject END,
+        chapter      = CASE WHEN excluded.is_filler = 1 THEN 0    ELSE chapter END
     `);
   }
   return _upsertStmt.run(row);
@@ -245,9 +248,9 @@ export async function scanMediaRoot(mediaRoot) {
         continue;
       }
       // Filler if the root's show type is the Fillers type, OR the clip sits in a
-      // "Filler(s)" folder and is under 15 minutes.
-      const isFiller = typeIsFiller
-        || (looksLikeFillerFolder(file) && duration < FILLER_MAX_SECONDS ? 1 : 0);
+      // "Filler(s)" folder — any length (the operator explicitly organizes these
+      // as fillers, so no duration cap).
+      const isFiller = typeIsFiller || (looksLikeFillerFolder(file) ? 1 : 0);
       const info = await stat(file);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
       const chapter = isFiller ? 0 : detectChapter(file);

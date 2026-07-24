@@ -559,13 +559,18 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 #seriesList .chk, #tplmSeries .chk { margin-left: 6px; }
 .panel-head { margin-bottom: 10px; }
 
-/* ---- Catalog editor ("fake root") ------------------------------------------ */
-#catBulkBar { flex-wrap: wrap; gap: 8px; }
-.catalog { display: flex; flex-direction: column; gap: 18px; }
-.cat-group > h3 { margin: 4px 0 8px; }
-.cat-show { border: 1px solid var(--line, #d9dee6); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
-.cat-show-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: color-mix(in srgb, currentColor 5%, transparent); }
-.cat-eps { margin: 0; }
+/* ---- Catalog editor ("fake root") — file-browser style --------------------- */
+.catalog-split { align-items: stretch; }
+.cat-nav { max-height: 60vh; overflow-y: auto; padding: 2px; }
+.cat-nav-type { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; margin: 12px 4px 4px; }
+.cat-nav-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.cat-nav-row:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
+.cat-nav-row.active { background: color-mix(in srgb, currentColor 12%, transparent); font-weight: 600; }
+.cat-nav-row.bucket { font-weight: 600; }
+.cat-nav-count { font-size: 12px; }
+.cat-show-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.cat-bulk { flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.cat-eps { margin: 0; max-height: 56vh; overflow-y: auto; }
 .cat-eps li { display: flex; align-items: center; gap: 8px; }
 .cat-eps .cat-ch { width: 74px; }
 .cat-eps .cat-name { flex: 1; min-width: 120px; }

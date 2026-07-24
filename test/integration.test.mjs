@@ -302,7 +302,7 @@ test('filler auto-detection: Filler(s) folder + under 15 min, regardless of show
   mkdirSync(join(mediaDir, 'docs', 'Fillers'), { recursive: true });
   writeFileSync(join(mediaDir, 'docs', 'Fillers', 'bumper_60.mov'), 'x');   // 60s  -> filler
   writeFileSync(join(mediaDir, 'docs', 'Fillers', 'promo_899.mov'), 'x');   // 899s -> filler (< 900)
-  writeFileSync(join(mediaDir, 'docs', 'Fillers', 'special_1200.mov'), 'x'); // 1200s -> NOT filler
+  writeFileSync(join(mediaDir, 'docs', 'Fillers', 'special_1200.mov'), 'x'); // 1200s -> filler (no cap)
   writeFileSync(join(mediaDir, 'docs', 'Doc1_1800.mov'), 'x');               // outside Fillers -> not filler
   const rootId = db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)')
     .run(chId, stId('documentaries'), join(mediaDir, 'docs')).lastInsertRowid;
@@ -312,7 +312,7 @@ test('filler auto-detection: Filler(s) folder + under 15 min, regardless of show
   const byName = (n) => (db.prepare('SELECT * FROM Resource WHERE channel_id=? AND name=?').get(chId, n));
   assert.equal(byName('bumper_60').is_filler, 1, 'short clip in Fillers folder is a filler');
   assert.equal(byName('promo_899').is_filler, 1, 'sub-15-min clip in Fillers folder is a filler');
-  assert.equal(byName('special_1200').is_filler, 0, 'over-15-min clip in Fillers folder is NOT a filler');
+  assert.equal(byName('special_1200').is_filler, 1, 'clip in Fillers folder is a filler regardless of length');
   assert.equal(byName('Doc1_1800').is_filler, 0, 'clip outside a Fillers folder is not a filler');
 });
 
@@ -511,6 +511,25 @@ test('catalog editor: bulk merge + renumber gathers clips into one continuous sh
   // The new show is registered in the channel series registry.
   const reg = (await j('GET', `/api/channels/${c1}/series`)).data.map((s) => s.subject);
   assert.ok(reg.includes('Life Sciences'));
+});
+
+test('catalog editor: mark/unmark filler toggles is_filler and drops series on mark', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const hist = (await j('GET', `/api/resources?channel_id=${c1}&subject=History`)).data.slice(0, 2);
+  const ids = hist.map((r) => r.id);
+  assert.ok(ids.length === 2, 'have two History clips to mark');
+
+  const mark = await j('POST', '/api/catalog/bulk', { ids, op: 'set-filler', is_filler: 1 });
+  assert.equal(mark.status, 200);
+  for (const id of ids) {
+    const r = db.prepare('SELECT is_filler, subject, chapter FROM Resource WHERE id=?').get(id);
+    assert.equal(r.is_filler, 1, 'now a filler');
+    assert.equal(r.subject, null, 'series dropped when marked filler');
+    assert.equal(r.chapter, 0, 'chapter cleared when marked filler');
+  }
+  const unmark = await j('POST', '/api/catalog/bulk', { ids, op: 'set-filler', is_filler: 0 });
+  assert.equal(unmark.status, 200);
+  assert.equal(db.prepare('SELECT is_filler FROM Resource WHERE id=?').get(ids[0]).is_filler, 0, 'unmarked back to normal content');
 });
 
 test('set-episode: correct an episode from the schedule view, propagate cursor + later drafts', async () => {

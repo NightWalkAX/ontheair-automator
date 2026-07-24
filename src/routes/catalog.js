@@ -136,6 +136,17 @@ router.post('/bulk', (req, res) => {
         for (const id of ids) db.prepare('UPDATE Resource SET show_type_id = ? WHERE id = ?').run(stId, id);
         break;
       }
+      case 'set-filler': {
+        // Manual filler toggle. Marking as filler drops the series/chapter (fillers
+        // are a channel-wide pool, not a series); unmarking leaves subject null so
+        // the operator can then assign it to a show.
+        const f = req.body.is_filler ? 1 : 0;
+        for (const id of ids) {
+          if (f) db.prepare('UPDATE Resource SET is_filler = 1, subject = NULL, chapter = 0 WHERE id = ?').run(id);
+          else db.prepare('UPDATE Resource SET is_filler = 0 WHERE id = ?').run(id);
+        }
+        break;
+      }
       case 'find-replace': {
         const field = req.body.field === 'subject' ? 'subject' : 'display_name';
         const find = String(req.body.find ?? '');
