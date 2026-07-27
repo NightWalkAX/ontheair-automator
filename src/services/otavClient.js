@@ -8,11 +8,22 @@
 //   - Auth (optional per instance): PUT /authorize {username,password}
 //       -> {token, level}; token appended as ?token= on every later request;
 //       invalidated whenever OTAV relaunches (expect periodic 401s).
+//   - Get a playlist   : GET    /playlists/{n}          (index or unique_id)
+//   - Create playlist  : POST   /playlists/{NAME}       -> Playlist Object
+//                        (needs the OTAV "traffic" option; the playlist file is
+//                         created in the folder selected for the schedule, so
+//                         the OTAV scheduler picks it up for that day)
 //   - Clear a playlist : DELETE /playlists/{n}/items
 //   - Add a file clip  : POST   /playlists/{n}/items
 //                        body { "clip_type": 0, "url": <path>, "name": <name> }
 //                        (clip_type 0 = FILE; url is the media path)
 //   - Resync scheduler : GET    /scheduler/resynchronize
+//
+// One playlist PER DAY, per channel: pushing 2026-07-27 creates/reuses a
+// playlist named from the channel's playlist_name_pattern (default
+// "{channel} {date}") instead of writing into one fixed playlist index. The
+// legacy fixed playlist_ref is only used as a fallback when the instance can't
+// create playlists (no traffic option).
 //
 // Because the scheduler Mac and both broadcast Macs mount the same SMB share at
 // the same path, Resource.file_path is used verbatim as the clip "url".
@@ -62,17 +73,51 @@ class OtavClient {
     let data;
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (!res.ok) {
-      throw new Error(`OTAV ${method} ${path} -> ${res.status}: ${data.error || text}`);
+      const err = new Error(`OTAV ${method} ${path} -> ${res.status}: ${data.error || text}`);
+      err.status = res.status;
+      throw err;
     }
     return data;
   }
 
   info() { return this.request('GET', '/info'); }
 
-  clearPlaylist(ref) { return this.request('DELETE', `/playlists/${ref}/items`); }
+  /** Playlist refs are index / unique_id / name — always URL-encode them. */
+  static ref(ref) { return encodeURIComponent(String(ref)); }
+
+  getPlaylist(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}`); }
+
+  /** POST /playlists/{NAME} — empty playlist in the schedule folder. */
+  createPlaylist(name) { return this.request('POST', `/playlists/${OtavClient.ref(name)}`); }
+
+  clearPlaylist(ref) { return this.request('DELETE', `/playlists/${OtavClient.ref(ref)}/items`); }
+
+  /**
+   * Resolve the playlist to push this day's blocks into: reuse it if OTAV
+   * already has one under that name (clearing its items so a re-push replaces
+   * rather than appends), otherwise create it.
+   *
+   * Returns { ref, created, reused } where `ref` is the unique_id (or the name,
+   * when OTAV doesn't hand one back) to address in later item calls.
+   */
+  async ensureDayPlaylist(name) {
+    let existing = null;
+    try {
+      existing = await this.getPlaylist(name);
+    } catch (err) {
+      if (err.status !== 404) throw err; // 401/403/network are real failures
+    }
+    if (existing) {
+      const ref = existing.unique_id || name;
+      await this.clearPlaylist(ref);
+      return { ref, created: false, reused: true };
+    }
+    const made = await this.createPlaylist(name);
+    return { ref: made?.unique_id || name, created: true, reused: false };
+  }
 
   addFileClip(ref, filePath, name) {
-    return this.request('POST', `/playlists/${ref}/items`, {
+    return this.request('POST', `/playlists/${OtavClient.ref(ref)}/items`, {
       clip_type: 0, // FILE
       url: filePath,
       name,
@@ -93,10 +138,30 @@ function blockItems(blockId) {
   `).all(blockId);
 }
 
+const DEFAULT_PLAYLIST_PATTERN = '{channel} {date}';
+
+/**
+ * Name of the playlist that holds one channel's schedule for one day.
+ * Tokens: {channel} {date} {yyyy} {mm} {dd}. Configurable per channel so the
+ * name can match whatever the OTAV scheduler on that Mac expects.
+ */
+export function dayPlaylistName(channel, targetDate) {
+  const pattern = (channel.playlist_name_pattern || '').trim() || DEFAULT_PLAYLIST_PATTERN;
+  const [yyyy = '', mm = '', dd = ''] = String(targetDate).split('-');
+  return pattern
+    .replaceAll('{channel}', channel.channel_name ?? channel.name ?? '')
+    .replaceAll('{date}', targetDate)
+    .replaceAll('{yyyy}', yyyy)
+    .replaceAll('{mm}', mm)
+    .replaceAll('{dd}', dd)
+    .trim();
+}
+
 /**
  * Push all approved blocks for `targetDate` to their channels' OTAV instances.
- * Groups blocks by channel, clears each channel's target playlist once, then
- * appends every clip in schedule order. On success marks blocks 'exported'.
+ * Groups blocks by channel, creates (or reuses+clears) that channel's playlist
+ * FOR THAT DAY, then appends every clip in schedule order. On success marks
+ * blocks 'exported'.
  *
  * Returns a per-channel report; failures are captured per channel rather than
  * aborting the whole run (one dead OTAV shouldn't block the other 5).
@@ -105,7 +170,7 @@ export async function pushApprovedBlocks(targetDate) {
   const blocks = db.prepare(`
     SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
            c.name AS channel_name, c.api_ip, c.api_port,
-           c.playlist_ref, c.api_username, c.api_password
+           c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     JOIN ChannelType   c  ON c.id = bt.channel_id
@@ -124,12 +189,32 @@ export async function pushApprovedBlocks(targetDate) {
   const markExported = db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?");
 
   for (const { channel, blocks: chBlocks } of byChannel.values()) {
-    const ref = channel.playlist_ref ?? '0';
+    const playlistName = dayPlaylistName(channel, targetDate);
     const client = new OtavClient(channel);
-    const result = { channel: channel.channel_name, playlist_ref: ref, pushed: 0, blocks: chBlocks.length };
+    const result = {
+      channel: channel.channel_name,
+      playlist: playlistName,
+      pushed: 0,
+      blocks: chBlocks.length,
+    };
     try {
       await client.authorize();
-      await client.clearPlaylist(ref);
+      let ref;
+      try {
+        const day = await client.ensureDayPlaylist(playlistName);
+        ref = day.ref;
+        result.playlist_ref = ref;
+        result.created = day.created;
+      } catch (err) {
+        // Instances without the "traffic" option can't create playlists. Fall
+        // back to the channel's fixed playlist_ref if one is configured.
+        if (channel.playlist_ref == null || channel.playlist_ref === '') throw err;
+        ref = channel.playlist_ref;
+        result.playlist_ref = ref;
+        result.created = false;
+        result.warning = `could not create playlist "${playlistName}" (${err.message}); pushed into fixed playlist ${ref}`;
+        await client.clearPlaylist(ref);
+      }
       for (const b of chBlocks) {
         for (const item of blockItems(b.block_id)) {
           await client.addFileClip(ref, item.file_path, item.name);

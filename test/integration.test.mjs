@@ -273,12 +273,54 @@ test('approve-week then push to fake OTAV marks blocks exported', async () => {
   assert.ok(ch1.ok, `push ok: ${ch1.error || ''}`);
   assert.ok(ch1.pushed > 0, 'clips were pushed');
 
+  // One playlist per day, created on the fly and named "{channel} {date}".
+  assert.equal(ch1.playlist, `${ch1.channel} 2026-07-20`);
+  assert.equal(ch1.created, true, 'day playlist was created, not assumed to exist');
+  assert.ok(fakeOtav.state.playlists.has(ch1.playlist), 'playlist exists on the OTAV side');
+  assert.equal(fakeOtav.state.playlists.get(ch1.playlist).items.length, ch1.pushed);
+
   assert.ok(fakeOtav.state.authorized >= 1);
-  assert.ok(fakeOtav.state.cleared >= 1);
   assert.equal(fakeOtav.state.received[0].clip_type, 0);
+  assert.equal(fakeOtav.state.received[0].playlist, ch1.playlist);
 
   const exported = db.prepare("SELECT COUNT(*) n FROM ScheduledBlock WHERE status='exported' AND target_date='2026-07-20'").get();
   assert.ok(exported.n > 0);
+
+  // A second push of the same day reuses that playlist and replaces its items
+  // instead of appending or 404ing.
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20' AND status='exported'").run();
+  const clearedBefore = fakeOtav.state.cleared;
+  const again = await j('POST', '/api/otav/push?date=2026-07-20');
+  const ch1b = again.data.channels[0];
+  assert.ok(ch1b.ok, `re-push ok: ${ch1b.error || ''}`);
+  assert.equal(ch1b.created, false, 'existing day playlist reused');
+  assert.equal(fakeOtav.state.cleared, clearedBefore + 1, 'reused playlist was cleared first');
+  assert.equal(fakeOtav.state.playlists.get(ch1b.playlist).items.length, ch1b.pushed, 'items replaced, not appended');
+
+  // A different date gets its own playlist.
+  assert.equal(fakeOtav.state.playlists.size, 1);
+});
+
+test('push falls back to the fixed playlist_ref when OTAV cannot create playlists', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const legacy = await start({ canCreatePlaylists: false });
+  legacy.state.playlists.set('0', { unique_id: '0-uid', name: '0', items: [] });
+
+  const ch = db.prepare("SELECT id FROM ChannelType WHERE api_port = ?").get(fakeOtav.port)
+    || db.prepare('SELECT id FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port, playlist_ref FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(legacy.port, '0', ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  const r = await j('POST', '/api/otav/push?date=2026-07-20');
+  const rep = r.data.channels.find((c) => c.playlist_ref === '0');
+  assert.ok(rep, 'a channel fell back to playlist 0');
+  assert.ok(rep.ok, `fallback push ok: ${rep.error || ''}`);
+  assert.match(rep.warning, /could not create playlist/);
+  assert.equal(legacy.state.playlists.get('0').items.length, rep.pushed);
+
+  db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(prev.api_port, prev.playlist_ref, ch.id);
+  await legacy.close();
 });
 
 test('OTAV connectivity check hits /info', async () => {

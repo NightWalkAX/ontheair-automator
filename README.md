@@ -117,9 +117,13 @@ some PUT/DELETE CRUD branches.
 - **Review UI** (`public/`): 7-day timeline; click a block to reorder/swap/add
   items with live duration validation. Approval is blocked — client- and
   server-side — while a block is out of tolerance.
-- **OTAV push** (`src/services/otavClient.js`): per-channel REST client. Clears
-  the target playlist, then `POST /playlists/{ref}/items` with
+- **OTAV push** (`src/services/otavClient.js`): per-channel REST client. Creates
+  one playlist **per broadcast day** — `POST /playlists/{NAME}`, named from the
+  channel's `playlist_name_pattern` (default `{channel} {date}`) — reusing and
+  clearing it if it already exists, then `POST /playlists/{ref}/items` with
   `{clip_type:0, url, name}` for each item, and resynchronizes the scheduler.
+  Instances without the OTAV "traffic" option can't create playlists; those fall
+  back to the channel's fixed `playlist_ref` and the push report says so.
   Optional token auth with automatic re-auth on 401. All machines mount the share
   at the same path, so `Resource.file_path` is used verbatim as the clip URL.
 
@@ -149,5 +153,6 @@ seed intent, not the final schema.
   (INTEGER) but no Subject table; resources are scoped by their TEXT `subject`.
 - `Resource.channel_id` + a `MediaRoot(channel_id, show_type_id, path)` table
   replace SEED's flat `ShowType.paths`, because each channel owns its own folders.
-- `ChannelType.playlist_ref`, `api_username`, `api_password` added for OTAV
+- `ChannelType.playlist_name_pattern` (per-day playlist naming),
+  `playlist_ref` (fallback target), `api_username`, `api_password` added for OTAV
   targeting/auth.

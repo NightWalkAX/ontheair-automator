@@ -147,13 +147,14 @@
     <div class="split">
       <div class="panel">
         <h3>📺 Channels</h3>
-        <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Playlist</th><th>Active</th><th></th></tr></thead><tbody></tbody></table>
+        <table id="channelsTable"><thead><tr><th>Name</th><th>API</th><th>Day playlist</th><th>Active</th><th></th></tr></thead><tbody></tbody></table>
         <form id="channelForm" class="stack">
           <div class="form-title">Add channel</div>
           <input name="name" placeholder="Channel name" required />
           <input name="api_ip" placeholder="API IP (e.g. 192.168.0.10)" />
           <input name="api_port" placeholder="API port (e.g. 8081)" type="number" />
-          <input name="playlist_ref" placeholder="Playlist ref (index or unique_id, default 0)" />
+          <input name="playlist_name_pattern" placeholder="Day playlist name (default &quot;{channel} {date}&quot;)" />
+          <input name="playlist_ref" placeholder="Fallback playlist ref (index or unique_id)" />
           <input name="api_username" placeholder="API username (optional)" />
           <input name="api_password" placeholder="API password (optional)" type="password" />
           <button type="submit">Add channel</button>
@@ -270,7 +271,8 @@
           <label class="field">Name <input id="chmName" placeholder="Channel name" /></label>
           <label class="field">API IP <input id="chmIp" placeholder="192.168.0.10" /></label>
           <label class="field">API port <input id="chmPort" type="number" placeholder="8081" /></label>
-          <label class="field">Playlist ref <input id="chmPlaylist" placeholder="index or unique_id (default 0)" /></label>
+          <label class="field">Day playlist name <input id="chmPlaylistName" placeholder="{channel} {date}" /></label>
+          <label class="field">Fallback playlist ref <input id="chmPlaylist" placeholder="index or unique_id (optional)" /></label>
           <label class="field">API username <input id="chmUser" placeholder="(optional)" /></label>
           <label class="field">API password <input id="chmPass" type="password" placeholder="(optional)" /></label>
           <label class="chk"><input id="chmActive" type="checkbox" /> active</label>
