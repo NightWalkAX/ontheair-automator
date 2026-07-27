@@ -242,6 +242,7 @@ export function initSchema() {
   // the CRUD layer don't break.
   addColumnIfMissing('BlockTemplate', 'content_type', "TEXT NOT NULL DEFAULT 'movie'");
   addColumnIfMissing('BlockTemplate', 'weekdays', 'TEXT'); // CSV, e.g. 'Mon,Tue,Wed'
+  addColumnIfMissing('BlockTemplate', 'max_per_show', 'INTEGER'); // cap episodes/show/block; NULL = unlimited
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs

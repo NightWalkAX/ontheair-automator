@@ -439,6 +439,26 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .items li.dragging { opacity: .5; }
 .items li.drag-over { border-color: var(--accent); box-shadow: var(--ring); }
 .items .mini { padding: 3px 8px; font-size: 12px; }
+.items li .air {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  font-weight: 700; color: var(--accent); min-width: 42px;
+}
+
+/* Block editor control bar: per-show counts, cap, and show-order strip. */
+.block-controls { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
+.block-controls .bc-summary,
+.block-controls .bc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.block-controls .chip-count {
+  font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-soft);
+}
+.block-controls .chip-count.filler { color: var(--warn); border-color: var(--warn-soft); }
+.show-order { display: flex; gap: 6px; flex-wrap: wrap; }
+.show-order .chip-order {
+  font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 1px solid var(--line); cursor: grab; user-select: none;
+}
+.show-order .chip-order.dragging { opacity: .5; }
 
 .add-item {
   display: flex; gap: 9px; margin: 14px 0;

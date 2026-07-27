@@ -298,16 +298,21 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   const series = templateSeries(template, channelId);
   const iters = series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
 
+  // max_per_show caps how many episodes one series may contribute to a block
+  // (NULL/0 = unlimited). Tracked per iterator so a series drops out of the
+  // cycle once it hits its cap, leaving room for the others (or fillers).
+  const maxPerShow = Number(template.max_per_show) > 0 ? Number(template.max_per_show) : Infinity;
+
   const items = [];
   const usedIds = new Set();
   let total = 0; // placed seconds so far (main + fillers), i.e. offset from block start
-  let active = iters.slice();
+  let active = iters.map((it) => ({ it, count: 0 }));
 
   while (active.length) {
     let progressed = false;
     const stillActive = [];
-    for (const it of active) {
-      const r = it.peek();
+    for (const a of active) {
+      const r = a.it.peek();
       if (!r || usedIds.has(r.id)) continue;
       // Filler gap needed to push this item's start onto the next quarter mark.
       const abs = startSecs + total;
@@ -322,9 +327,10 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
       items.push(r);
       total += r.duration;
       usedIds.add(r.id);
-      it.consume();
+      a.it.consume();
+      a.count++;
       progressed = true;
-      stillActive.push(it);
+      if (a.count < maxPerShow) stillActive.push(a); // retire the series once capped
     }
     active = stillActive;
     if (!progressed) break;

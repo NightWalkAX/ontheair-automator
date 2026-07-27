@@ -18,6 +18,8 @@ function validateBlock(blockId) {
            COALESCE(s.end_time, bt.end_time)     AS end_time,
            s.slot_order AS slot_order,
            bt.name AS template_name,
+           bt.id AS template_id,
+           bt.max_per_show AS max_per_show,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
@@ -156,11 +158,12 @@ router.post('/templates', (req, res) => {
   }
   const primary = slots[0];
   const firstWeekday = weekdays.split(',')[0];
+  const maxPerShow = Number(b.max_per_show) > 0 ? Number(b.max_per_show) : null;
   const info = db.prepare(`
-    INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type, max_per_show)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(primaryChannel, b.name, firstWeekday, weekdays, primary.start_time, primary.end_time,
-         b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie');
+         b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie', maxPerShow);
   const id = info.lastInsertRowid;
   setSlots(id, slots);
   setChannels(id, channels, primaryChannel);
@@ -177,15 +180,18 @@ router.put('/templates/:id', (req, res) => {
     ? toWeekdaysCsv(b.weekdays ?? b.weekday) : cur.weekdays;
   const slots = Array.isArray(b.slots) && b.slots.length ? b.slots : null;
   const primary = slots ? slots[0] : { start_time: b.start_time ?? cur.start_time, end_time: b.end_time ?? cur.end_time };
+  const maxPerShow = b.max_per_show === undefined
+    ? cur.max_per_show
+    : (Number(b.max_per_show) > 0 ? Number(b.max_per_show) : null);
   db.prepare(`
-    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, weekdays=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?
+    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, weekdays=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?, max_per_show=?
     WHERE id=?
   `).run(
     b.channel_id ?? cur.channel_id, b.name ?? cur.name,
     (weekdays || '').split(',')[0] || cur.weekday, weekdays,
     primary.start_time, primary.end_time,
     b.target_subject_id ?? cur.target_subject_id, b.target_subject ?? cur.target_subject,
-    b.content_type ?? cur.content_type, id
+    b.content_type ?? cur.content_type, maxPerShow, id
   );
   if (slots) setSlots(id, slots);
   if (Array.isArray(b.channels)) setChannels(id, b.channels, b.channel_id ?? cur.channel_id);
@@ -258,6 +264,52 @@ router.post('/:id/regenerate', (req, res) => {
   const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(Number(req.params.id));
   if (!block) return res.status(404).json({ error: 'not found' });
   res.json(populateBlock(block));
+});
+
+// PUT /api/blocks/:id/max-per-show { max } — set the block's template cap on how
+// many episodes one show may contribute per block (0/null = unlimited), then
+// wipe+rebuild this draft block so the change is visible immediately. The cap
+// lives on the template, so it also governs every future generation.
+router.put('/:id/max-per-show', (req, res) => {
+  const id = Number(req.params.id);
+  const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(id);
+  if (!block) return res.status(404).json({ error: 'not found' });
+  const raw = Number(req.body?.max);
+  const max = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+  db.prepare('UPDATE BlockTemplate SET max_per_show = ? WHERE id = ?').run(max, block.template_id);
+  // Rebuild from scratch (drop auto + manual items so the cap fully re-applies).
+  db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(id);
+  populateBlock(block);
+  res.json(validateBlock(id));
+});
+
+// PUT /api/blocks/:id/series-order { subjects: [...] } — reorder the cycle order
+// of the shows in this block's template, then wipe+rebuild the block so the new
+// order takes effect. The order lives on the template (BlockTemplateSeries), so
+// it also governs future generations. Subjects not listed keep their relative
+// order after the listed ones.
+router.put('/:id/series-order', (req, res) => {
+  const id = Number(req.params.id);
+  const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(id);
+  if (!block) return res.status(404).json({ error: 'not found' });
+  const subjects = Array.isArray(req.body?.subjects) ? req.body.subjects.map(String) : null;
+  if (!subjects) return res.status(400).json({ error: 'subjects array is required' });
+
+  const rows = db.prepare(
+    'SELECT subject FROM BlockTemplateSeries WHERE template_id = ? ORDER BY play_order'
+  ).all(block.template_id).map((r) => r.subject);
+  // New order = the requested subjects (that actually belong to the template)
+  // first, then any remaining template subjects in their existing order.
+  const wanted = subjects.filter((s) => rows.includes(s));
+  const rest = rows.filter((s) => !wanted.includes(s));
+  const ordered = [...wanted, ...rest];
+
+  const upd = db.prepare('UPDATE BlockTemplateSeries SET play_order = ? WHERE template_id = ? AND subject = ?');
+  ordered.forEach((s, i) => upd.run(i, block.template_id, s));
+
+  db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(id);
+  populateBlock(block);
+  res.json(validateBlock(id));
 });
 
 // ---- Review ----------------------------------------------------------------

@@ -308,19 +308,108 @@ async function openBlock(id) {
   for (const r of allResources) {
     sel.append(el('option', { value: r.id, textContent: `${r.is_filler ? '[filler] ' : ''}${r.name} (${fmt(r.duration)})` }));
   }
+  renderBlockControls();
   renderItems();
   $('#modal').classList.remove('hidden');
+}
+
+// Per-show summary chips, the max-per-show cap control, and a draggable show-
+// order strip. Hidden for mirrored airings (they copy their primary verbatim).
+let showOrderDrag = null;
+function renderBlockControls() {
+  const box = $('#blockControls');
+  box.innerHTML = '';
+  if (currentMirror) return;
+
+  // Per-show counts (main content only), in first-appearance order.
+  const counts = new Map();
+  for (const it of currentItems) {
+    if (it.is_filler) continue;
+    const k = it.subject || it.name;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const fillerCount = currentItems.filter((i) => i.is_filler).length;
+
+  const summary = el('div', { className: 'bc-summary' });
+  summary.append(el('span', { className: 'muted', textContent: 'Per show:' }));
+  for (const [name, n] of counts) summary.append(el('span', { className: 'chip-count', textContent: `${name} ×${n}` }));
+  if (fillerCount) summary.append(el('span', { className: 'chip-count filler', textContent: `fillers ×${fillerCount}` }));
+  box.append(summary);
+
+  // Max-per-show cap control (writes to the template, rebuilds this block).
+  const capRow = el('div', { className: 'bc-row' });
+  capRow.append(el('label', { className: 'muted', textContent: 'Max episodes per show:' }));
+  const capInp = el('input', { className: 'cat-ord', type: 'number', min: '0', step: '1',
+    value: currentBlock.block.max_per_show || '', placeholder: '0 = unlimited', style: 'max-width:120px' });
+  const capBtn = el('button', { className: 'mini ghost', textContent: 'Apply & refill' });
+  capBtn.onclick = () => withBusy(capBtn, async () => {
+    const v = await api.send('PUT', `/api/blocks/${currentBlock.block.id}/max-per-show`, { max: Number(capInp.value) || 0 });
+    currentBlock = v; currentItems = v.items.map((i) => ({ ...i }));
+    renderBlockControls(); renderItems();
+    toast('Cap applied — block refilled (also applies to future generations)', 'ok');
+    loadSchedule();
+  });
+  capRow.append(capInp, capBtn);
+  box.append(capRow);
+
+  // Show-order strip: drag the show chips to set the cycle order, then refill.
+  const shows = [...counts.keys()];
+  if (shows.length > 1) {
+    const orderRow = el('div', { className: 'bc-row' });
+    orderRow.append(el('label', { className: 'muted', textContent: 'Show order:' }));
+    const strip = el('div', { className: 'show-order' });
+    let order = shows.slice();
+    const paint = () => {
+      strip.innerHTML = '';
+      order.forEach((s, i) => {
+        const chip = el('span', { className: 'chip-order', draggable: true, textContent: s });
+        chip.addEventListener('dragstart', () => { showOrderDrag = i; chip.classList.add('dragging'); });
+        chip.addEventListener('dragend', () => { showOrderDrag = null; chip.classList.remove('dragging'); });
+        chip.addEventListener('dragover', (e) => e.preventDefault());
+        chip.addEventListener('drop', (e) => {
+          e.preventDefault();
+          if (showOrderDrag === null || showOrderDrag === i) return;
+          const [m] = order.splice(showOrderDrag, 1); order.splice(i, 0, m); paint();
+        });
+        strip.append(chip);
+      });
+    };
+    paint();
+    const applyBtn = el('button', { className: 'mini ghost', textContent: 'Apply order & refill' });
+    applyBtn.onclick = () => withBusy(applyBtn, async () => {
+      const v = await api.send('PUT', `/api/blocks/${currentBlock.block.id}/series-order`, { subjects: order });
+      currentBlock = v; currentItems = v.items.map((i) => ({ ...i }));
+      renderBlockControls(); renderItems();
+      toast('Show order applied — block refilled', 'ok');
+      loadSchedule();
+    });
+    orderRow.append(strip, applyBtn);
+    box.append(orderRow);
+  }
+}
+
+// Clock time (HH:MM) `offsetSecs` after a base 'HH:MM' block start.
+function clockAt(baseHHMM, offsetSecs) {
+  const [h, m] = String(baseHHMM || '00:00').split(':').map(Number);
+  const t = (((h * 3600 + m * 60 + offsetSecs) % 86400) + 86400) % 86400;
+  return `${String(Math.floor(t / 3600)).padStart(2, '0')}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
 }
 
 let dragIdx = null;
 function renderItems() {
   const list = $('#itemList');
   list.innerHTML = '';
+  const blockStart = currentBlock?.block?.start_time || '00:00';
+  let acc = 0; // running seconds from block start, for air-times
   currentItems.forEach((it, idx) => {
+    const airAt = clockAt(blockStart, acc);
+    acc += it.duration;
     const li = el('li', { className: it.is_filler ? 'filler' : '', draggable: !currentMirror });
     if (!currentMirror) li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Drag to reorder' }));
+    li.append(el('span', { className: 'air', textContent: airAt, title: 'On-air time' }));
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
-    li.append(el('span', { className: 'grow', textContent: `${it.name}${it.is_manual_override ? ' *' : ''}` }));
+    const label = it.is_filler ? it.name : `${it.subject ? it.subject + ' · ' : ''}${it.chapter ? 'Ep ' + it.chapter + ' — ' : ''}${it.name}`;
+    li.append(el('span', { className: 'grow', textContent: `${label}${it.is_manual_override ? ' *' : ''}` }));
     // Per-item episode corrector for serial items: pick another chapter of the
     // same show. The backend swaps the item, sets the series cursor, and
     // regenerates later still-draft blocks this week so ordering follows.
@@ -1795,6 +1884,7 @@ async function openTemplate(t) {
     chBox.append(lbl);
   }
   $('#tplmName').value = t ? t.name : '';
+  $('#tplmMaxPerShow').value = t && t.max_per_show ? t.max_per_show : '';
   $('#btnDeleteTpl').style.display = t ? '' : 'none';
 
   const days = new Set((t?.weekdays || t?.weekday || '').split(',').map((x) => x.trim()).filter(Boolean));
@@ -1877,7 +1967,8 @@ $('#btnSaveTpl').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
   const slots = tplSlots.filter((s) => s.start_time && s.end_time);
   const series = tplSeries.filter((s) => s.checked).map((s) => s.subject);
   if (!name || !channels.length || !weekdays.length || !slots.length) return toast('Name, at least one channel, one weekday and one airing are required', 'bad', 'Template');
-  const body = { channels, channel_id: channels[0], name, weekdays, slots, series };
+  const maxPerShow = Number($('#tplmMaxPerShow').value) > 0 ? Number($('#tplmMaxPerShow').value) : 0;
+  const body = { channels, channel_id: channels[0], name, weekdays, slots, series, max_per_show: maxPerShow };
   if (tplEditing) await api.send('PUT', `/api/blocks/templates/${tplEditing}`, body);
   else await api.send('POST', '/api/blocks/templates', body);
   $('#templateModal').classList.add('hidden');

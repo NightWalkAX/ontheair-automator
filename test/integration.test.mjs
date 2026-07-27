@@ -828,3 +828,57 @@ test('serial toggle overrides the TV rule: a serial TV show plays in order, not 
   assert.ok(seq.length, 'block contains the serial TV show');
   assert.equal(seq[0].chapter, 1, 'serial TV show plays episode 1 (cursor), not the latest-added episode 3');
 });
+
+test('max_per_show caps how many episodes a single show contributes per block', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const tpl = (await j('GET', '/api/blocks/templates')).data.find((t) => t.name === 'Morning Lessons');
+  assert.ok(tpl, 'Morning Lessons template exists');
+
+  // Cap at 1 per show and regenerate that channel's week.
+  await j('PUT', `/api/blocks/templates/${tpl.id}`, { max_per_show: 1 });
+  const back = (await j('GET', '/api/blocks/templates')).data.find((t) => t.id === tpl.id);
+  assert.equal(back.max_per_show, 1, 'cap persisted on the template');
+
+  await j('POST', `/api/blocks/generate?weekStart=2027-02-01&channel_id=${c1}`); // Monday
+  const view = (await j('GET', `/api/blocks?week=2027-02-01&channel_id=${c1}`)).data;
+  const primary = view.blocks.find((b) => !b.is_mirror && b.template_name === 'Morning Lessons');
+  const items = (await j('GET', `/api/blocks/${primary.id}`)).data.items.filter((i) => !i.is_filler);
+  const bySubject = {};
+  for (const it of items) bySubject[it.subject] = (bySubject[it.subject] || 0) + 1;
+  for (const [s, n] of Object.entries(bySubject)) assert.ok(n <= 1, `${s} appears ${n}x, must be <= 1`);
+
+  // Raise to 2 → at least one show now appears twice (block has room).
+  await j('PUT', `/api/blocks/templates/${tpl.id}`, { max_per_show: 2 });
+  await j('POST', `/api/blocks/generate?weekStart=2027-02-01&channel_id=${c1}`);
+  const view2 = (await j('GET', `/api/blocks?week=2027-02-01&channel_id=${c1}`)).data;
+  const p2 = view2.blocks.find((b) => !b.is_mirror && b.template_name === 'Morning Lessons');
+  const items2 = (await j('GET', `/api/blocks/${p2.id}`)).data.items.filter((i) => !i.is_filler);
+  const counts2 = {};
+  for (const it of items2) counts2[it.subject] = (counts2[it.subject] || 0) + 1;
+  assert.ok(Math.max(...Object.values(counts2)) === 2, 'cap=2 lets a show appear twice');
+  assert.ok(Math.max(...Object.values(counts2)) <= 2, 'never more than the cap');
+});
+
+test('max-per-show + series-order endpoints rebuild the block', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  await j('POST', `/api/blocks/generate?weekStart=2027-03-01&channel_id=${c1}`); // Monday
+  const view = (await j('GET', `/api/blocks?week=2027-03-01&channel_id=${c1}`)).data;
+  const b = view.blocks.find((x) => !x.is_mirror && x.template_name === 'Morning Lessons');
+
+  // Cap via the block endpoint.
+  const capped = await j('PUT', `/api/blocks/${b.id}/max-per-show`, { max: 1 });
+  assert.equal(capped.status, 200);
+  const mains = capped.data.items.filter((i) => !i.is_filler);
+  const cc = {};
+  for (const it of mains) cc[it.subject] = (cc[it.subject] || 0) + 1;
+  assert.ok(Object.values(cc).every((n) => n <= 1), 'block endpoint enforced the cap');
+
+  // Reorder shows: take a show that currently ISN'T first and move it to front.
+  const distinct = [...new Set(mains.map((i) => i.subject))];
+  assert.ok(distinct.length >= 2, 'block has at least two distinct shows to reorder');
+  const target = distinct[distinct.length - 1];
+  const ord = await j('PUT', `/api/blocks/${b.id}/series-order`, { subjects: [target, ...distinct.filter((s) => s !== target)] });
+  assert.equal(ord.status, 200);
+  const firstMain = ord.data.items.find((i) => !i.is_filler);
+  assert.equal(firstMain.subject, target, `reordered cycle puts ${target} first`);
+});

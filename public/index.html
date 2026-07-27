@@ -179,6 +179,7 @@
       <button id="modalClose" class="close" aria-label="Close">×</button>
       <h3 id="modalTitle"></h3>
       <div id="modalMeta" class="muted"></div>
+      <div id="blockControls" class="block-controls"></div>
       <div class="modal-scroll">
         <ol id="itemList" class="items"></ol>
       </div>
@@ -246,6 +247,10 @@
             <span class="form-title">Series <small class="muted">(check to include; drag to set the cycle order)</small></span>
             <ol id="tplmSeries" class="items"></ol>
           </div>
+          <label class="field">Max episodes per show, per block
+            <input id="tplmMaxPerShow" type="number" min="0" step="1" placeholder="0 = unlimited" style="max-width:180px" />
+            <small class="muted">Caps how many times each show repeats to fill a block. Blank/0 = fill with as many as fit.</small>
+          </label>
         </div>
       </div>
       <div class="modal-actions">
