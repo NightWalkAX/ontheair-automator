@@ -16,12 +16,15 @@ router.get('/:id', (req, res) => {
 });
 
 router.post('/', (req, res) => {
-  const { name, is_active = 1, api_ip, api_port, playlist_ref, playlist_name_pattern, api_username, api_password } = req.body || {};
+  const { name, is_active = 1, api_ip, api_port, playlist_ref, playlist_name_pattern,
+          schedule_path, playlist_dir, playlist_template, api_username, api_password } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name is required' });
   const info = db.prepare(`
-    INSERT INTO ChannelType (name, is_active, api_ip, api_port, playlist_ref, playlist_name_pattern, api_username, api_password)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ChannelType (name, is_active, api_ip, api_port, playlist_ref, playlist_name_pattern,
+                             schedule_path, playlist_dir, playlist_template, api_username, api_password)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(name, is_active ? 1 : 0, api_ip, api_port, playlist_ref ?? null, playlist_name_pattern ?? null,
+         schedule_path ?? null, playlist_dir ?? null, playlist_template ?? null,
          api_username ?? null, api_password ?? null);
   res.status(201).json({ id: info.lastInsertRowid });
 });
@@ -33,9 +36,10 @@ router.put('/:id', (req, res) => {
   const m = { ...cur, ...req.body };
   db.prepare(`
     UPDATE ChannelType SET name=?, is_active=?, api_ip=?, api_port=?, playlist_ref=?, playlist_name_pattern=?,
-                           api_username=?, api_password=?
+                           schedule_path=?, playlist_dir=?, playlist_template=?, api_username=?, api_password=?
     WHERE id=?
   `).run(m.name, m.is_active ? 1 : 0, m.api_ip, m.api_port, m.playlist_ref, m.playlist_name_pattern ?? null,
+         m.schedule_path ?? null, m.playlist_dir ?? null, m.playlist_template ?? null,
          m.api_username, m.api_password, id);
   res.json({ ok: true });
 });

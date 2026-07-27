@@ -61,6 +61,10 @@ export function initSchema() {
       -- Name template for the playlist created per push day.
       -- Tokens: {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
       playlist_name_pattern TEXT,
+      -- Event-based scheduling done at the file level (see migrations below).
+      schedule_path     TEXT,
+      playlist_dir      TEXT,
+      playlist_template TEXT,
       -- Optional OTAV auth (only used if that instance requires it).
       api_username TEXT,
       api_password TEXT
@@ -240,6 +244,14 @@ export function initSchema() {
   // Name template for the per-day playlist created on push. Tokens:
   // {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
   addColumnIfMissing('ChannelType', 'playlist_name_pattern', 'TEXT');
+  // File-level scheduling for instances whose OTAV scheduler runs an EVENT-based
+  // schedule (which REST cannot modify): the schedule JSON this app edits, the
+  // folder day playlists are written to, and an empty playlist saved from OTAV
+  // that gets byte-copied per day. Paths as this process sees them — the share is
+  // mounted at the same path on every machine. All three or none.
+  addColumnIfMissing('ChannelType', 'schedule_path', 'TEXT');
+  addColumnIfMissing('ChannelType', 'playlist_dir', 'TEXT');
+  addColumnIfMissing('ChannelType', 'playlist_template', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_username', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_password', 'TEXT');
   addColumnIfMissing('BlockTemplate', 'target_subject', 'TEXT');

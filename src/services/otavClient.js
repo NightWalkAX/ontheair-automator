@@ -29,6 +29,7 @@
 // the same path, Resource.file_path is used verbatim as the clip "url".
 
 import { db } from '../db.js';
+import { prepareDaySchedule } from './otavSchedule.js';
 
 class OtavClient {
   constructor(channel) {
@@ -122,8 +123,26 @@ class OtavClient {
    * three routes fail it throws an error naming what was tried, so the push
    * report tells the operator which knob to turn.
    */
-  async ensureDayPlaylist(name) {
+  async ensureDayPlaylist(name, preparedPath) {
     const tried = [];
+
+    // 0. A file this app just wrote and registered in the schedule. OTAV may
+    //    still be holding the previous schedule in memory, so on a miss ask it
+    //    to resynchronize (which re-reads the schedule) and try once more.
+    if (preparedPath) {
+      for (const attempt of ['first', 'after resync']) {
+        try {
+          const opened = await this.openSchedulerPlaylist(preparedPath);
+          const ref = opened?.unique_id || name;
+          await this.clearPlaylist(ref);
+          return { ref, source: 'prepared', created: false, path: preparedPath };
+        } catch (err) {
+          tried.push(`open "${preparedPath}" (${attempt}) -> ${err.message}`);
+          if (attempt === 'after resync') break;
+          await this.resynchronize().catch(() => {});
+        }
+      }
+    }
 
     // 1. Open playlist with that display name.
     try {
@@ -244,7 +263,7 @@ class OtavClient {
 /** Load ordered (resource) items for a scheduled block. */
 function blockItems(blockId) {
   return db.prepare(`
-    SELECT si.play_order, r.file_path, r.name
+    SELECT si.play_order, r.file_path, r.name, r.duration
     FROM ScheduleItem si
     JOIN Resource r ON r.id = si.resource_id
     WHERE si.block_id = ?
@@ -284,7 +303,8 @@ export async function pushApprovedBlocks(targetDate) {
   const blocks = db.prepare(`
     SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
            c.name AS channel_name, c.api_ip, c.api_port,
-           c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password
+           c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
+           c.schedule_path, c.playlist_dir, c.playlist_template
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     JOIN ChannelType   c  ON c.id = bt.channel_id
@@ -305,6 +325,11 @@ export async function pushApprovedBlocks(targetDate) {
   for (const { channel, blocks: chBlocks } of byChannel.values()) {
     const playlistName = dayPlaylistName(channel, targetDate);
     const client = new OtavClient(channel);
+    // Read the day's clips up front: the schedule event needs their total run
+    // time, and pushing them is the next step anyway.
+    const dayItems = chBlocks.map((b) => ({ block_id: b.block_id, items: blockItems(b.block_id) }));
+    const daySeconds = dayItems.reduce(
+      (sum, b) => sum + b.items.reduce((s, i) => s + (i.duration || 0), 0), 0);
     const result = {
       channel: channel.channel_name,
       playlist: playlistName,
@@ -313,12 +338,28 @@ export async function pushApprovedBlocks(targetDate) {
     };
     try {
       await client.authorize();
+
+      // Event-based schedules can't be modified over REST, so when the channel
+      // is configured for it, the day's playlist file and its schedule event are
+      // prepared on disk first — that is also what makes the playlist openable
+      // by path below (OTAV only opens paths its schedule references).
+      const prepared = prepareDaySchedule(channel, {
+        playlistName,
+        targetDate,
+        startDateTime: `${targetDate} ${String(chBlocks[0]?.start_time || '00:00').slice(0, 5)}:00`,
+        durationSeconds: daySeconds,
+      });
+      if (prepared) {
+        result.playlist_path = prepared.playlistPath;
+        result.schedule_event = prepared.event;
+      }
+
       let ref;
       try {
-        const day = await client.ensureDayPlaylist(playlistName);
+        const day = await client.ensureDayPlaylist(playlistName, prepared?.playlistPath);
         ref = day.ref;
         result.playlist_ref = ref;
-        result.created = day.created;
+        result.created = prepared?.playlistCreated ?? day.created;
         result.source = day.source;
       } catch (err) {
         // Instances without the "traffic" option can neither create playlists
@@ -339,8 +380,8 @@ export async function pushApprovedBlocks(targetDate) {
         result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
         await client.clearPlaylist(ref);
       }
-      for (const b of chBlocks) {
-        for (const item of blockItems(b.block_id)) {
+      for (const b of dayItems) {
+        for (const item of b.items) {
           await client.addFileClip(ref, item.file_path, item.name);
           result.pushed++;
         }

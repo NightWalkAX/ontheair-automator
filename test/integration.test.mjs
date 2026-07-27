@@ -350,6 +350,74 @@ test('push opens the day playlist from the OTAV schedule folder when it cannot c
   }
 });
 
+test('event-based schedule: push writes the day playlist file, upserts one event, and fills it', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const { readSchedule } = await import('../src/services/otavSchedule.js');
+  const { mkdtempSync, writeFileSync, readFileSync, existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+
+  const dir = mkdtempSync(join(tmpdir(), 'otav-evt-'));
+  const schedulePath = join(dir, 'Channel.json');
+  writeFileSync(schedulePath, JSON.stringify({
+    version: '2.0',
+    events: [{ // a hand-made repeating event that must survive the push
+      playlists: [{ playlist_path: '/Users/transmission3/Desktop/brain games.xpls' }],
+      repeating_event_start_time: 59400, display_name: 'brain games', is_repeating_event: true,
+    }],
+  }, null, 2));
+  const template = join(dir, '_template.xpls');
+  writeFileSync(template, 'XPLS-TEMPLATE');
+  const playlistDir = join(dir, 'playlists');
+
+  // This instance can't create playlists (event schedule, not folder-based).
+  const otav = await start({ canCreatePlaylists: false, scheduleFile: schedulePath });
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare(`UPDATE ChannelType SET api_port = ?, playlist_ref = NULL,
+              schedule_path = ?, playlist_dir = ?, playlist_template = ? WHERE id = ?`)
+    .run(otav.port, schedulePath, playlistDir, template, ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep?.ok, `event-schedule push ok: ${rep?.error || ''}`);
+    assert.equal(rep.source, 'prepared');
+    assert.equal(rep.created, true, 'the day playlist file was created from the template');
+    assert.ok(rep.pushed > 0);
+
+    const playlistFile = join(playlistDir, `${rep.playlist}.xpls`);
+    assert.ok(existsSync(playlistFile), 'day playlist file exists');
+    assert.equal(readFileSync(playlistFile, 'utf8'), 'XPLS-TEMPLATE', 'copied from the template');
+
+    const saved = readSchedule(schedulePath);
+    assert.equal(saved.events.length, 2, 'our event added, the repeating one kept');
+    assert.equal(saved.events[0].display_name, 'brain games');
+    const ours = saved.events[1];
+    assert.equal(ours.playlists[0].playlist_path, playlistFile);
+    assert.match(ours.start_date_time, /^2026-07-20 \d\d:\d\d:00$/);
+    assert.ok(ours.theoretical_duration_in_seconds > 0, 'event carries the day run time');
+
+    // Clips landed in the playlist OTAV opened from that path.
+    const opened = [...otav.state.playlists.values()].find((p) => p.items.length === rep.pushed);
+    assert.ok(opened, `clips went into the opened playlist (pushed ${rep.pushed})`);
+
+    // Re-pushing the same day updates in place: no duplicate event, no append.
+    db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+    const again = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep2 = again.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep2.ok, `re-push ok: ${rep2.error || ''}`);
+    assert.equal(rep2.created, false, 'existing file reused');
+    assert.equal(readSchedule(schedulePath).events.length, 2, 'still one event of ours');
+    assert.equal(opened.items.length, rep2.pushed, 'items replaced, not appended');
+  } finally {
+    db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL,
+                playlist_dir = NULL, playlist_template = NULL WHERE id = ?`).run(prev.api_port, ch.id);
+    await otav.close();
+  }
+});
+
 test('diagnose?probe_create=1 reports which creation route the instance accepts', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const ch = db.prepare('SELECT id FROM ChannelType LIMIT 1').get();

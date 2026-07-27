@@ -5,11 +5,13 @@
 // it — which is how the integrator gets one playlist per broadcast day.
 
 import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
 
 export function startFakeOtav({
   requireAuth = false,
   canCreatePlaylists = true,   // false = scheduler isn't folder-based (real 422)
   scheduled = [],
+  scheduleFile = null,        // event schedule JSON on disk, like the real Macs run
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -96,9 +98,18 @@ export function startFakeOtav({
         }
       }
       if (req.method === 'GET' && path === '/scheduler') {
-        return send(200, { version: '2.0', is_enabled: true, schedule_path: '/Volumes/Playlists/Schedule.xml' });
+        return send(200, {
+          version: '2.0', is_enabled: true,
+          schedule_path: scheduleFile || '/Volumes/Playlists/Schedule.xml',
+        });
       }
       if (req.method === 'GET' && path === '/scheduler/playlists') {
+        // OTAV only knows the playlists its schedule references — read them back
+        // out of the schedule document, exactly as the real server would.
+        if (scheduleFile && existsSync(scheduleFile)) {
+          const doc = JSON.parse(readFileSync(scheduleFile, 'utf8'));
+          state.scheduled = (doc.events || []).flatMap((e) => (e.playlists || []).map((p) => p.playlist_path));
+        }
         const wanted = url.searchParams.get('path');
         if (!wanted) {
           return send(200, state.scheduled.map((p) => ({ path: p, total_items: 0, missing_items: 0 })));
