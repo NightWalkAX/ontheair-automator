@@ -122,7 +122,9 @@ some PUT/DELETE CRUD branches.
   `playlist_name_pattern` (default `{channel} {date}`). It resolves that playlist
   in order: already open under that name → present in the schedule folder (opened
   via `GET /scheduler/playlists?path=…`) → created with `POST /playlists/{NAME}`
-  (needs the OTAV "traffic" option; builds without it answer 404). A reused
+  (the request needs a JSON body — OTAV 4.2.7 answers a generic HTML 404 without
+  one — and the instance's scheduler must point at a FOLDER-BASED schedule, else
+  it replies 422 "The schedule does not exist or is not folder-based."). A reused
   playlist is cleared first so a re-push replaces instead of appends. Then
   `POST /playlists/{ref}/items` with `{clip_type:0, url, name}` per item, and a
   scheduler resync. If none of the three routes work it falls back to the

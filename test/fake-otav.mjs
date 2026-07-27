@@ -6,7 +6,11 @@
 
 import { createServer } from 'node:http';
 
-export function startFakeOtav({ requireAuth = false, canCreatePlaylists = true, scheduled = [] } = {}) {
+export function startFakeOtav({
+  requireAuth = false,
+  canCreatePlaylists = true,   // false = scheduler isn't folder-based (real 422)
+  scheduled = [],
+} = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
   //   ['/Volumes/Playlists/Channel 1 2026-07-20.xpls'] — addressable only after
@@ -59,8 +63,15 @@ export function startFakeOtav({ requireAuth = false, canCreatePlaylists = true, 
           return send(200, { unique_id: pl.unique_id, name, total_items: pl.items.length });
         }
         if (req.method === 'POST') {
+          // OTAV 4.2.7 only routes the create request when a body is present;
+          // without one it answers a generic HTML 404 page.
+          if (!body) {
+            res.writeHead(404, { 'Content-Type': 'text/html' });
+            return res.end('<!doctype html><html><head><title>Error 404</title></head>'
+              + '<body><h1>404 Page Not Found</h1></body></html>');
+          }
           if (!canCreatePlaylists) {
-            return send(403, { success: false, error: 'traffic option required' });
+            return send(422, { success: false, error: 'The schedule does not exist or is not folder-based.' });
           }
           const pl = { unique_id: `${name}-uid`, name, items: [] };
           state.playlists.set(name, pl);

@@ -88,11 +88,16 @@ class OtavClient {
   getPlaylist(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}`); }
 
   /**
-   * POST /playlists/{NAME} — empty playlist in the schedule folder.
-   * Only served when the instance has the OTAV "traffic" option; builds without
-   * it answer 404 with an HTML error page (no JSON `error` field).
+   * POST /playlists/{NAME} — empty playlist in the folder selected for the OTAV
+   * schedule. The doc shows no body, but OTAV 4.2.7 only routes the request when
+   * one is present: without it the server answers a generic HTML 404, with it the
+   * real handler replies (e.g. 422 "The schedule does not exist or is not
+   * folder-based." when the scheduler points at an event schedule file instead of
+   * a folder). So always send the name in the body.
    */
-  createPlaylist(name) { return this.request('POST', `/playlists/${OtavClient.ref(name)}`); }
+  createPlaylist(name) {
+    return this.request('POST', `/playlists/${OtavClient.ref(name)}`, { name });
+  }
 
   clearPlaylist(ref) { return this.request('DELETE', `/playlists/${OtavClient.ref(ref)}/items`); }
 
@@ -321,9 +326,10 @@ export async function pushApprovedBlocks(targetDate) {
         // fixed playlist_ref if one is configured; otherwise say what to fix.
         if (channel.playlist_ref == null || channel.playlist_ref === '') {
           throw new Error(
-            `${err.message}. Fix one of: enable the OTAV "traffic" option on this instance, ` +
-            `pre-create/open a playlist named "${playlistName}" on that Mac, ` +
-            `or set the channel's fallback playlist ref.`,
+            `${err.message}. Fix one of: point that OTAV's scheduler at a ` +
+            `FOLDER-BASED schedule (a folder of playlists) so it can create the ` +
+            `day's playlist there, pre-create/open a playlist named ` +
+            `"${playlistName}" on that Mac, or set the channel's fallback playlist ref.`,
           );
         }
         ref = channel.playlist_ref;

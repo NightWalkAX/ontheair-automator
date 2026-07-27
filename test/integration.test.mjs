@@ -362,7 +362,9 @@ test('diagnose?probe_create=1 reports which creation route the instance accepts'
     const d = await j('GET', `/api/otav/diagnose/${ch.id}?date=2026-07-20&probe_create=1`);
     assert.equal(d.status, 200);
     const accepted = d.data.create_routes.filter((r) => r.ok).map((r) => r.route);
-    assert.ok(accepted.includes('POST /playlists/{name}'), `accepted: ${accepted.join(', ')}`);
+    // The bodyless variant is what OTAV 404s on; the one with a body is routed.
+    assert.ok(accepted.includes('POST /playlists/{name} + body'), `accepted: ${accepted.join(', ')}`);
+    assert.ok(!accepted.includes('POST /playlists/{name}'), 'bodyless create is not served');
   } finally {
     await modern.close();
   }
@@ -375,6 +377,7 @@ test('diagnose?probe_create=1 reports which creation route the instance accepts'
     assert.ok(d.data.create_routes.length >= 4);
     assert.ok(d.data.create_routes.every((r) => !r.ok), 'nothing accepted');
     assert.ok(d.data.create_routes.every((r) => r.error), 'each failure is explained');
+    assert.match(d.data.create_routes.find((r) => r.route.endsWith('+ body')).error, /folder-based/);
   } finally {
     db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(prev.api_port, ch.id);
     await legacy.close();
