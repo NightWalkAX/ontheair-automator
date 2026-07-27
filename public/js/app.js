@@ -1718,9 +1718,10 @@ async function loadSetupTab() {
               : 'no schedule to edit' },
           { name: 'playlists folder + template', ok: !!(d.files?.playlist_dir_writable && d.files?.template_exists),
             detail: d.files?.playlist_dir
-              ? `${d.files.playlist_dir} ${d.files.playlist_dir_exists ? (d.files.playlist_dir_writable ? '(writable)' : '(NOT writable)') : '(missing)'} · ` +
-                `template ${d.files.template_exists ? 'found' : `MISSING at ${d.files.playlist_template ?? 'not set'}`}`
-              : 'not configured' },
+              ? `${d.files.playlist_dir} — ${d.files.playlist_dir_source}; ` +
+                `${d.files.playlist_dir_exists ? (d.files.playlist_dir_writable ? 'writable' : 'NOT writable') : 'will be created'} · ` +
+                `template ${d.files.template_exists ? 'found' : (d.files.playlist_template ? `MISSING at ${d.files.playlist_template}` : 'NOT SET — save an empty playlist from OTAV and point here')}`
+              : 'no schedule, so nothing to prepare' },
           ...(d.create_routes || []).map((r) => ({
             name: r.route, ok: r.ok, detail: r.ok ? r.response : `${r.status ?? ''} ${r.error}`,
           })),

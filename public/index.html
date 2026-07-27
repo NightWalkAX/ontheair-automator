@@ -274,10 +274,10 @@
           <label class="field">Day playlist name <input id="chmPlaylistName" placeholder="{channel} {date}" /></label>
           <label class="field">Fallback playlist ref <input id="chmPlaylist" placeholder="index or unique_id (optional)" /></label>
           <div class="form-title" style="margin-top:6px">Event-based schedule (file level)</div>
-          <p class="muted" style="margin:0 0 6px">Fill all three when this OTAV runs an event schedule REST can't edit. Paths as this machine sees them — the share must be mounted at the same path on the OTAV Mac.</p>
-          <label class="field">Schedule JSON <input id="chmSchedulePath" placeholder="/Volumes/Drive/Schedules/Channel1.json" /></label>
-          <label class="field">Day playlists folder <input id="chmPlaylistDir" placeholder="/Volumes/Drive/Playlists" /></label>
-          <label class="field">Empty playlist template <input id="chmPlaylistTemplate" placeholder="/Volumes/Drive/Playlists/_template.xpls" /></label>
+          <p class="muted" style="margin:0 0 6px">For OTAV instances running an event schedule REST can't edit. Only the template is required — the schedule defaults to the one OTAV reports, and day playlists to its folder. Paths as this machine sees them; the share must be mounted at the same path on the OTAV Mac.</p>
+          <label class="field">Schedule JSON <input id="chmSchedulePath" placeholder="(blank = the schedule OTAV reports)" /></label>
+          <label class="field">Day playlists folder <input id="chmPlaylistDir" placeholder="(blank = the schedule's folder)" /></label>
+          <label class="field">Empty playlist template <input id="chmPlaylistTemplate" placeholder="/Volumes/Public/Transmission/Schedules/_template.xpls" /></label>
           <label class="field">API username <input id="chmUser" placeholder="(optional)" /></label>
           <label class="field">API password <input id="chmPass" type="password" placeholder="(optional)" /></label>
           <label class="chk"><input id="chmActive" type="checkbox" /> active</label>

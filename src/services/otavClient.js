@@ -346,7 +346,7 @@ export async function pushApprovedBlocks(targetDate) {
       // When the channel doesn't name a schedule, ask the instance which one it
       // has open rather than making the operator retype the path.
       let reportedSchedulePath = null;
-      if (!channel.schedule_path && channel.playlist_dir && channel.playlist_template) {
+      if (!channel.schedule_path && channel.playlist_template) {
         const sched = await client.request('GET', '/scheduler').catch(() => null);
         reportedSchedulePath = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
       }

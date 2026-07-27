@@ -131,9 +131,10 @@ some PUT/DELETE CRUD branches.
   channel's fixed `playlist_ref`, and the push report names the route used.
 - **Event-based schedules** (`src/services/otavSchedule.js`): the REST API cannot
   modify scheduler events, and playlist creation needs a folder-based schedule. So
-  when a channel has `playlist_dir` + `playlist_template` set — plus a schedule to
-  edit, taken from `schedule_path` or, when that's blank, from whatever
-  `GET /scheduler` says that instance has open — the push instead: byte-copies the operator's empty `.xpls` template to
+  when a channel has `playlist_template` set — plus a schedule to edit, taken from
+  `schedule_path` or, when blank, from whatever `GET /scheduler` says that instance
+  has open, with `playlist_dir` defaulting to that schedule's folder — the push
+  instead: byte-copies the operator's empty `.xpls` template to
   `<playlist_dir>/<day name>.xpls` (the proprietary format is never parsed),
   upserts **only** that channel-day's event in the schedule JSON — every hand-made
   event is preserved, and the original is backed up once to `<schedule>.bak` —

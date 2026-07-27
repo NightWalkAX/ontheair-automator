@@ -103,12 +103,14 @@ export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, 
 export function prepareDaySchedule(channel, {
   playlistName, targetDate, startDateTime, durationSeconds, reportedSchedulePath,
 }) {
-  const { playlist_dir: playlistDir, playlist_template: template } = channel;
+  const template = channel.playlist_template;
   // The channel may name the schedule explicitly; otherwise use the one the
   // instance itself reports (GET /scheduler -> schedule_path). Same-mount-path
   // means what OTAV reads is what this process writes.
   const schedulePath = channel.schedule_path || reportedSchedulePath || null;
-  if (!schedulePath || !playlistDir || !template) return null;
+  if (!schedulePath || !template) return null;
+  // Day playlists default to living beside the schedule.
+  const playlistDir = channel.playlist_dir || dirname(schedulePath);
   if (!/\.json$/i.test(schedulePath)) {
     throw new Error(`"${schedulePath}" is not a JSON event schedule — a folder-based schedule needs no file editing`);
   }
@@ -142,10 +144,12 @@ export function inspectPaths(channel, reportedSchedulePath) {
   const schedulePath = channel.schedule_path || reportedSchedulePath || null;
   const canWrite = (p) => { try { accessSync(p, constants.W_OK); return true; } catch { return false; } };
 
+  const playlistDir = channel.playlist_dir || (schedulePath ? dirname(schedulePath) : null);
   const out = {
     schedule_path: schedulePath,
     schedule_path_source: channel.schedule_path ? 'configured on the channel' : (reportedSchedulePath ? 'reported by OTAV' : 'not set'),
-    playlist_dir: channel.playlist_dir ?? null,
+    playlist_dir: playlistDir,
+    playlist_dir_source: channel.playlist_dir ? 'configured on the channel' : 'defaults to the schedule folder',
     playlist_template: channel.playlist_template ?? null,
   };
   if (schedulePath) {
@@ -162,9 +166,9 @@ export function inspectPaths(channel, reportedSchedulePath) {
       }
     }
   }
-  if (channel.playlist_dir) {
-    out.playlist_dir_exists = existsSync(channel.playlist_dir);
-    out.playlist_dir_writable = out.playlist_dir_exists && canWrite(channel.playlist_dir);
+  if (playlistDir) {
+    out.playlist_dir_exists = existsSync(playlistDir);
+    out.playlist_dir_writable = out.playlist_dir_exists && canWrite(playlistDir);
   }
   if (channel.playlist_template) out.template_exists = existsSync(channel.playlist_template);
   return out;
