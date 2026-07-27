@@ -134,7 +134,10 @@ some PUT/DELETE CRUD branches.
   when a channel has `playlist_template` set — plus a schedule to edit, taken from
   `schedule_path` or, when blank, from whatever `GET /scheduler` says that instance
   has open, with `playlist_dir` defaulting to that schedule's folder — the push
-  instead: byte-copies the operator's empty `.xpls` template to
+  instead: byte-copies the operator's empty `.xpls` template — which must be a
+  NORMAL playlist, not a folder-based one: those play a folder's contents, have no
+  editable item list, and OTAV rejects every item call on them with 422 "not
+  editable" — to
   `<playlist_dir>/<day name>.xpls` (the proprietary format is never parsed),
   upserts **only** that channel-day's event in the schedule JSON — every hand-made
   event is preserved, and the original is backed up once to `<schedule>.bak` —
