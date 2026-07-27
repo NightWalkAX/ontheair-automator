@@ -13,6 +13,7 @@ export function startFakeOtav({
   scheduled = [],
   scheduleFile = null,        // event schedule JSON on disk, like the real Macs run
   refuseClear = false,        // 422 "not editable" on DELETE, as scheduler-opened playlists do
+  folderBased = false,        // playlists play a folder's contents: item lists aren't editable
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -94,6 +95,7 @@ export function startFakeOtav({
         }
         if (req.method === 'POST') {
           if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index (items)' });
+          if (pl.folderBased) return send(422, { success: false, error: 'The specified playlist is not editable' });
           pl.items.push(json);
           state.received.push({ ...json, playlist: pl.name });
           return send(201, { success: true, unique_id: `id-${state.received.length}` });
@@ -118,10 +120,15 @@ export function startFakeOtav({
         }
         if (!state.scheduled.includes(wanted)) return send(404, { success: false, error: 'playlist not in schedule' });
         const name = (wanted.split('/').pop() || '').replace(/\.xpls$/i, '');
-        const pl = state.playlists.get(name) || { unique_id: `${name}-uid`, name, items: [] };
+        const pl = state.playlists.get(name)
+          || { unique_id: `${name}-uid`, name, items: [], path: wanted, folderBased };
         state.playlists.set(name, pl);
         state.opened.push(wanted);
-        return send(200, { unique_id: pl.unique_id, name, path: wanted, total_items: pl.items.length });
+        return send(200, {
+          unique_id: pl.unique_id, name, path: wanted, total_items: pl.items.length,
+          is_folder_based: !!pl.folderBased,
+          ...(pl.folderBased ? { folder_based_path: '/Volumes/Drive/SomeFolder' } : {}),
+        });
       }
       if (req.method === 'GET' && path === '/scheduler/resynchronize') {
         state.resynced++;

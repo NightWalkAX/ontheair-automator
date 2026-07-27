@@ -83,6 +83,22 @@ class OtavClient {
 
   info() { return this.request('GET', '/info'); }
 
+  /**
+   * A folder-based playlist plays whatever sits in a folder, so OTAV rejects
+   * every item call on it with 422 "The specified playlist is not editable."
+   * Nothing about that is retryable, hence `fatal`.
+   */
+  static assertEditable(playlist) {
+    if (!playlist?.is_folder_based) return;
+    const err = new Error(
+      `the day playlist is FOLDER-BASED (plays "${playlist.folder_based_path ?? '?'}"), so OTAV refuses `
+      + 'item edits on it. The template was saved from a folder-based playlist — replace it with a normal '
+      + 'empty playlist saved from OTAV.',
+    );
+    err.fatal = true;
+    throw err;
+  }
+
   /** Playlist refs are index / unique_id / name — always URL-encode them. */
   static ref(ref) { return encodeURIComponent(String(ref)); }
 
@@ -178,12 +194,14 @@ class OtavClient {
       for (const attempt of ['first', 'after resync']) {
         try {
           const opened = await this.openSchedulerPlaylist(preparedPath);
+          OtavClient.assertEditable(opened);
           const found = await this.refForPath(preparedPath, opened?.unique_id || name);
           const ref = found.ref;
           const cleared = await this.clearIfNeeded(ref, found.playlist ?? opened);
           if (cleared.note) notes.push(cleared.note);
           return { ref, source: 'prepared', created: false, path: preparedPath, notes };
         } catch (err) {
+          if (err.fatal) throw err; // a folder-based playlist won't become editable
           tried.push(`open "${preparedPath}" (${attempt}) -> ${err.message}`);
           if (attempt === 'after resync') break;
           await this.resynchronize().catch(() => {});
@@ -194,12 +212,13 @@ class OtavClient {
     // 1. Open playlist with that display name.
     try {
       const existing = await this.getPlaylist(name);
+      OtavClient.assertEditable(existing);
       const ref = existing?.unique_id || name;
       const cleared = await this.clearIfNeeded(ref, existing);
       if (cleared.note) notes.push(cleared.note);
       return { ref, source: 'open', created: false, notes };
     } catch (err) {
-      if (err.status !== 404) throw err; // 401/403/network are real failures
+      if (err.fatal || err.status !== 404) throw err; // 401/403/network are real failures
       tried.push(`no open playlist named "${name}"`);
     }
 
@@ -216,6 +235,7 @@ class OtavClient {
       });
       if (match) {
         const opened = await this.openSchedulerPlaylist(match.path);
+        OtavClient.assertEditable(opened);
         const ref = opened?.unique_id || name;
         const cleared = await this.clearIfNeeded(ref, opened);
         if (cleared.note) notes.push(cleared.note);
@@ -226,6 +246,7 @@ class OtavClient {
           `(${scheduled.slice(0, 5).map((p) => String(p?.path || '').split('/').pop()).join(', ')})`
         : 'OTAV schedule is empty (no playlist files)');
     } catch (err) {
+      if (err.fatal) throw err;
       tried.push(`schedule lookup failed (${err.message})`);
     }
 
@@ -285,7 +306,7 @@ class OtavClient {
   async probeEditRoutes() {
     const results = [];
     for (const pl of await this.openPlaylists().catch(() => [])) {
-      const label = `[${pl.index}] ${pl.name ?? '?'}`;
+      const label = `[${pl.index}] ${pl.name ?? '?'}${pl.is_folder_based ? ' (folder-based)' : ''}`;
       for (const [how, ref] of [['by index', pl.index], ['by name', pl.name]]) {
         if (ref == null) continue;
         try {
@@ -321,6 +342,9 @@ class OtavClient {
     // Open playlists are only enumerable by walking indexes until a 404.
     out.open_playlists = (await this.openPlaylists()).map((pl) => ({
       index: pl.index, unique_id: pl.unique_id, name: pl.name, path: pl.path, total_items: pl.total_items,
+      // A folder-based playlist plays whatever is in a folder, so its item list
+      // cannot be edited — OTAV rejects item calls on it as "not editable".
+      is_folder_based: pl.is_folder_based, folder_based_path: pl.folder_based_path,
     }));
     return out;
   }

@@ -418,6 +418,41 @@ test('event-based schedule: push writes the day playlist file, upserts one event
   }
 });
 
+test('a folder-based template is rejected with the reason, not an opaque 422', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+
+  const dir = mkdtempSync(join(tmpdir(), 'otav-folder-'));
+  const schedulePath = join(dir, 'Channel.json');
+  writeFileSync(schedulePath, JSON.stringify({ version: '2.0', events: [] }, null, 2));
+  const template = join(dir, '_template.xpls');
+  writeFileSync(template, 'XPLS-TEMPLATE');
+
+  // The operator's template was saved from a folder-based playlist.
+  const otav = await start({ canCreatePlaylists: false, scheduleFile: schedulePath, folderBased: true });
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare(`UPDATE ChannelType SET api_port = ?, playlist_ref = NULL,
+              schedule_path = ?, playlist_dir = NULL, playlist_template = ? WHERE id = ?`)
+    .run(otav.port, schedulePath, template, ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.equal(rep.ok, false);
+    assert.match(rep.error, /FOLDER-BASED/);
+    assert.match(rep.error, /replace it with a normal empty playlist/);
+    assert.equal(rep.pushed, 0, 'nothing was pushed into an uneditable playlist');
+  } finally {
+    db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL
+                WHERE id = ?`).run(prev.api_port, ch.id);
+    await otav.close();
+  }
+});
+
 test('a refused clear on an empty day playlist does not fail the push', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const { mkdtempSync, writeFileSync } = await import('node:fs');

@@ -1697,7 +1697,8 @@ async function loadSetupTab() {
       const probe = (deep) => (e) => withBusy(e.currentTarget, async () => {
         const date = $('#pushDate').value || new Date().toISOString().slice(0, 10);
         const d = await api.get(`/api/otav/diagnose/${c.id}?date=${date}${deep ? '&probe_create=1' : ''}`);
-        const open = (d.open_playlists || []).map((p) => `[${p.index}] ${p.name ?? '?'} (${p.total_items ?? '?'} items)`);
+        const open = (d.open_playlists || []).map((p) => `[${p.index}] ${p.name ?? '?'} (${p.total_items ?? '?'} items`
+          + `${p.is_folder_based ? ', FOLDER-BASED — not editable' : ''})`);
         const sched = Array.isArray(d.scheduler_playlists)
           ? d.scheduler_playlists.map((p) => p.path)
           : [`unavailable — ${d.scheduler_playlists?.error || 'no data'}`];
