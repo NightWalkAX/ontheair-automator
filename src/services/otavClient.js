@@ -133,6 +133,27 @@ class OtavClient {
     return this.request('GET', `/scheduler/playlists?path=${encodeURIComponent(path)}`);
   }
 
+  /** Every playlist currently open, with its index (the only enumeration OTAV offers). */
+  async openPlaylists(limit = 10) {
+    const out = [];
+    for (let i = 0; i < limit; i++) {
+      try { out.push({ index: i, ...(await this.getPlaylist(i)) }); } catch { break; }
+    }
+    return out;
+  }
+
+  /**
+   * The safest ref for a playlist we know by file path: its index. A
+   * scheduler-opened playlist reports a name that still carries the .xpls
+   * extension, so the day name alone is not a reliable handle.
+   */
+  async refForPath(path, fallback) {
+    const open = await this.openPlaylists().catch(() => []);
+    const hit = open.find((pl) => pl.path === path)
+      || open.find((pl) => (pl.name || '').replace(/\.xpls$/i, '') === String(fallback));
+    return hit ? { ref: hit.index, playlist: hit } : { ref: fallback, playlist: null };
+  }
+
   /**
    * Resolve the playlist to push one day's blocks into, in order of preference:
    *
@@ -157,8 +178,9 @@ class OtavClient {
       for (const attempt of ['first', 'after resync']) {
         try {
           const opened = await this.openSchedulerPlaylist(preparedPath);
-          const ref = opened?.unique_id || name;
-          const cleared = await this.clearIfNeeded(ref, opened);
+          const found = await this.refForPath(preparedPath, opened?.unique_id || name);
+          const ref = found.ref;
+          const cleared = await this.clearIfNeeded(ref, found.playlist ?? opened);
           if (cleared.note) notes.push(cleared.note);
           return { ref, source: 'prepared', created: false, path: preparedPath, notes };
         } catch (err) {
@@ -252,6 +274,38 @@ class OtavClient {
   }
 
   /**
+   * Which open playlists actually accept edits, and addressed how.
+   *
+   * OTAV answers 422 "The specified playlist is not editable." without saying
+   * why, so this adds a comment clip (clip_type 3 — needs no media file) to each
+   * open playlist by index and by name, then removes it again. A playlist that
+   * accepts the comment is editable; if none do, the block is instance-wide
+   * (access level or a read-only mount) rather than specific to the day playlist.
+   */
+  async probeEditRoutes() {
+    const results = [];
+    for (const pl of await this.openPlaylists().catch(() => [])) {
+      const label = `[${pl.index}] ${pl.name ?? '?'}`;
+      for (const [how, ref] of [['by index', pl.index], ['by name', pl.name]]) {
+        if (ref == null) continue;
+        try {
+          const added = await this.request('POST', `/playlists/${OtavClient.ref(ref)}/items`,
+            { clip_type: 3, name: 'ontheair-automator probe' });
+          results.push({ playlist: label, addressed: how, ok: true });
+          const id = added?.unique_id;
+          if (id) {
+            await this.request('DELETE', `/playlists/${OtavClient.ref(ref)}/items/${OtavClient.ref(id)}`)
+              .catch(() => {}); // leave no litter; a stray comment is harmless if this fails
+          }
+        } catch (err) {
+          results.push({ playlist: label, addressed: how, ok: false, status: err.status, error: String(err.message).slice(0, 160) });
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * Read-only probe of what this instance actually supports, for troubleshooting
    * push failures (which OTAV version, is the scheduler enabled, which playlists
    * are open, what the schedule folder holds).
@@ -265,14 +319,9 @@ class OtavClient {
     await attempt('scheduler', () => this.request('GET', '/scheduler'));
     await attempt('scheduler_playlists', () => this.schedulerPlaylists());
     // Open playlists are only enumerable by walking indexes until a 404.
-    const open = [];
-    for (let i = 0; i < 10; i++) {
-      try {
-        const pl = await this.getPlaylist(i);
-        open.push({ index: i, unique_id: pl?.unique_id, name: pl?.name, path: pl?.path, total_items: pl?.total_items });
-      } catch { break; }
-    }
-    out.open_playlists = open;
+    out.open_playlists = (await this.openPlaylists()).map((pl) => ({
+      index: pl.index, unique_id: pl.unique_id, name: pl.name, path: pl.path, total_items: pl.total_items,
+    }));
     return out;
   }
 
@@ -465,6 +514,7 @@ export async function diagnoseChannel(channelId, targetDate, { probeCreate = fal
   out.files = inspectPaths(channel, reported);
   if (probeCreate) {
     out.create_routes = await client.probeCreateRoutes(out.day_playlist_name, out.files?.playlist_dir);
+    out.edit_routes = await client.probeEditRoutes();
   }
   return out;
 }

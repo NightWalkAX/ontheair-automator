@@ -1725,6 +1725,10 @@ async function loadSetupTab() {
           ...(d.create_routes || []).map((r) => ({
             name: r.route, ok: r.ok, detail: r.ok ? r.response : `${r.status ?? ''} ${r.error}`,
           })),
+          ...(d.edit_routes || []).map((r) => ({
+            name: `editable? ${r.playlist} ${r.addressed}`, ok: r.ok,
+            detail: r.ok ? 'accepts items' : `${r.status ?? ''} ${r.error}`,
+          })),
         ]);
       });
       const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe', title: 'Read-only: what this OTAV instance supports' });
