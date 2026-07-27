@@ -272,7 +272,9 @@ $('#btnPush').addEventListener('click', async (e) => {
     reportDialog('Push report', r.channels.map((c) => ({
       name: c.channel,
       ok: c.ok,
-      detail: c.ok ? `${c.pushed} clips` : c.error,
+      detail: c.ok
+        ? `${c.pushed} clips → “${c.playlist}”${c.created ? ' (created)' : ''}${c.warning ? ` — ${c.warning}` : ''}`
+        : c.error,
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
     toast(failed ? `${failed} channel(s) failed` : 'All channels pushed', failed ? 'bad' : 'ok', 'Push complete');
@@ -1694,7 +1696,7 @@ async function loadSetupTab() {
       ct.append(el('tr', {},
         el('td', { textContent: c.name }),
         el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}` : '—' }),
-        el('td', { textContent: c.playlist_ref ?? '0' }),
+        el('td', { textContent: c.playlist_name_pattern || '{channel} {date}' }),
         el('td', {}, el('span', { className: `badge ${c.is_active ? 'ok' : 'status'}`, textContent: c.is_active ? 'active' : 'off' })),
         td));
     }
@@ -1995,6 +1997,7 @@ function openChannelEditor(c) {
   $('#chmName').value = c.name ?? '';
   $('#chmIp').value = c.api_ip ?? '';
   $('#chmPort').value = c.api_port ?? '';
+  $('#chmPlaylistName').value = c.playlist_name_pattern ?? '';
   $('#chmPlaylist').value = c.playlist_ref ?? '';
   $('#chmUser').value = c.api_username ?? '';
   $('#chmPass').value = c.api_password ?? '';
@@ -2007,6 +2010,7 @@ $('#chmSave').addEventListener('click', (e) => withBusy(e.currentTarget, async (
     name: $('#chmName').value.trim(),
     api_ip: $('#chmIp').value.trim() || null,
     api_port: $('#chmPort').value ? Number($('#chmPort').value) : null,
+    playlist_name_pattern: $('#chmPlaylistName').value.trim() || null,
     playlist_ref: $('#chmPlaylist').value.trim() || null,
     api_username: $('#chmUser').value.trim() || null,
     api_password: $('#chmPass').value || null,

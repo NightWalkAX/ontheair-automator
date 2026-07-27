@@ -55,9 +55,12 @@ export function initSchema() {
       is_active    INTEGER NOT NULL DEFAULT 1,   -- boolean (0/1)
       api_ip       TEXT,
       api_port     INTEGER,
-      -- Which OTAV playlist to push into: an index ("0") or a unique_id.
-      -- Defaults to index 0 (the first open playlist) when null.
+      -- Fallback playlist (index "0" or a unique_id) used only when the
+      -- instance can't create the per-day playlist (no "traffic" option).
       playlist_ref TEXT,
+      -- Name template for the playlist created per push day.
+      -- Tokens: {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
+      playlist_name_pattern TEXT,
       -- Optional OTAV auth (only used if that instance requires it).
       api_username TEXT,
       api_password TEXT
@@ -234,6 +237,9 @@ export function initSchema() {
   // Lightweight migrations for DBs created before a column was added. Each is
   // guarded so re-running is a no-op.
   addColumnIfMissing('ChannelType', 'playlist_ref', 'TEXT');
+  // Name template for the per-day playlist created on push. Tokens:
+  // {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
+  addColumnIfMissing('ChannelType', 'playlist_name_pattern', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_username', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_password', 'TEXT');
   addColumnIfMissing('BlockTemplate', 'target_subject', 'TEXT');
