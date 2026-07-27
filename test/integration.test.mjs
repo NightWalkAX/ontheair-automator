@@ -1095,6 +1095,9 @@ test('export: printable schedule is HTML, excludes fillers, shows air times', as
   const html = await res.text();
   assert.ok(html.includes('Air time'), 'has an air-time column');
   assert.ok(/Math|History|Biology/.test(html), 'lists main programming');
+  // Programmes are named the same way as in the UI and in OTAV's playlist.
+  assert.match(html, /<td>[^<]+ · S\d\dE\d\d<\/td>/, 'programmes read "Show · S01E02"');
+  assert.ok(!/Ep \d{3,}/.test(html), 'no internal chapter number in the printed schedule');
   // Filler clip names (f0_30, f1_45, ...) must not appear in the export.
   assert.ok(!/f\d+_\d+\.mov/.test(html) && !/>f\d+_/.test(html), 'fillers excluded from the export');
 });

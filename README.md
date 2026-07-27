@@ -115,7 +115,7 @@ some PUT/DELETE CRUD branches.
   with a Sunday latest-episode rule), then a subset-sum knapsack packs fillers to
   hit the block length (0s overrun ceiling, 5s underrun floor).
 - **Display naming** (`src/services/labels.js`): every clip is shown — in the
-  review UI, the catalog, the media table and the playlist pushed to OTAV — as
+  review UI, the catalog, the media table, the printable weekly schedule and the playlist pushed to OTAV — as
   **`Show · S01E02`**. The episode number is the clip's position inside its
   season, not `Resource.chapter`: chapter is a channel-wide ordering key that a
   catalog renumber can leave at values like 1674 on what is plainly episode 1, so

@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { db, withTx } from '../db.js';
 import { loadConfig } from '../config.js';
 import { blockDurationSeconds, generateWeek, populateBlock } from '../services/scheduling.js';
-import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
+import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
@@ -393,8 +393,14 @@ router.get('/export', (req, res) => {
   `).all(...params);
 
   const itemsOf = db.prepare(`
-    SELECT r.name, r.duration, r.is_filler, r.subject, r.chapter
-    FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+    WITH ${EPISODE_NO_CTE}
+    SELECT r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
+           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+    FROM ScheduleItem si
+    JOIN Resource r ON r.id = si.resource_id
+    LEFT JOIN EpisodeNo en ON en.id = r.id
+    LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE si.block_id = ? ORDER BY si.play_order
   `);
 
@@ -440,10 +446,8 @@ router.get('/export', (req, res) => {
         const blockStart = (() => { const [h, m] = b.start_time.split(':').map(Number); return h * 3600 + m * 60; })();
         for (const it of rows) {
           if (!it.is_filler) {
-            const label = it.subject
-              ? `${it.subject}${it.chapter ? ` — Ep ${it.chapter}` : ''}${it.name ? ` (${it.name})` : ''}`
-              : it.name;
-            mains.push({ air: hhmmss(blockStart + offset), label, dur: dur(it.duration) });
+            // Same naming as the review UI and the OTAV playlist: "Show · S01E02".
+            mains.push({ air: hhmmss(blockStart + offset), label: clipLabel(it), dur: dur(it.duration) });
           }
           offset += it.duration;
         }
