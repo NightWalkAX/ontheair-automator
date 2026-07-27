@@ -117,13 +117,18 @@ some PUT/DELETE CRUD branches.
 - **Review UI** (`public/`): 7-day timeline; click a block to reorder/swap/add
   items with live duration validation. Approval is blocked — client- and
   server-side — while a block is out of tolerance.
-- **OTAV push** (`src/services/otavClient.js`): per-channel REST client. Creates
-  one playlist **per broadcast day** — `POST /playlists/{NAME}`, named from the
-  channel's `playlist_name_pattern` (default `{channel} {date}`) — reusing and
-  clearing it if it already exists, then `POST /playlists/{ref}/items` with
-  `{clip_type:0, url, name}` for each item, and resynchronizes the scheduler.
-  Instances without the OTAV "traffic" option can't create playlists; those fall
-  back to the channel's fixed `playlist_ref` and the push report says so.
+- **OTAV push** (`src/services/otavClient.js`): per-channel REST client targeting
+  one playlist **per broadcast day**, named from the channel's
+  `playlist_name_pattern` (default `{channel} {date}`). It resolves that playlist
+  in order: already open under that name → present in the schedule folder (opened
+  via `GET /scheduler/playlists?path=…`) → created with `POST /playlists/{NAME}`
+  (needs the OTAV "traffic" option; builds without it answer 404). A reused
+  playlist is cleared first so a re-push replaces instead of appends. Then
+  `POST /playlists/{ref}/items` with `{clip_type:0, url, name}` per item, and a
+  scheduler resync. If none of the three routes work it falls back to the
+  channel's fixed `playlist_ref`, and the push report names the route used.
+  `GET /api/otav/diagnose/:channelId?date=…` (the "probe" button on the Channels
+  table) shows what a given instance actually supports.
   Optional token auth with automatic re-auth on 401. All machines mount the share
   at the same path, so `Resource.file_path` is used verbatim as the clip URL.
 

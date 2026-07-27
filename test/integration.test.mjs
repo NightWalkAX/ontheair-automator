@@ -312,15 +312,51 @@ test('push falls back to the fixed playlist_ref when OTAV cannot create playlist
   db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(legacy.port, '0', ch.id);
   db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
 
-  const r = await j('POST', '/api/otav/push?date=2026-07-20');
-  const rep = r.data.channels.find((c) => c.playlist_ref === '0');
-  assert.ok(rep, 'a channel fell back to playlist 0');
-  assert.ok(rep.ok, `fallback push ok: ${rep.error || ''}`);
-  assert.match(rep.warning, /could not create playlist/);
-  assert.equal(legacy.state.playlists.get('0').items.length, rep.pushed);
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.playlist_ref === '0');
+    assert.ok(rep, 'a channel fell back to playlist 0');
+    assert.ok(rep.ok, `fallback push ok: ${rep.error || ''}`);
+    assert.match(rep.warning, /no per-day playlist available/);
+    assert.equal(legacy.state.playlists.get('0').items.length, rep.pushed);
+  } finally {
+    db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(prev.api_port, prev.playlist_ref, ch.id);
+    await legacy.close();
+  }
+});
 
-  db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(prev.api_port, prev.playlist_ref, ch.id);
-  await legacy.close();
+test('push opens the day playlist from the OTAV schedule folder when it cannot create one', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const dayName = `${ch.name} 2026-07-20`;
+  const scheduledPath = `/Volumes/Playlists/${dayName}.xpls`;
+  const otav = await start({ canCreatePlaylists: false, scheduled: [scheduledPath] });
+
+  const prev = db.prepare('SELECT api_port, playlist_ref FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = NULL WHERE id = ?').run(otav.port, ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep?.ok, `scheduled-playlist push ok: ${rep?.error || ''}`);
+    assert.equal(rep.source, 'schedule');
+    assert.equal(rep.created, false);
+    assert.deepEqual(otav.state.opened, [scheduledPath], 'playlist was opened from the schedule');
+    assert.equal(otav.state.playlists.get(dayName).items.length, rep.pushed);
+  } finally {
+    db.prepare('UPDATE ChannelType SET api_port = ?, playlist_ref = ? WHERE id = ?').run(prev.api_port, prev.playlist_ref, ch.id);
+    await otav.close();
+  }
+});
+
+test('diagnose reports the instance and the playlist name a push would target', async () => {
+  const chId = (await j('GET', '/api/channels')).data[0].id;
+  const d = await j('GET', `/api/otav/diagnose/${chId}?date=2026-07-20`);
+  assert.equal(d.status, 200);
+  assert.equal(d.data.info.application_version, '4.2');
+  assert.ok(d.data.day_playlist_name.endsWith('2026-07-20'));
+  assert.ok(Array.isArray(d.data.open_playlists));
 });
 
 test('OTAV connectivity check hits /info', async () => {

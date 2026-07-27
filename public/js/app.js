@@ -273,7 +273,9 @@ $('#btnPush').addEventListener('click', async (e) => {
       name: c.channel,
       ok: c.ok,
       detail: c.ok
-        ? `${c.pushed} clips → “${c.playlist}”${c.created ? ' (created)' : ''}${c.warning ? ` — ${c.warning}` : ''}`
+        ? `${c.pushed} clips → “${c.playlist}” (${{
+            created: 'created', open: 'reused', schedule: 'opened from schedule', fallback: 'fallback playlist',
+          }[c.source] || c.source || 'ok'})${c.warning ? ` — ${c.warning}` : ''}`
         : c.error,
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
@@ -1691,8 +1693,25 @@ async function loadSetupTab() {
       editBtn.onclick = () => openChannelEditor(c);
       const seriesBtn = el('button', { className: 'mini ghost', textContent: 'series' });
       seriesBtn.onclick = () => openSeries(c);
+      const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe' });
+      probeBtn.onclick = (e) => withBusy(e.currentTarget, async () => {
+        const date = $('#pushDate').value || new Date().toISOString().slice(0, 10);
+        const d = await api.get(`/api/otav/diagnose/${c.id}?date=${date}`);
+        const open = (d.open_playlists || []).map((p) => `[${p.index}] ${p.name ?? '?'} (${p.total_items ?? '?'} items)`);
+        const sched = Array.isArray(d.scheduler_playlists)
+          ? d.scheduler_playlists.map((p) => p.path)
+          : [`unavailable — ${d.scheduler_playlists?.error || 'no data'}`];
+        reportDialog(`OTAV probe — ${c.name}`, [
+          { name: 'version', ok: !d.info?.error, detail: d.info?.application_version ? `OTAV ${d.info.application_version} on ${d.info.computer_name || d.info.name || '?'}` : d.info?.error },
+          { name: 'scheduler', ok: !d.scheduler?.error, detail: d.scheduler?.error || `enabled: ${d.scheduler?.is_enabled} · ${d.scheduler?.schedule_path || 'no schedule path'}` },
+          { name: 'playlist for this day', ok: true, detail: d.day_playlist_name },
+          { name: 'open playlists', ok: open.length > 0, detail: open.join(', ') || 'none open' },
+          { name: 'schedule folder', ok: Array.isArray(d.scheduler_playlists), detail: sched.join(', ') || 'empty' },
+          { name: 'fallback ref', ok: d.fallback_playlist_ref != null, detail: d.fallback_playlist_ref ?? 'not set' },
+        ]);
+      });
       const td = el('td'); td.style.textAlign = 'right';
-      td.append(editBtn, document.createTextNode(' '), seriesBtn);
+      td.append(editBtn, document.createTextNode(' '), seriesBtn, document.createTextNode(' '), probeBtn);
       ct.append(el('tr', {},
         el('td', { textContent: c.name }),
         el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}` : '—' }),

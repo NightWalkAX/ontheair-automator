@@ -1,7 +1,7 @@
 // OTAV push routes (Module C trigger).
 
 import { Router } from 'express';
-import { pushApprovedBlocks, checkChannel } from '../services/otavClient.js';
+import { pushApprovedBlocks, checkChannel, diagnoseChannel } from '../services/otavClient.js';
 
 export const router = Router();
 
@@ -16,6 +16,18 @@ router.post('/push', async (req, res) => {
     res.json({ ok: true, ...report });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// GET /api/otav/diagnose/:channelId?date=YYYY-MM-DD — read-only probe of what
+// that OTAV instance supports (version, scheduler, open playlists, schedule
+// folder) plus the playlist name a push for that date would target.
+router.get('/diagnose/:channelId', async (req, res) => {
+  const date = String(req.query.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  try {
+    res.json({ ok: true, ...(await diagnoseChannel(Number(req.params.channelId), date)) });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err.message || err) });
   }
 });
 

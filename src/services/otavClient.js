@@ -87,33 +87,103 @@ class OtavClient {
 
   getPlaylist(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}`); }
 
-  /** POST /playlists/{NAME} — empty playlist in the schedule folder. */
+  /**
+   * POST /playlists/{NAME} — empty playlist in the schedule folder.
+   * Only served when the instance has the OTAV "traffic" option; builds without
+   * it answer 404 with an HTML error page (no JSON `error` field).
+   */
   createPlaylist(name) { return this.request('POST', `/playlists/${OtavClient.ref(name)}`); }
 
   clearPlaylist(ref) { return this.request('DELETE', `/playlists/${OtavClient.ref(ref)}/items`); }
 
+  /** Playlists (files) that the current OTAV schedule references. */
+  schedulerPlaylists() { return this.request('GET', '/scheduler/playlists'); }
+
+  /** Open a scheduled playlist by path so it becomes addressable. */
+  openSchedulerPlaylist(path) {
+    return this.request('GET', `/scheduler/playlists?path=${encodeURIComponent(path)}`);
+  }
+
   /**
-   * Resolve the playlist to push this day's blocks into: reuse it if OTAV
-   * already has one under that name (clearing its items so a re-push replaces
-   * rather than appends), otherwise create it.
+   * Resolve the playlist to push one day's blocks into, in order of preference:
    *
-   * Returns { ref, created, reused } where `ref` is the unique_id (or the name,
-   * when OTAV doesn't hand one back) to address in later item calls.
+   *   1. already open under that name        -> clear its items and reuse
+   *   2. present in the OTAV schedule folder -> open it by path, clear, reuse
+   *   3. otherwise                           -> POST /playlists/{NAME} (traffic option)
+   *
+   * Clearing on reuse is what makes a re-push replace instead of append.
+   * Returns { ref, source, created } where `ref` is the unique_id (or the name,
+   * when OTAV doesn't hand one back) to address in later item calls. If all
+   * three routes fail it throws an error naming what was tried, so the push
+   * report tells the operator which knob to turn.
    */
   async ensureDayPlaylist(name) {
-    let existing = null;
+    const tried = [];
+
+    // 1. Open playlist with that display name.
     try {
-      existing = await this.getPlaylist(name);
+      const existing = await this.getPlaylist(name);
+      const ref = existing?.unique_id || name;
+      await this.clearPlaylist(ref);
+      return { ref, source: 'open', created: false };
     } catch (err) {
       if (err.status !== 404) throw err; // 401/403/network are real failures
+      tried.push(`no open playlist named "${name}"`);
     }
-    if (existing) {
-      const ref = existing.unique_id || name;
-      await this.clearPlaylist(ref);
-      return { ref, created: false, reused: true };
+
+    // 2. A playlist file the schedule already points at (OTAV needs it opened
+    //    before it can be addressed by unique_id).
+    try {
+      const scheduled = await this.schedulerPlaylists();
+      const match = (Array.isArray(scheduled) ? scheduled : []).find((p) => {
+        const base = String(p?.path || '').split('/').pop() || '';
+        return base === name || base.replace(/\.xpls$/i, '') === name;
+      });
+      if (match) {
+        const opened = await this.openSchedulerPlaylist(match.path);
+        const ref = opened?.unique_id || name;
+        await this.clearPlaylist(ref);
+        return { ref, source: 'schedule', created: false, path: match.path };
+      }
+      tried.push(`schedule folder has no "${name}.xpls"`);
+    } catch (err) {
+      tried.push(`schedule lookup failed (${err.message})`);
     }
-    const made = await this.createPlaylist(name);
-    return { ref: made?.unique_id || name, created: true, reused: false };
+
+    // 3. Create it (requires the traffic option).
+    try {
+      const made = await this.createPlaylist(name);
+      return { ref: made?.unique_id || name, source: 'created', created: true };
+    } catch (err) {
+      tried.push(`create failed (${err.message})`);
+    }
+
+    throw new Error(`could not resolve a playlist for "${name}": ${tried.join('; ')}`);
+  }
+
+  /**
+   * Read-only probe of what this instance actually supports, for troubleshooting
+   * push failures (which OTAV version, is the scheduler enabled, which playlists
+   * are open, what the schedule folder holds).
+   */
+  async diagnose() {
+    const out = {};
+    const attempt = async (key, fn) => {
+      try { out[key] = await fn(); } catch (err) { out[key] = { error: err.message, status: err.status }; }
+    };
+    await attempt('info', () => this.info());
+    await attempt('scheduler', () => this.request('GET', '/scheduler'));
+    await attempt('scheduler_playlists', () => this.schedulerPlaylists());
+    // Open playlists are only enumerable by walking indexes until a 404.
+    const open = [];
+    for (let i = 0; i < 10; i++) {
+      try {
+        const pl = await this.getPlaylist(i);
+        open.push({ index: i, unique_id: pl?.unique_id, name: pl?.name, path: pl?.path, total_items: pl?.total_items });
+      } catch { break; }
+    }
+    out.open_playlists = open;
+    return out;
   }
 
   addFileClip(ref, filePath, name) {
@@ -205,14 +275,23 @@ export async function pushApprovedBlocks(targetDate) {
         ref = day.ref;
         result.playlist_ref = ref;
         result.created = day.created;
+        result.source = day.source;
       } catch (err) {
-        // Instances without the "traffic" option can't create playlists. Fall
-        // back to the channel's fixed playlist_ref if one is configured.
-        if (channel.playlist_ref == null || channel.playlist_ref === '') throw err;
+        // Instances without the "traffic" option can neither create playlists
+        // nor (usually) expose a schedule folder. Fall back to the channel's
+        // fixed playlist_ref if one is configured; otherwise say what to fix.
+        if (channel.playlist_ref == null || channel.playlist_ref === '') {
+          throw new Error(
+            `${err.message}. Fix one of: enable the OTAV "traffic" option on this instance, ` +
+            `pre-create/open a playlist named "${playlistName}" on that Mac, ` +
+            `or set the channel's fallback playlist ref.`,
+          );
+        }
         ref = channel.playlist_ref;
         result.playlist_ref = ref;
         result.created = false;
-        result.warning = `could not create playlist "${playlistName}" (${err.message}); pushed into fixed playlist ${ref}`;
+        result.source = 'fallback';
+        result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
         await client.clearPlaylist(ref);
       }
       for (const b of chBlocks) {
@@ -240,6 +319,21 @@ export async function checkChannel(channelId) {
   const client = new OtavClient(channel);
   await client.authorize();
   return client.info();
+}
+
+/**
+ * Troubleshooting probe for one channel: what the instance supports and which
+ * playlist name this project would target for `targetDate`. Read-only.
+ */
+export async function diagnoseChannel(channelId, targetDate) {
+  const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
+  if (!channel) throw new Error('channel not found');
+  const client = new OtavClient(channel);
+  await client.authorize();
+  const out = await client.diagnose();
+  out.day_playlist_name = dayPlaylistName({ ...channel, channel_name: channel.name }, targetDate);
+  out.fallback_playlist_ref = channel.playlist_ref ?? null;
+  return out;
 }
 
 export { OtavClient };

@@ -6,9 +6,15 @@
 
 import { createServer } from 'node:http';
 
-export function startFakeOtav({ requireAuth = false, canCreatePlaylists = true } = {}) {
+export function startFakeOtav({ requireAuth = false, canCreatePlaylists = true, scheduled = [] } = {}) {
   // playlists: name -> { unique_id, items: [] }
-  const state = { received: [], cleared: 0, resynced: 0, authorized: 0, playlists: new Map() };
+  // scheduled: playlist FILES the OTAV schedule points at, e.g.
+  //   ['/Volumes/Playlists/Channel 1 2026-07-20.xpls'] — addressable only after
+  //   GET /scheduler/playlists?path=...
+  const state = {
+    received: [], cleared: 0, resynced: 0, authorized: 0,
+    playlists: new Map(), scheduled: [...scheduled], opened: [],
+  };
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -77,6 +83,21 @@ export function startFakeOtav({ requireAuth = false, canCreatePlaylists = true }
           state.received.push({ ...json, playlist: pl.name });
           return send(201, { success: true, unique_id: `id-${state.received.length}` });
         }
+      }
+      if (req.method === 'GET' && path === '/scheduler') {
+        return send(200, { version: '2.0', is_enabled: true, schedule_path: '/Volumes/Playlists/Schedule.xml' });
+      }
+      if (req.method === 'GET' && path === '/scheduler/playlists') {
+        const wanted = url.searchParams.get('path');
+        if (!wanted) {
+          return send(200, state.scheduled.map((p) => ({ path: p, total_items: 0, missing_items: 0 })));
+        }
+        if (!state.scheduled.includes(wanted)) return send(404, { success: false, error: 'playlist not in schedule' });
+        const name = (wanted.split('/').pop() || '').replace(/\.xpls$/i, '');
+        const pl = state.playlists.get(name) || { unique_id: `${name}-uid`, name, items: [] };
+        state.playlists.set(name, pl);
+        state.opened.push(wanted);
+        return send(200, { unique_id: pl.unique_id, name, path: wanted, total_items: pl.items.length });
       }
       if (req.method === 'GET' && path === '/scheduler/resynchronize') {
         state.resynced++;
