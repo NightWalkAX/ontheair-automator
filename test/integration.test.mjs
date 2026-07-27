@@ -444,7 +444,8 @@ test('a folder-based template is rejected with the reason, not an opaque 422', a
     const rep = r.data.channels.find((c) => c.channel === ch.name);
     assert.equal(rep.ok, false);
     assert.match(rep.error, /FOLDER-BASED/);
-    assert.match(rep.error, /replace it with a normal empty playlist/);
+    assert.match(rep.error, /Replace the template with a NORMAL empty playlist/);
+    assert.match(rep.error, /delete the copy already made.*\.xpls/, 'names the stale file to remove');
     assert.equal(rep.pushed, 0, 'nothing was pushed into an uneditable playlist');
   } finally {
     db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL

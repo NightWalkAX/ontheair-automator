@@ -88,12 +88,12 @@ class OtavClient {
    * every item call on it with 422 "The specified playlist is not editable."
    * Nothing about that is retryable, hence `fatal`.
    */
-  static assertEditable(playlist) {
+  static assertEditable(playlist, filePath) {
     if (!playlist?.is_folder_based) return;
     const err = new Error(
-      `the day playlist is FOLDER-BASED (plays "${playlist.folder_based_path ?? '?'}"), so OTAV refuses `
-      + 'item edits on it. The template was saved from a folder-based playlist — replace it with a normal '
-      + 'empty playlist saved from OTAV.',
+      `the day playlist is FOLDER-BASED (plays "${playlist.folder_based_path ?? '?'}"), so OTAV refuses item `
+      + 'edits on it. Replace the template with a NORMAL empty playlist saved from OTAV (not pointed at a '
+      + `folder)${filePath ? `, then delete the copy already made from the old one: ${filePath}` : ''}.`,
     );
     err.fatal = true;
     throw err;
@@ -194,7 +194,7 @@ class OtavClient {
       for (const attempt of ['first', 'after resync']) {
         try {
           const opened = await this.openSchedulerPlaylist(preparedPath);
-          OtavClient.assertEditable(opened);
+          OtavClient.assertEditable(opened, preparedPath);
           const found = await this.refForPath(preparedPath, opened?.unique_id || name);
           const ref = found.ref;
           const cleared = await this.clearIfNeeded(ref, found.playlist ?? opened);
@@ -235,7 +235,7 @@ class OtavClient {
       });
       if (match) {
         const opened = await this.openSchedulerPlaylist(match.path);
-        OtavClient.assertEditable(opened);
+        OtavClient.assertEditable(opened, match.path);
         const ref = opened?.unique_id || name;
         const cleared = await this.clearIfNeeded(ref, opened);
         if (cleared.note) notes.push(cleared.note);
