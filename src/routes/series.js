@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import { db } from '../db.js';
+import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
@@ -122,12 +123,17 @@ router.get('/:id/series/:subject/chapters', (req, res) => {
   const channelId = Number(req.params.id);
   const subject = decodeURIComponent(req.params.subject);
   const rows = db.prepare(`
-    SELECT id, name, chapter, duration, added_at
-    FROM Resource
-    WHERE channel_id = ? AND subject = ? AND is_filler = 0
-    ORDER BY chapter, id
+    WITH ${EPISODE_NO_CTE}
+    SELECT r.id, r.name, r.subject, r.season, r.chapter, r.duration, r.added_at,
+           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+    FROM Resource r
+    LEFT JOIN EpisodeNo en ON en.id = r.id
+    LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
+    WHERE r.channel_id = ? AND r.subject = ? AND r.is_filler = 0
+    ORDER BY r.chapter, r.id
   `).all(channelId, subject);
-  res.json(rows);
+  res.json(rows.map(withLabel));
 });
 
 // Bounds (lowest/highest chapter) of a serial subject on a channel.

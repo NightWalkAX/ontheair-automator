@@ -12,6 +12,7 @@ import { Router } from 'express';
 import { dirname } from 'node:path';
 import { db, withTx } from '../db.js';
 import { parseEpisode, encodeChapter } from '../services/episodeParse.js';
+import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
@@ -61,12 +62,14 @@ router.get('/', (req, res) => {
   if (channelId == null) return res.status(400).json({ error: 'channel_id is required' });
 
   const rows = db.prepare(`
+    WITH ${EPISODE_NO_CTE}
     SELECT r.id, r.name, r.subject, r.season, r.chapter, r.duration, r.is_filler, r.approved,
-           r.show_type_id, r.file_path,
+           r.show_type_id, r.file_path, en.episode_no,
            st.name AS show_type_name, st.code AS show_type_code,
            ov.display_name AS display_name,
            (ov.resource_id IS NOT NULL) AS has_override
     FROM Resource r
+    LEFT JOIN EpisodeNo en ON en.id = r.id
     LEFT JOIN ShowType st ON st.id = r.show_type_id
     LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
     WHERE r.channel_id = ?
@@ -89,8 +92,10 @@ router.get('/', (req, res) => {
     const showKey = r.subject ?? '(fillers)';
     if (!g.shows.has(showKey)) g.shows.set(showKey, { subject: r.subject, episodes: [] });
     g.shows.get(showKey).episodes.push({
+      ...withLabel(r),
       id: r.id, name: r.name, display_name: r.display_name || r.name,
-      raw_name: r.name, subject: r.subject, season: r.season, chapter: r.chapter, duration: r.duration,
+      raw_name: r.name, subject: r.subject, season: r.season, chapter: r.chapter,
+      episode_no: r.episode_no, duration: r.duration,
       is_filler: !!r.is_filler, approved: !!r.approved, has_override: !!r.has_override,
       file_path: r.file_path, rel_dirs: relDirs(r.file_path, roots),
       show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
@@ -217,6 +222,24 @@ router.post('/bulk', (req, res) => {
         for (const e of entries) {
           db.prepare('UPDATE Resource SET chapter = ? WHERE id = ?').run(Number(e.chapter) | 0, Number(e.id));
         }
+        break;
+      }
+      case 'set-positions': {
+        // Position-based reordering from the "Fix order" editor: entries =
+        // [{ id, position }], 1..N within the season the operator is looking at.
+        // The chapter VALUES already held by those clips are re-dealt in the new
+        // order, so the show keeps its place in the channel-wide chapter
+        // numbering (no collisions with other shows/seasons) while the operator
+        // only ever types 1, 2, 3.
+        const entries = (Array.isArray(req.body.entries) ? req.body.entries : [])
+          .map((e) => ({ id: Number(e.id), position: Number(e.position), row: rowFor.get(Number(e.id)) }))
+          .filter((e) => e.row);
+        const chapters = entries.map((e) => e.row.chapter).sort((a, b) => a - b);
+        entries
+          .sort((a, b) => (a.position - b.position) || (a.id - b.id))
+          .forEach((e, i) => {
+            db.prepare('UPDATE Resource SET chapter = ? WHERE id = ?').run(chapters[i], e.id);
+          });
         break;
       }
       case 'set-showtype': {

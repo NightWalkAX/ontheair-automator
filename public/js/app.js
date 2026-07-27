@@ -321,7 +321,7 @@ async function openBlock(id) {
   const sel = $('#addResourceSel');
   sel.innerHTML = '';
   for (const r of allResources) {
-    sel.append(el('option', { value: r.id, textContent: `${r.is_filler ? '[filler] ' : ''}${r.name} (${fmt(r.duration)})` }));
+    sel.append(el('option', { value: r.id, textContent: `${r.is_filler ? '[filler] ' : ''}${r.label || r.name} (${fmt(r.duration)})` }));
   }
   renderBlockControls();
   renderItems();
@@ -423,8 +423,14 @@ function renderItems() {
     if (!currentMirror) li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Drag to reorder' }));
     li.append(el('span', { className: 'air', textContent: airAt, title: 'On-air time' }));
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
-    const label = it.is_filler ? it.name : `${it.subject ? it.subject + ' · ' : ''}${it.chapter ? 'Ep ' + it.chapter + ' — ' : ''}${it.name}`;
-    li.append(el('span', { className: 'grow', textContent: `${label}${it.is_manual_override ? ' *' : ''}` }));
+    // The server names every item "Show · S01E02" (labels.js); the filename and
+    // the internal chapter number stay out of sight, in the tooltip.
+    const label = it.label || it.name;
+    li.append(el('span', {
+      className: 'grow',
+      textContent: `${label}${it.is_manual_override ? ' *' : ''}`,
+      title: it.name,
+    }));
     // Per-item episode corrector for serial items: pick another chapter of the
     // same show. The backend swaps the item, sets the series cursor, and
     // regenerates later still-draft blocks this week so ordering follows.
@@ -435,11 +441,16 @@ function renderItems() {
       if (chapters.length > 1) {
         const epSel = el('select', { className: 'ep-sel', title: `Episode of “${it.subject}”` });
         for (const c of chapters) {
-          epSel.append(el('option', { value: c.chapter, textContent: `Ep ${c.chapter}`, selected: c.chapter === it.chapter }));
+          epSel.append(el('option', {
+            value: c.chapter,
+            textContent: c.episode_code || c.name,
+            selected: c.chapter === it.chapter,
+          }));
         }
         epSel.onchange = () => withBusy(null, async () => {
+          const picked = chapters.find((c) => c.chapter === Number(epSel.value));
           await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
-          toast(`Starting at Ep ${epSel.value} — this block and later drafts rebuilt`, 'ok', it.subject);
+          toast(`Starting at ${picked?.episode_code || 'that episode'} — this block and later drafts rebuilt`, 'ok', it.subject);
           await openBlock(currentBlock.block.id);
           await loadSchedule();
         });
@@ -491,7 +502,14 @@ function renderValidation() {
 $('#btnAddItem').addEventListener('click', () => {
   const id = Number($('#addResourceSel').value);
   const r = allResources.find((x) => x.id === id);
-  if (r) { currentItems.push({ resource_id: r.id, name: r.name, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1 }); renderItems(); }
+  if (r) {
+    currentItems.push({
+      resource_id: r.id, name: r.name, label: r.label, subject: r.subject,
+      season: r.season, episode_no: r.episode_no, episode_code: r.episode_code,
+      chapter: r.chapter, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1,
+    });
+    renderItems();
+  }
 });
 $('#btnSaveItems').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
@@ -566,9 +584,9 @@ async function loadResources() {
   }
   for (const r of rows) {
     tb.append(el('tr', {},
-      el('td', { textContent: r.name }),
+      el('td', { textContent: r.label || r.name, title: r.name }),
       el('td', { textContent: r.subject || '—' }),
-      el('td', { textContent: r.is_filler ? '—' : String(r.chapter) }),
+      el('td', { textContent: r.is_filler ? '—' : (r.episode_code || '—') }),
       el('td', { className: 'dur', textContent: fmt(r.duration) }),
       el('td', {}, el('span', { className: `badge ${r.is_filler ? 'ok' : 'status'}`, textContent: r.is_filler ? 'filler' : 'main' }))));
   }
@@ -1251,13 +1269,16 @@ function episodeRow(ep, { reorder = false } = {}) {
   });
   li.append(cb);
   li.append(approveToggle(ep));
-  const ord = el('input', { className: 'cat-ord', type: 'number', value: ep.chapter, title: 'Play order — type numbers, then “Fix order”' });
+  // Position within the season (1, 2, 3…), never the internal chapter key.
+  const ord = el('input', { className: 'cat-ord', type: 'number', value: ep.episode_no ?? '', title: 'Episode number within this season — retype the numbers, then “Fix order”' });
   catOrderInputs.push({ id: ep.id, input: ord });
   li.append(ord);
+  if (ep.episode_code) {
+    li.append(el('span', { className: 'badge ep-code', textContent: ep.episode_code, title: 'Season / episode — how this clip is named everywhere it airs' }));
+  }
   const nameIn = el('input', { className: 'cat-name grow', value: ep.display_name, title: `File on disk: ${ep.raw_name}` });
   nameIn.onchange = () => withBusy(null, async () => { await api.send('PUT', `/api/catalog/resource/${ep.id}`, { display_name: nameIn.value }); ep.display_name = nameIn.value; toast('Name saved', 'ok'); });
   li.append(nameIn);
-  if (ep.season != null) li.append(el('span', { className: 'badge', textContent: `S${ep.season}`, title: 'Season' }));
   if (ep.is_filler) li.append(el('span', { className: 'badge', textContent: 'filler' }));
   if (ep.has_override) li.append(el('span', { className: 'badge', textContent: 'edited', title: 'Has local overrides' }));
   li.append(el('span', { className: 'dur', textContent: fmt(ep.duration) }));
@@ -1392,15 +1413,15 @@ document.addEventListener('dragover', (e) => {
   for (const d of dragging) { if (after) ol.insertBefore(d, after); else ol.append(d); }
 });
 
-// After a reorder drop, persist the DOM order. Season-aware: within a season the
-// chapter keeps the season*1000 encoding so cross-season order is preserved.
+// After a reorder drop, persist the DOM order as positions 1..N. The server
+// re-deals the chapter values these clips already hold, so the reordered season
+// keeps its place in the channel-wide chapter numbering.
 async function reorderFromDom(ol) {
   const ids = [...ol.querySelectorAll('li[data-id]')].map((li) => Number(li.dataset.id));
   if (!ids.length) return;
-  const base = engSeason && engSeason > 1 ? engSeason * 1000 : 0;
-  const entries = ids.map((id, i) => ({ id, chapter: base + i + 1 }));
+  const entries = ids.map((id, i) => ({ id, position: i + 1 }));
   await withBusy(null, async () => {
-    await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-chapters', entries });
+    await api.send('POST', '/api/catalog/bulk', { ids, op: 'set-positions', entries });
     await loadCatalog(); toast('Reordered', 'ok');
   });
 }
@@ -1595,8 +1616,8 @@ async function setSeasonScope() {
 }
 async function fixOrder() {
   if (!catOrderInputs.length) return toast('No clips to order here', 'bad');
-  const entries = catOrderInputs.map(({ id, input }) => ({ id, chapter: Number(input.value) || 0 }));
-  await api.send('POST', '/api/catalog/bulk', { ids: entries.map((e) => e.id), op: 'set-chapters', entries });
+  const entries = catOrderInputs.map(({ id, input }, i) => ({ id, position: Number(input.value) || (i + 1) }));
+  await api.send('POST', '/api/catalog/bulk', { ids: entries.map((e) => e.id), op: 'set-positions', entries });
   await loadCatalog();
   toast('Order fixed', 'ok');
 }
@@ -1886,7 +1907,7 @@ function renderChapters() {
     const li = el('li', { draggable: true });
     li.append(el('span', { className: 'drag', textContent: '⠿' }));
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
-    li.append(el('span', { className: 'grow', textContent: r.name }));
+    li.append(el('span', { className: 'grow', textContent: r.label || r.name, title: r.name }));
     li.append(el('span', { className: 'dur', textContent: fmt(r.duration) }));
     li.addEventListener('dragstart', () => { chapterDragIdx = idx; li.classList.add('dragging'); });
     li.addEventListener('dragend', () => { chapterDragIdx = null; li.classList.remove('dragging'); });

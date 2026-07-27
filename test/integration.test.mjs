@@ -1199,3 +1199,63 @@ test('max-per-show + series-order endpoints rebuild the block', async () => {
   const firstMain = ord.data.items.find((i) => !i.is_filler);
   assert.equal(firstMain.subject, target, `reordered cycle puts ${target} first`);
 });
+
+test('display naming: clips read "Show · S01E02", never the internal chapter number', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  // Reproduce a renumbered catalog: correct ORDER, meaningless chapter values
+  // (the operator saw "Ep 1674" on what is plainly episode 1).
+  const show = 'Life Sciences'; // Biology, merged under this name by an earlier test
+  const eps = db.prepare(
+    'SELECT id FROM Resource WHERE channel_id=? AND subject=? AND is_filler=0 ORDER BY chapter, id'
+  ).all(c1, show);
+  assert.ok(eps.length >= 3, 'the show has episodes to renumber');
+  eps.forEach((r, i) => db.prepare('UPDATE Resource SET chapter=?, season=1 WHERE id=?').run(1674 + i * 7, r.id));
+
+  const rows = (await j('GET', `/api/resources?channel_id=${c1}&subject=${encodeURIComponent(show)}`)).data;
+  assert.deepEqual(rows.slice(0, 3).map((r) => r.episode_no), [1, 2, 3], 'episodes number 1..N by play order');
+  assert.equal(rows[0].label, `${show} · S01E01`);
+  assert.equal(rows[2].episode_code, 'S01E03');
+  assert.equal(rows[0].chapter, 1674, 'the ordering key itself is untouched');
+
+  // Same names in the block editor payload and in the series chapter list.
+  const view = (await j('GET', `/api/blocks?week=2026-07-20&channel_id=${c1}`)).data;
+  const blk = (await j('GET', `/api/blocks/${view.blocks[0].id}`)).data;
+  for (const it of blk.items) {
+    assert.ok(it.label, 'every block item carries a label');
+    if (!it.is_filler && it.subject) assert.match(it.label, /^.+ · S\d\dE\d\d$/);
+    assert.ok(!/1674/.test(it.label), 'no internal chapter number leaks into the label');
+  }
+  const chapters = (await j('GET', `/api/channels/${c1}/series/${encodeURIComponent(show)}/chapters`)).data;
+  assert.equal(chapters[0].label, `${show} · S01E01`);
+
+  // Movies are one of a kind — they keep their title instead of being numbered.
+  const movie = (await j('GET', `/api/resources?channel_id=${c1}&subject=movies`)).data[0];
+  if (movie) {
+    assert.equal(movie.episode_code, '', 'a film is not episode N of anything');
+    assert.equal(movie.label, movie.name);
+  }
+
+  // What OTAV receives is what the review UI shows.
+  const named = fakeOtav.state.received.filter((c) => / · S\d\dE\d\d$/.test(c.name || ''));
+  assert.ok(named.length > 0, 'pushed clips are named "Show · SxxEyy"');
+});
+
+test('fix order: positions 1..N re-deal the chapters the season already holds', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const show = 'Life Sciences';
+  const before = (await j('GET', `/api/resources?channel_id=${c1}&subject=${encodeURIComponent(show)}`)).data;
+  const chaptersBefore = before.map((r) => r.chapter).sort((a, b) => a - b);
+
+  // Swap the first two episodes by typing positions, the way the catalog does.
+  const entries = [{ id: before[0].id, position: 2 }, { id: before[1].id, position: 1 }];
+  const fix = await j('POST', '/api/catalog/bulk', {
+    ids: entries.map((e) => e.id), op: 'set-positions', entries,
+  });
+  assert.equal(fix.status, 200);
+
+  const after = (await j('GET', `/api/resources?channel_id=${c1}&subject=${encodeURIComponent(show)}`)).data;
+  assert.equal(after[0].id, before[1].id, 'the clip put at position 1 now plays first');
+  assert.equal(after[0].label, `${show} · S01E01`, 'and is renamed E01 accordingly');
+  assert.deepEqual(after.map((r) => r.chapter).sort((a, b) => a - b), chaptersBefore,
+    'the chapter values are permuted, not renumbered — the rest of the channel is untouched');
+});
