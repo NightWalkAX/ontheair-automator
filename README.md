@@ -128,7 +128,9 @@ some PUT/DELETE CRUD branches.
   scheduler resync. If none of the three routes work it falls back to the
   channel's fixed `playlist_ref`, and the push report names the route used.
   `GET /api/otav/diagnose/:channelId?date=…` (the "probe" button on the Channels
-  table) shows what a given instance actually supports.
+  table) shows what a given instance actually supports; add `&probe_create=1`
+  ("probe+", writes) to try every candidate creation route against it and see
+  what each answers.
   Optional token auth with automatic re-auth on 401. All machines mount the share
   at the same path, so `Resource.file_path` is used verbatim as the clip URL.
 

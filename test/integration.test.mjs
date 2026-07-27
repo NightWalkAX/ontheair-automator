@@ -350,6 +350,37 @@ test('push opens the day playlist from the OTAV schedule folder when it cannot c
   }
 });
 
+test('diagnose?probe_create=1 reports which creation route the instance accepts', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const ch = db.prepare('SELECT id FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port FROM ChannelType WHERE id = ?').get(ch.id);
+
+  // A build that serves the documented creation endpoint.
+  const modern = await start({});
+  db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(modern.port, ch.id);
+  try {
+    const d = await j('GET', `/api/otav/diagnose/${ch.id}?date=2026-07-20&probe_create=1`);
+    assert.equal(d.status, 200);
+    const accepted = d.data.create_routes.filter((r) => r.ok).map((r) => r.route);
+    assert.ok(accepted.includes('POST /playlists/{name}'), `accepted: ${accepted.join(', ')}`);
+  } finally {
+    await modern.close();
+  }
+
+  // A build without the traffic option: every route reports why it failed.
+  const legacy = await start({ canCreatePlaylists: false });
+  db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(legacy.port, ch.id);
+  try {
+    const d = await j('GET', `/api/otav/diagnose/${ch.id}?date=2026-07-20&probe_create=1`);
+    assert.ok(d.data.create_routes.length >= 4);
+    assert.ok(d.data.create_routes.every((r) => !r.ok), 'nothing accepted');
+    assert.ok(d.data.create_routes.every((r) => r.error), 'each failure is explained');
+  } finally {
+    db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(prev.api_port, ch.id);
+    await legacy.close();
+  }
+});
+
 test('diagnose reports the instance and the playlist name a push would target', async () => {
   const chId = (await j('GET', '/api/channels')).data[0].id;
   const d = await j('GET', `/api/otav/diagnose/${chId}?date=2026-07-20`);

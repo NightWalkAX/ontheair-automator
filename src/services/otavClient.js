@@ -168,6 +168,39 @@ class OtavClient {
   }
 
   /**
+   * Try every route that could plausibly get a playlist named `name` into an
+   * addressable state on this instance, reporting what each one answered.
+   *
+   * The documented API has exactly one creation endpoint (POST /playlists/{NAME},
+   * traffic-option only). Builds without it answer with an HTML 404 page, so the
+   * remaining candidates are undocumented shapes of the same idea plus opening an
+   * .xpls path directly. This writes — it's opt-in, not part of diagnose().
+   */
+  async probeCreateRoutes(name, scheduleDir) {
+    const attempts = [
+      ['POST /playlists/{name}', 'POST', `/playlists/${OtavClient.ref(name)}`, undefined],
+      ['POST /playlists/{name}.xpls', 'POST', `/playlists/${OtavClient.ref(name + '.xpls')}`, undefined],
+      ['POST /playlists/{name} + body', 'POST', `/playlists/${OtavClient.ref(name)}`, { name }],
+      ['POST /playlists + body', 'POST', '/playlists', { name }],
+    ];
+    if (scheduleDir) {
+      const path = `${scheduleDir.replace(/\/$/, '')}/${name}.xpls`;
+      attempts.push([`GET /scheduler/playlists?path=${path}`, 'GET',
+                     `/scheduler/playlists?path=${encodeURIComponent(path)}`, undefined]);
+    }
+    const results = [];
+    for (const [label, method, path, body] of attempts) {
+      try {
+        const data = await this.request(method, path, body);
+        results.push({ route: label, ok: true, response: JSON.stringify(data).slice(0, 200) });
+      } catch (err) {
+        results.push({ route: label, ok: false, status: err.status, error: String(err.message).slice(0, 200) });
+      }
+    }
+    return results;
+  }
+
+  /**
    * Read-only probe of what this instance actually supports, for troubleshooting
    * push failures (which OTAV version, is the scheduler enabled, which playlists
    * are open, what the schedule folder holds).
@@ -331,7 +364,7 @@ export async function checkChannel(channelId) {
  * Troubleshooting probe for one channel: what the instance supports and which
  * playlist name this project would target for `targetDate`. Read-only.
  */
-export async function diagnoseChannel(channelId, targetDate) {
+export async function diagnoseChannel(channelId, targetDate, { probeCreate = false } = {}) {
   const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
   if (!channel) throw new Error('channel not found');
   const client = new OtavClient(channel);
@@ -339,6 +372,13 @@ export async function diagnoseChannel(channelId, targetDate) {
   const out = await client.diagnose();
   out.day_playlist_name = dayPlaylistName({ ...channel, channel_name: channel.name }, targetDate);
   out.fallback_playlist_ref = channel.playlist_ref ?? null;
+  if (probeCreate) {
+    const schedulePath = out.scheduler?.schedule_path;
+    const scheduleDir = typeof schedulePath === 'string' && schedulePath.includes('/')
+      ? schedulePath.slice(0, schedulePath.lastIndexOf('/'))
+      : null;
+    out.create_routes = await client.probeCreateRoutes(out.day_playlist_name, scheduleDir);
+  }
   return out;
 }
 

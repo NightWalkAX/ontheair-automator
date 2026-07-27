@@ -1693,10 +1693,9 @@ async function loadSetupTab() {
       editBtn.onclick = () => openChannelEditor(c);
       const seriesBtn = el('button', { className: 'mini ghost', textContent: 'series' });
       seriesBtn.onclick = () => openSeries(c);
-      const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe' });
-      probeBtn.onclick = (e) => withBusy(e.currentTarget, async () => {
+      const probe = (deep) => (e) => withBusy(e.currentTarget, async () => {
         const date = $('#pushDate').value || new Date().toISOString().slice(0, 10);
-        const d = await api.get(`/api/otav/diagnose/${c.id}?date=${date}`);
+        const d = await api.get(`/api/otav/diagnose/${c.id}?date=${date}${deep ? '&probe_create=1' : ''}`);
         const open = (d.open_playlists || []).map((p) => `[${p.index}] ${p.name ?? '?'} (${p.total_items ?? '?'} items)`);
         const sched = Array.isArray(d.scheduler_playlists)
           ? d.scheduler_playlists.map((p) => p.path)
@@ -1708,10 +1707,18 @@ async function loadSetupTab() {
           { name: 'open playlists', ok: open.length > 0, detail: open.join(', ') || 'none open' },
           { name: 'schedule folder', ok: Array.isArray(d.scheduler_playlists), detail: sched.join(', ') || 'empty' },
           { name: 'fallback ref', ok: d.fallback_playlist_ref != null, detail: d.fallback_playlist_ref ?? 'not set' },
+          ...(d.create_routes || []).map((r) => ({
+            name: r.route, ok: r.ok, detail: r.ok ? r.response : `${r.status ?? ''} ${r.error}`,
+          })),
         ]);
       });
+      const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe', title: 'Read-only: what this OTAV instance supports' });
+      probeBtn.onclick = probe(false);
+      const probeDeepBtn = el('button', { className: 'mini ghost', textContent: 'probe+', title: 'Also tries every playlist-creation route against this instance (writes)' });
+      probeDeepBtn.onclick = probe(true);
       const td = el('td'); td.style.textAlign = 'right';
-      td.append(editBtn, document.createTextNode(' '), seriesBtn, document.createTextNode(' '), probeBtn);
+      td.append(editBtn, document.createTextNode(' '), seriesBtn, document.createTextNode(' '),
+                probeBtn, document.createTextNode(' '), probeDeepBtn);
       ct.append(el('tr', {},
         el('td', { textContent: c.name }),
         el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}` : '—' }),
