@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { db, withTx } from '../db.js';
 import { loadConfig } from '../config.js';
 import { blockDurationSeconds, generateWeek, populateBlock } from '../services/scheduling.js';
+import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
@@ -28,11 +29,19 @@ function validateBlock(blockId) {
   `).get(blockId);
   if (!block) return null;
 
+  // Items carry season/episode_no so the UI can name them "Show · S01E02"
+  // instead of exposing the internal `chapter` ordering key.
   const items = db.prepare(`
-    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.chapter
-    FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+    WITH ${EPISODE_NO_CTE}
+    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
+           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+    FROM ScheduleItem si
+    JOIN Resource r ON r.id = si.resource_id
+    LEFT JOIN EpisodeNo en ON en.id = r.id
+    LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE si.block_id = ? ORDER BY si.play_order
-  `).all(blockId);
+  `).all(blockId).map(withLabel);
 
   const blockSeconds = blockDurationSeconds(block.start_time, block.end_time);
   const totalSeconds = items.reduce((s, i) => s + i.duration, 0);

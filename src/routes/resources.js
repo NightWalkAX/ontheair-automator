@@ -4,24 +4,39 @@
 
 import { Router } from 'express';
 import { db } from '../db.js';
+import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
+
+// Every row leaves this route carrying episode_no / episode_code / label so no
+// caller has to render the internal `chapter` number at an operator.
+const SELECT_WITH_LABEL = `
+  WITH ${EPISODE_NO_CTE}
+  SELECT r.*, en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+  FROM Resource r
+  LEFT JOIN EpisodeNo en ON en.id = r.id
+  LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
+  LEFT JOIN ShowType st ON st.id = r.show_type_id
+`;
 
 // GET /api/resources?channel_id=&subject=&is_filler=
 router.get('/', (req, res) => {
   const clauses = [];
   const params = [];
-  if (req.query.channel_id) { clauses.push('channel_id = ?'); params.push(Number(req.query.channel_id)); }
-  if (req.query.subject)    { clauses.push('subject = ?');    params.push(String(req.query.subject)); }
-  if (req.query.is_filler != null) { clauses.push('is_filler = ?'); params.push(req.query.is_filler === '1' || req.query.is_filler === 'true' ? 1 : 0); }
+  if (req.query.channel_id) { clauses.push('r.channel_id = ?'); params.push(Number(req.query.channel_id)); }
+  if (req.query.subject)    { clauses.push('r.subject = ?');    params.push(String(req.query.subject)); }
+  if (req.query.is_filler != null) { clauses.push('r.is_filler = ?'); params.push(req.query.is_filler === '1' || req.query.is_filler === 'true' ? 1 : 0); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(db.prepare(`SELECT * FROM Resource ${where} ORDER BY subject, chapter, name`).all(...params));
+  const rows = db.prepare(
+    `${SELECT_WITH_LABEL} ${where} ORDER BY r.subject, r.season, r.chapter, r.name`
+  ).all(...params);
+  res.json(rows.map(withLabel));
 });
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM Resource WHERE id = ?').get(Number(req.params.id));
+  const row = db.prepare(`${SELECT_WITH_LABEL} WHERE r.id = ?`).get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'not found' });
-  res.json(row);
+  res.json(withLabel(row));
 });
 
 // PUT /api/resources/:id — edit the admin-controlled metadata fields only.

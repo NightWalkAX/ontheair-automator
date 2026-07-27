@@ -30,6 +30,7 @@
 
 import { db } from '../db.js';
 import { inspectPaths, prepareDaySchedule } from './otavSchedule.js';
+import { EPISODE_NO_CTE, withLabel } from './labels.js';
 
 class OtavClient {
   constructor(channel) {
@@ -360,15 +361,26 @@ class OtavClient {
   resynchronize() { return this.request('GET', '/scheduler/resynchronize'); }
 }
 
-/** Load ordered (resource) items for a scheduled block. */
+/**
+ * Load ordered (resource) items for a scheduled block. Each item carries the
+ * operator-facing `label` ("Show · S01E02") — that, not the raw filename, is the
+ * clip name written into OTAV's playlist, so the schedule reads the same on air
+ * as it does in the review UI.
+ */
 function blockItems(blockId) {
   return db.prepare(`
-    SELECT si.play_order, r.file_path, r.name, r.duration
+    WITH ${EPISODE_NO_CTE}
+    SELECT si.play_order, r.file_path, r.name, r.duration,
+           r.subject, r.season, r.is_filler, en.episode_no,
+           ov.display_name AS display_name, st.code AS show_type_code
     FROM ScheduleItem si
     JOIN Resource r ON r.id = si.resource_id
+    LEFT JOIN EpisodeNo en ON en.id = r.id
+    LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE si.block_id = ?
     ORDER BY si.play_order
-  `).all(blockId);
+  `).all(blockId).map(withLabel);
 }
 
 const DEFAULT_PLAYLIST_PATTERN = '{channel} {date}';
@@ -492,7 +504,7 @@ export async function pushApprovedBlocks(targetDate) {
       }
       for (const b of dayItems) {
         for (const item of b.items) {
-          await client.addFileClip(ref, item.file_path, item.name);
+          await client.addFileClip(ref, item.file_path, item.label || item.name);
           result.pushed++;
         }
         markExported.run(b.block_id);

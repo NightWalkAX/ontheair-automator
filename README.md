@@ -114,6 +114,16 @@ some PUT/DELETE CRUD branches.
   content per `content_type` (sequential lessons, cooldown movies, TV episodes
   with a Sunday latest-episode rule), then a subset-sum knapsack packs fillers to
   hit the block length (0s overrun ceiling, 5s underrun floor).
+- **Display naming** (`src/services/labels.js`): every clip is shown — in the
+  review UI, the catalog, the media table and the playlist pushed to OTAV — as
+  **`Show · S01E02`**. The episode number is the clip's position inside its
+  season, not `Resource.chapter`: chapter is a channel-wide ordering key that a
+  catalog renumber can leave at values like 1674 on what is plainly episode 1, so
+  it orders content but never reaches an operator's eyes (the filename stays in
+  the tooltip). Fillers and movies keep their own title — a film isn't episode N
+  of anything. The catalog's "Fix order" box therefore takes positions 1..N and
+  the server re-deals the chapter values that season already holds, so reordering
+  one show can't disturb the rest of the channel.
 - **Review UI** (`public/`): 7-day timeline; click a block to reorder/swap/add
   items with live duration validation. Approval is blocked — client- and
   server-side — while a block is out of tolerance.
