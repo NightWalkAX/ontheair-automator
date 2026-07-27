@@ -512,6 +512,39 @@ export async function pushApprovedBlocks(targetDate) {
   return { targetDate, channels: report };
 }
 
+/**
+ * Push every day in an inclusive date range. A block template that repeats on
+ * several weekdays produces one ScheduledBlock per date, and each date needs its
+ * own playlist (and, on event schedules, its own schedule event) — so pushing a
+ * single date only ever airs that one day.
+ *
+ * Dates with no approved blocks are skipped and listed, rather than reported as
+ * failures: an empty Wednesday is normal for a Mon/Tue/Thu template.
+ */
+export async function pushApprovedRange(fromDate, toDate) {
+  const dates = [];
+  for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
+       d.setUTCDate(d.getUTCDate() + 1)) {
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  const days = [];
+  const skipped = [];
+  for (const date of dates) {
+    const day = await pushApprovedBlocks(date);
+    if (day.channels.length) days.push(day);
+    else skipped.push(date);
+  }
+  return {
+    from: fromDate,
+    to: toDate,
+    days,
+    skipped,
+    // Flat per-channel-per-day view, for reports that just want a list.
+    channels: days.flatMap((d) => d.channels.map((c) => ({ ...c, date: d.targetDate }))),
+  };
+}
+
 /** Connectivity check: hit /info on one channel. */
 export async function checkChannel(channelId) {
   const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);

@@ -418,6 +418,62 @@ test('event-based schedule: push writes the day playlist file, upserts one event
   }
 });
 
+test('push week: every date a template repeats on gets its own playlist and event', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const { readSchedule } = await import('../src/services/otavSchedule.js');
+  const { mkdtempSync, writeFileSync, existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+
+  const dir = mkdtempSync(join(tmpdir(), 'otav-week-'));
+  const schedulePath = join(dir, 'Channel.json');
+  writeFileSync(schedulePath, JSON.stringify({ version: '2.0', events: [] }, null, 2));
+  const template = join(dir, '_template.xpls');
+  writeFileSync(template, 'XPLS-TEMPLATE');
+
+  const otav = await start({ canCreatePlaylists: false, scheduleFile: schedulePath });
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare(`UPDATE ChannelType SET api_port = ?, playlist_ref = NULL,
+              schedule_path = ?, playlist_dir = NULL, playlist_template = ? WHERE id = ?`)
+    .run(otav.port, schedulePath, template, ch.id);
+
+  try {
+    // The Mon+Tue template already produced this week's blocks; approve them all
+    // (earlier tests may have left some exported) without regenerating, so this
+    // test doesn't disturb the drafts other tests inspect.
+    db.prepare(`UPDATE ScheduledBlock SET status='approved'
+                WHERE target_date BETWEEN '2026-07-20' AND '2026-07-26'`).run();
+    const dates = db.prepare(`SELECT DISTINCT target_date FROM ScheduledBlock
+                              WHERE status='approved' AND target_date BETWEEN '2026-07-20' AND '2026-07-26'
+                              ORDER BY target_date`).all().map((r) => r.target_date);
+    assert.ok(dates.length > 1, `the week has approved blocks on several dates: ${dates.join(', ')}`);
+
+    const r = await j('POST', '/api/otav/push?week=2026-07-20');
+    assert.equal(r.status, 200);
+    const pushedDates = [...new Set(r.data.channels.map((c) => c.date))].sort();
+    assert.deepEqual(pushedDates, dates, 'one push per date that had approved blocks');
+    assert.ok(r.data.channels.every((c) => c.ok), r.data.channels.find((c) => !c.ok)?.error);
+
+    // One playlist file and one event per date — no day overwriting another.
+    const saved = readSchedule(schedulePath);
+    const ourEvents = saved.events.filter((e) => String(e.display_name).includes('[ontheair-automator]'));
+    assert.equal(ourEvents.length, dates.length, 'one event per date');
+    assert.equal(new Set(ourEvents.map((e) => e.playlists[0].playlist_path)).size, dates.length,
+                 'each event points at its own playlist');
+    for (const date of dates) {
+      assert.ok(ourEvents.some((e) => e.start_date_time.startsWith(date)), `event for ${date}`);
+      assert.ok(existsSync(join(dir, `${ch.name} ${date}.xpls`)), `playlist file for ${date}`);
+    }
+    // Days with nothing approved are reported as skipped, not as failures.
+    assert.equal(r.data.skipped.length, 7 - dates.length);
+  } finally {
+    db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL
+                WHERE id = ?`).run(prev.api_port, ch.id);
+    await otav.close();
+  }
+});
+
 test('a folder-based template is rejected with the reason, not an opaque 422', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const { mkdtempSync, writeFileSync } = await import('node:fs');

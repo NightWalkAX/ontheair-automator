@@ -117,7 +117,12 @@ some PUT/DELETE CRUD branches.
 - **Review UI** (`public/`): 7-day timeline; click a block to reorder/swap/add
   items with live duration validation. Approval is blocked — client- and
   server-side — while a block is out of tolerance.
-- **OTAV push** (`src/services/otavClient.js`): per-channel REST client targeting
+- **OTAV push** (`src/services/otavClient.js`): `POST /api/otav/push` takes one
+  day (`?date=`), a week (`?week=`, 7 days from that date) or a range
+  (`?from=&to=`) — a template that repeats on several weekdays produces one block
+  per date, and each date needs its own playlist and schedule event, so pushing a
+  single date airs only that date. Dates with nothing approved are reported as
+  skipped, not failed. Per-channel REST client targeting
   one playlist **per broadcast day**, named from the channel's
   `playlist_name_pattern` (default `{channel} {date}`). It resolves that playlist
   in order: already open under that name → present in the schedule folder (opened

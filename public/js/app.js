@@ -261,16 +261,21 @@ $('#btnApproveWeek').addEventListener('click', (e) => withBusy(e.currentTarget, 
         blocked ? 'info' : 'ok', 'Week approval');
   await loadSchedule();
 }));
-$('#btnPush').addEventListener('click', async (e) => {
-  const btn = e.currentTarget;
+// A template repeating on several weekdays yields one block per date, and each
+// date is its own playlist — so pushing a single day airs only that day.
+async function pushToAir(btn, { scope }) {
+  const day = $('#pushDate').value;
+  const week = $('#weekStart').value;
+  const query = scope === 'week' ? `week=${week}` : `date=${day}`;
+  const what = scope === 'week' ? `the week starting ${week} (7 days)` : day;
   const ok = await confirmDialog('Push to Air',
-    `This pushes all approved blocks for ${$('#pushDate').value} to the live OTAV instances. Continue?`,
+    `This pushes all approved blocks for ${what} to the live OTAV instances. Continue?`,
     { confirmLabel: 'Push to Air', danger: true });
   if (!ok) return;
   await withBusy(btn, async () => {
-    const r = await api.send('POST', `/api/otav/push?date=${$('#pushDate').value}`);
+    const r = await api.send('POST', `/api/otav/push?${query}`);
     reportDialog('Push report', r.channels.map((c) => ({
-      name: c.channel,
+      name: c.date ? `${c.date} · ${c.channel}` : c.channel,
       ok: c.ok,
       detail: c.ok
         ? `${c.pushed} clips → “${c.playlist}” (${{
@@ -280,10 +285,15 @@ $('#btnPush').addEventListener('click', async (e) => {
         : c.error,
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
-    toast(failed ? `${failed} channel(s) failed` : 'All channels pushed', failed ? 'bad' : 'ok', 'Push complete');
+    const skipped = (r.skipped || []).length;
+    toast(failed ? `${failed} push(es) failed`
+          : `${r.channels.length} pushed${skipped ? `, ${skipped} day(s) had nothing approved` : ''}`,
+          failed ? 'bad' : 'ok', 'Push complete');
     await loadSchedule();
   });
-});
+}
+$('#btnPush').addEventListener('click', (e) => pushToAir(e.currentTarget, { scope: 'day' }));
+$('#btnPushWeek').addEventListener('click', (e) => pushToAir(e.currentTarget, { scope: 'week' }));
 
 // ---- Block editor modal ----------------------------------------------------
 let currentBlock = null;

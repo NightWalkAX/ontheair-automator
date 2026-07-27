@@ -1,19 +1,35 @@
 // OTAV push routes (Module C trigger).
 
 import { Router } from 'express';
-import { pushApprovedBlocks, checkChannel, diagnoseChannel } from '../services/otavClient.js';
+import { pushApprovedBlocks, pushApprovedRange, checkChannel, diagnoseChannel } from '../services/otavClient.js';
 
 export const router = Router();
 
-// POST /api/otav/push?date=YYYY-MM-DD  — "Push to Air".
+// POST /api/otav/push — "Push to Air". One day (?date=), a week starting at a
+// date (?week=, 7 days), or an explicit range (?from=&to=). A template that
+// repeats on several weekdays needs every one of those dates pushed: each date
+// gets its own playlist and its own schedule event.
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
 router.post('/push', async (req, res) => {
-  const date = String(req.query.date || req.body?.date || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return res.status(400).json({ error: 'date=YYYY-MM-DD is required' });
-  }
+  const q = { ...req.body, ...req.query };
+  const date = String(q.date || '').slice(0, 10);
+  const week = String(q.week || '').slice(0, 10);
+  const from = String(q.from || '').slice(0, 10);
+  const to = String(q.to || '').slice(0, 10);
   try {
-    const report = await pushApprovedBlocks(date);
-    res.json({ ok: true, ...report });
+    if (DATE.test(week)) {
+      const end = new Date(`${week}T00:00:00Z`);
+      end.setUTCDate(end.getUTCDate() + 6);
+      return res.json({ ok: true, ...(await pushApprovedRange(week, end.toISOString().slice(0, 10))) });
+    }
+    if (DATE.test(from) && DATE.test(to)) {
+      if (to < from) return res.status(400).json({ error: 'to must not precede from' });
+      return res.json({ ok: true, ...(await pushApprovedRange(from, to)) });
+    }
+    if (DATE.test(date)) {
+      return res.json({ ok: true, ...(await pushApprovedBlocks(date)) });
+    }
+    return res.status(400).json({ error: 'date=YYYY-MM-DD, week=YYYY-MM-DD, or from=&to= is required' });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
