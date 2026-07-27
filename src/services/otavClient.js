@@ -102,6 +102,29 @@ class OtavClient {
 
   clearPlaylist(ref) { return this.request('DELETE', `/playlists/${OtavClient.ref(ref)}/items`); }
 
+  /**
+   * Clear a playlist only when it actually holds clips.
+   *
+   * OTAV answers 422 "The specified playlist is not editable." to DELETE on
+   * playlists it opened from the scheduler. That's fatal when there are items to
+   * replace, but irrelevant when the playlist is already empty (a day playlist we
+   * just created from the template always is), so an empty playlist is confirmed
+   * rather than treated as a failure.
+   */
+  async clearIfNeeded(ref, known) {
+    const totalOf = (pl) => (typeof pl?.total_items === 'number' ? pl.total_items
+      : Array.isArray(pl?.items) ? pl.items.length : null);
+    if (totalOf(known) === 0) return { cleared: false, note: 'already empty' };
+    try {
+      await this.clearPlaylist(ref);
+      return { cleared: true };
+    } catch (err) {
+      const fresh = await this.getPlaylist(ref).catch(() => null);
+      if (totalOf(fresh) === 0) return { cleared: false, note: `not cleared (${err.message}) but empty` };
+      throw err;
+    }
+  }
+
   /** Playlists (files) that the current OTAV schedule references. */
   schedulerPlaylists() { return this.request('GET', '/scheduler/playlists'); }
 
@@ -125,6 +148,7 @@ class OtavClient {
    */
   async ensureDayPlaylist(name, preparedPath) {
     const tried = [];
+    const notes = [];
 
     // 0. A file this app just wrote and registered in the schedule. OTAV may
     //    still be holding the previous schedule in memory, so on a miss ask it
@@ -134,8 +158,9 @@ class OtavClient {
         try {
           const opened = await this.openSchedulerPlaylist(preparedPath);
           const ref = opened?.unique_id || name;
-          await this.clearPlaylist(ref);
-          return { ref, source: 'prepared', created: false, path: preparedPath };
+          const cleared = await this.clearIfNeeded(ref, opened);
+          if (cleared.note) notes.push(cleared.note);
+          return { ref, source: 'prepared', created: false, path: preparedPath, notes };
         } catch (err) {
           tried.push(`open "${preparedPath}" (${attempt}) -> ${err.message}`);
           if (attempt === 'after resync') break;
@@ -148,8 +173,9 @@ class OtavClient {
     try {
       const existing = await this.getPlaylist(name);
       const ref = existing?.unique_id || name;
-      await this.clearPlaylist(ref);
-      return { ref, source: 'open', created: false };
+      const cleared = await this.clearIfNeeded(ref, existing);
+      if (cleared.note) notes.push(cleared.note);
+      return { ref, source: 'open', created: false, notes };
     } catch (err) {
       if (err.status !== 404) throw err; // 401/403/network are real failures
       tried.push(`no open playlist named "${name}"`);
@@ -169,8 +195,9 @@ class OtavClient {
       if (match) {
         const opened = await this.openSchedulerPlaylist(match.path);
         const ref = opened?.unique_id || name;
-        await this.clearPlaylist(ref);
-        return { ref, source: 'schedule', created: false, path: match.path };
+        const cleared = await this.clearIfNeeded(ref, opened);
+        if (cleared.note) notes.push(cleared.note);
+        return { ref, source: 'schedule', created: false, path: match.path, notes };
       }
       tried.push(scheduled.length
         ? `schedule holds ${scheduled.length} playlist(s) but none named "${name}.xpls" ` +
@@ -370,6 +397,7 @@ export async function pushApprovedBlocks(targetDate) {
         result.playlist_ref = ref;
         result.created = prepared?.playlistCreated ?? day.created;
         result.source = day.source;
+        if (day.notes?.length) result.warning = day.notes.join('; ');
       } catch (err) {
         // Instances without the "traffic" option can neither create playlists
         // nor (usually) expose a schedule folder. Fall back to the channel's
@@ -387,7 +415,7 @@ export async function pushApprovedBlocks(targetDate) {
         result.created = false;
         result.source = 'fallback';
         result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
-        await client.clearPlaylist(ref);
+        await client.clearIfNeeded(ref, await client.getPlaylist(ref).catch(() => null));
       }
       for (const b of dayItems) {
         for (const item of b.items) {
@@ -401,6 +429,10 @@ export async function pushApprovedBlocks(targetDate) {
     } catch (err) {
       result.ok = false;
       result.error = String(err.message || err);
+      if (/not editable/i.test(result.error)) {
+        result.error += '. OTAV refuses edits on that playlist — stop the scheduler '
+          + '(GET /scheduler/stop), or open the playlist in OTAV and unlock it, then push again.';
+      }
     }
     report.push(result);
   }
@@ -432,11 +464,7 @@ export async function diagnoseChannel(channelId, targetDate, { probeCreate = fal
   const reported = typeof out.scheduler?.schedule_path === 'string' ? out.scheduler.schedule_path : null;
   out.files = inspectPaths(channel, reported);
   if (probeCreate) {
-    const schedulePath = out.scheduler?.schedule_path;
-    const scheduleDir = typeof schedulePath === 'string' && schedulePath.includes('/')
-      ? schedulePath.slice(0, schedulePath.lastIndexOf('/'))
-      : null;
-    out.create_routes = await client.probeCreateRoutes(out.day_playlist_name, scheduleDir);
+    out.create_routes = await client.probeCreateRoutes(out.day_playlist_name, out.files?.playlist_dir);
   }
   return out;
 }

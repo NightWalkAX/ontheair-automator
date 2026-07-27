@@ -12,6 +12,7 @@ export function startFakeOtav({
   canCreatePlaylists = true,   // false = scheduler isn't folder-based (real 422)
   scheduled = [],
   scheduleFile = null,        // event schedule JSON on disk, like the real Macs run
+  refuseClear = false,        // 422 "not editable" on DELETE, as scheduler-opened playlists do
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -86,6 +87,7 @@ export function startFakeOtav({
         const pl = findPlaylist(ref);
         if (req.method === 'DELETE') {
           if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index (items)' });
+          if (refuseClear) return send(422, { success: false, error: 'The specified playlist is not editable.' });
           pl.items.length = 0;
           state.cleared++;
           return send(200, { success: true });

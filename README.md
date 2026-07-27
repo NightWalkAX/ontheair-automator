@@ -138,8 +138,12 @@ some PUT/DELETE CRUD branches.
   `<playlist_dir>/<day name>.xpls` (the proprietary format is never parsed),
   upserts **only** that channel-day's event in the schedule JSON — every hand-made
   event is preserved, and the original is backed up once to `<schedule>.bak` —
-  then opens the playlist by path over REST and fills it. Re-pushing a day updates
-  the same event and replaces the same playlist's items. The paths must be
+  then opens the playlist by path over REST and fills it. Playlists OTAV opened
+  from the scheduler answer 422 "not editable" to a clear, which is skipped when
+  the playlist is already empty (a freshly created day playlist always is) and
+  reported as an error — with how to unblock it — when there really were items to
+  replace. Re-pushing a day updates the same event and replaces the same
+  playlist's items. The paths must be
   reachable from the machine running this app **at the same path OTAV sees**, so
   the schedule and playlist folder have to live on the shared volume — the "probe"
   button reports, per channel, whether this machine can actually see and write

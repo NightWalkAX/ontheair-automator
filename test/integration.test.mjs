@@ -418,6 +418,51 @@ test('event-based schedule: push writes the day playlist file, upserts one event
   }
 });
 
+test('a refused clear on an empty day playlist does not fail the push', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+
+  const dir = mkdtempSync(join(tmpdir(), 'otav-lock-'));
+  const schedulePath = join(dir, 'Channel.json');
+  writeFileSync(schedulePath, JSON.stringify({ version: '2.0', events: [] }, null, 2));
+  const template = join(dir, '_template.xpls');
+  writeFileSync(template, 'XPLS-TEMPLATE');
+
+  // Like the real instance: playlists it opened from the scheduler refuse DELETE.
+  const otav = await start({ canCreatePlaylists: false, scheduleFile: schedulePath, refuseClear: true });
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare(`UPDATE ChannelType SET api_port = ?, playlist_ref = NULL,
+              schedule_path = ?, playlist_dir = NULL, playlist_template = ? WHERE id = ?`)
+    .run(otav.port, schedulePath, template, ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep?.ok, `push survives the refused clear: ${rep?.error || ''}`);
+    assert.equal(rep.source, 'prepared');
+    assert.ok(rep.pushed > 0, 'clips still went in');
+    assert.match(rep.warning || '', /empty/, 'the skipped clear is reported');
+
+    // But a playlist that DOES hold clips must not be silently appended to.
+    const filled = [...otav.state.playlists.values()].find((p) => p.items.length > 0);
+    assert.ok(filled, 'clips landed somewhere');
+    db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+    const again = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep2 = again.data.channels.find((c) => c.channel === ch.name);
+    assert.equal(rep2.ok, false, 're-push refuses rather than duplicating items');
+    assert.match(rep2.error, /not editable/);
+    assert.match(rep2.error, /scheduler\/stop|unlock/, 'error says how to unblock it');
+  } finally {
+    db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL
+                WHERE id = ?`).run(prev.api_port, ch.id);
+    await otav.close();
+  }
+});
+
 test('diagnose?probe_create=1 reports which creation route the instance accepts', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const ch = db.prepare('SELECT id FROM ChannelType LIMIT 1').get();

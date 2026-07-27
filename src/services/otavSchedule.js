@@ -24,7 +24,9 @@
 // schedule and the playlist folder therefore have to live on that shared volume,
 // not in a local ~/Documents.
 
-import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** Events this app owns are tagged in their display name so upserts are safe. */
@@ -125,7 +127,12 @@ export function prepareDaySchedule(channel, {
 
   const playlistPath = join(playlistDir, `${playlistName}.xpls`);
   const playlistCreated = !existsSync(playlistPath);
-  if (playlistCreated) copyFileSync(template, playlistPath); // byte copy: format untouched
+  if (playlistCreated) {
+    copyFileSync(template, playlistPath); // byte copy: format untouched
+    // OTAV edits this file as a different user over the share; a template copied
+    // with restrictive permissions would open read-only there.
+    try { chmodSync(playlistPath, 0o666); } catch { /* share may not support it */ }
+  }
 
   const displayName = eventDisplayName(channel.channel_name ?? channel.name, targetDate);
   const doc = readSchedule(schedulePath);
