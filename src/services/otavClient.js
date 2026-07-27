@@ -135,7 +135,10 @@ class OtavClient {
     //    before it can be addressed by unique_id).
     try {
       const scheduled = await this.schedulerPlaylists();
-      const match = (Array.isArray(scheduled) ? scheduled : []).find((p) => {
+      if (!Array.isArray(scheduled)) {
+        throw new Error(`/scheduler/playlists returned ${JSON.stringify(scheduled).slice(0, 120)}`);
+      }
+      const match = scheduled.find((p) => {
         const base = String(p?.path || '').split('/').pop() || '';
         return base === name || base.replace(/\.xpls$/i, '') === name;
       });
@@ -145,7 +148,10 @@ class OtavClient {
         await this.clearPlaylist(ref);
         return { ref, source: 'schedule', created: false, path: match.path };
       }
-      tried.push(`schedule folder has no "${name}.xpls"`);
+      tried.push(scheduled.length
+        ? `schedule holds ${scheduled.length} playlist(s) but none named "${name}.xpls" ` +
+          `(${scheduled.slice(0, 5).map((p) => String(p?.path || '').split('/').pop()).join(', ')})`
+        : 'OTAV schedule is empty (no playlist files)');
     } catch (err) {
       tried.push(`schedule lookup failed (${err.message})`);
     }
