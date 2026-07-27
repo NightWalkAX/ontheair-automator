@@ -1708,6 +1708,19 @@ async function loadSetupTab() {
           { name: 'open playlists', ok: open.length > 0, detail: open.join(', ') || 'none open' },
           { name: 'schedule folder', ok: Array.isArray(d.scheduler_playlists), detail: sched.join(', ') || 'empty' },
           { name: 'fallback ref', ok: d.fallback_playlist_ref != null, detail: d.fallback_playlist_ref ?? 'not set' },
+          { name: 'schedule file (from here)', ok: !!(d.files?.schedule_exists && d.files?.schedule_writable),
+            detail: d.files?.schedule_path
+              ? `${d.files.schedule_path} — ${d.files.schedule_path_source}; ` +
+                `${d.files.schedule_exists ? 'exists' : 'MISSING from this machine'}, ` +
+                `${d.files.schedule_writable ? 'writable' : 'NOT writable'}` +
+                (d.files.schedule_events != null ? `, ${d.files.schedule_events} event(s), ${d.files.schedule_our_events} ours` : '') +
+                (d.files.schedule_error ? `, ${d.files.schedule_error}` : '')
+              : 'no schedule to edit' },
+          { name: 'playlists folder + template', ok: !!(d.files?.playlist_dir_writable && d.files?.template_exists),
+            detail: d.files?.playlist_dir
+              ? `${d.files.playlist_dir} ${d.files.playlist_dir_exists ? (d.files.playlist_dir_writable ? '(writable)' : '(NOT writable)') : '(missing)'} · ` +
+                `template ${d.files.template_exists ? 'found' : `MISSING at ${d.files.playlist_template ?? 'not set'}`}`
+              : 'not configured' },
           ...(d.create_routes || []).map((r) => ({
             name: r.route, ok: r.ok, detail: r.ok ? r.response : `${r.status ?? ''} ${r.error}`,
           })),

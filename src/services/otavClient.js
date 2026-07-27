@@ -29,7 +29,7 @@
 // the same path, Resource.file_path is used verbatim as the clip "url".
 
 import { db } from '../db.js';
-import { prepareDaySchedule } from './otavSchedule.js';
+import { inspectPaths, prepareDaySchedule } from './otavSchedule.js';
 
 class OtavClient {
   constructor(channel) {
@@ -343,15 +343,24 @@ export async function pushApprovedBlocks(targetDate) {
       // is configured for it, the day's playlist file and its schedule event are
       // prepared on disk first — that is also what makes the playlist openable
       // by path below (OTAV only opens paths its schedule references).
+      // When the channel doesn't name a schedule, ask the instance which one it
+      // has open rather than making the operator retype the path.
+      let reportedSchedulePath = null;
+      if (!channel.schedule_path && channel.playlist_dir && channel.playlist_template) {
+        const sched = await client.request('GET', '/scheduler').catch(() => null);
+        reportedSchedulePath = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
+      }
       const prepared = prepareDaySchedule(channel, {
         playlistName,
         targetDate,
         startDateTime: `${targetDate} ${String(chBlocks[0]?.start_time || '00:00').slice(0, 5)}:00`,
         durationSeconds: daySeconds,
+        reportedSchedulePath,
       });
       if (prepared) {
         result.playlist_path = prepared.playlistPath;
         result.schedule_event = prepared.event;
+        result.schedule_path = prepared.schedulePath;
       }
 
       let ref;
@@ -419,6 +428,9 @@ export async function diagnoseChannel(channelId, targetDate, { probeCreate = fal
   const out = await client.diagnose();
   out.day_playlist_name = dayPlaylistName({ ...channel, channel_name: channel.name }, targetDate);
   out.fallback_playlist_ref = channel.playlist_ref ?? null;
+  // What the file-level path would do, seen from this machine.
+  const reported = typeof out.scheduler?.schedule_path === 'string' ? out.scheduler.schedule_path : null;
+  out.files = inspectPaths(channel, reported);
   if (probeCreate) {
     const schedulePath = out.scheduler?.schedule_path;
     const scheduleDir = typeof schedulePath === 'string' && schedulePath.includes('/')

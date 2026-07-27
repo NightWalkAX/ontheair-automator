@@ -24,7 +24,7 @@
 // schedule and the playlist folder therefore have to live on that shared volume,
 // not in a local ~/Documents.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** Events this app owns are tagged in their display name so upserts are safe. */
@@ -93,15 +93,25 @@ export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, 
 
 /**
  * Make the day's playlist exist on disk and be referenced by the schedule.
- * Returns { playlistPath, playlistCreated, event } or null when the channel
- * isn't configured for file-level scheduling.
+ * Returns { playlistPath, playlistCreated, event, schedulePath } or null when
+ * this channel isn't set up for file-level scheduling (no playlist folder or no
+ * template, or no schedule to edit).
  *
  * Throws with an actionable message when a configured path is wrong — a silent
  * skip here would surface much later as an opaque REST 422.
  */
-export function prepareDaySchedule(channel, { playlistName, targetDate, startDateTime, durationSeconds }) {
-  const { schedule_path: schedulePath, playlist_dir: playlistDir, playlist_template: template } = channel;
+export function prepareDaySchedule(channel, {
+  playlistName, targetDate, startDateTime, durationSeconds, reportedSchedulePath,
+}) {
+  const { playlist_dir: playlistDir, playlist_template: template } = channel;
+  // The channel may name the schedule explicitly; otherwise use the one the
+  // instance itself reports (GET /scheduler -> schedule_path). Same-mount-path
+  // means what OTAV reads is what this process writes.
+  const schedulePath = channel.schedule_path || reportedSchedulePath || null;
   if (!schedulePath || !playlistDir || !template) return null;
+  if (!/\.json$/i.test(schedulePath)) {
+    throw new Error(`"${schedulePath}" is not a JSON event schedule — a folder-based schedule needs no file editing`);
+  }
 
   if (!existsSync(template)) {
     throw new Error(`playlist template not found at "${template}" — save an empty playlist from OTAV there`);
@@ -120,5 +130,42 @@ export function prepareDaySchedule(channel, { playlistName, targetDate, startDat
   const event = upsertDayEvent(doc, { displayName, playlistPath, startDateTime, durationSeconds });
   writeSchedule(schedulePath, doc);
 
-  return { playlistPath, playlistCreated, event, displayName };
+  return { playlistPath, playlistCreated, event, displayName, schedulePath };
+}
+
+/**
+ * Can this process actually reach and edit the paths a push would touch?
+ * Answers from the app machine's point of view — the point of failure when the
+ * schedule lives on a share that isn't mounted here, or is mounted read-only.
+ */
+export function inspectPaths(channel, reportedSchedulePath) {
+  const schedulePath = channel.schedule_path || reportedSchedulePath || null;
+  const canWrite = (p) => { try { accessSync(p, constants.W_OK); return true; } catch { return false; } };
+
+  const out = {
+    schedule_path: schedulePath,
+    schedule_path_source: channel.schedule_path ? 'configured on the channel' : (reportedSchedulePath ? 'reported by OTAV' : 'not set'),
+    playlist_dir: channel.playlist_dir ?? null,
+    playlist_template: channel.playlist_template ?? null,
+  };
+  if (schedulePath) {
+    out.schedule_exists = existsSync(schedulePath);
+    out.schedule_writable = out.schedule_exists ? canWrite(schedulePath) : canWrite(dirname(schedulePath));
+    out.schedule_is_json = /\.json$/i.test(schedulePath);
+    if (out.schedule_exists) {
+      try {
+        const doc = readSchedule(schedulePath);
+        out.schedule_events = doc.events.length;
+        out.schedule_our_events = doc.events.filter((e) => String(e?.display_name || '').includes(`[${EVENT_TAG}]`)).length;
+      } catch (err) {
+        out.schedule_error = `unreadable: ${err.message}`;
+      }
+    }
+  }
+  if (channel.playlist_dir) {
+    out.playlist_dir_exists = existsSync(channel.playlist_dir);
+    out.playlist_dir_writable = out.playlist_dir_exists && canWrite(channel.playlist_dir);
+  }
+  if (channel.playlist_template) out.template_exists = existsSync(channel.playlist_template);
+  return out;
 }

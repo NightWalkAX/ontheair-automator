@@ -248,7 +248,8 @@ export function initSchema() {
   // schedule (which REST cannot modify): the schedule JSON this app edits, the
   // folder day playlists are written to, and an empty playlist saved from OTAV
   // that gets byte-copied per day. Paths as this process sees them — the share is
-  // mounted at the same path on every machine. All three or none.
+  // mounted at the same path on every machine. schedule_path is optional: when
+  // blank, the schedule the instance reports via GET /scheduler is edited.
   addColumnIfMissing('ChannelType', 'schedule_path', 'TEXT');
   addColumnIfMissing('ChannelType', 'playlist_dir', 'TEXT');
   addColumnIfMissing('ChannelType', 'playlist_template', 'TEXT');

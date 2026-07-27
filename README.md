@@ -131,15 +131,18 @@ some PUT/DELETE CRUD branches.
   channel's fixed `playlist_ref`, and the push report names the route used.
 - **Event-based schedules** (`src/services/otavSchedule.js`): the REST API cannot
   modify scheduler events, and playlist creation needs a folder-based schedule. So
-  when a channel has `schedule_path` + `playlist_dir` + `playlist_template` set,
-  the push instead: byte-copies the operator's empty `.xpls` template to
+  when a channel has `playlist_dir` + `playlist_template` set — plus a schedule to
+  edit, taken from `schedule_path` or, when that's blank, from whatever
+  `GET /scheduler` says that instance has open — the push instead: byte-copies the operator's empty `.xpls` template to
   `<playlist_dir>/<day name>.xpls` (the proprietary format is never parsed),
   upserts **only** that channel-day's event in the schedule JSON — every hand-made
   event is preserved, and the original is backed up once to `<schedule>.bak` —
   then opens the playlist by path over REST and fills it. Re-pushing a day updates
-  the same event and replaces the same playlist's items. All three paths must be
+  the same event and replaces the same playlist's items. The paths must be
   reachable from the machine running this app **at the same path OTAV sees**, so
-  the schedule and playlist folder have to live on the shared volume.
+  the schedule and playlist folder have to live on the shared volume — the "probe"
+  button reports, per channel, whether this machine can actually see and write
+  them.
   `GET /api/otav/diagnose/:channelId?date=…` (the "probe" button on the Channels
   table) shows what a given instance actually supports; add `&probe_create=1`
   ("probe+", writes) to try every candidate creation route against it and see
