@@ -22,6 +22,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Point ingestion at the fake ffprobe BEFORE importing app modules.
 process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe');
+// CRITICAL: run against a throwaway DB, never the operator's live schedule at
+// data/scheduler.sqlite. Must be set before importing src/db.js (which opens it).
+process.env.SCHEDULER_DB = process.env.SCHEDULER_DB
+  || join(mkdtempSync(join(tmpdir(), 'otav-db-')), 'test.sqlite');
 
 const { db, initSchema } = await import('../src/db.js');
 const { router: channels } = await import('../src/routes/channels.js');

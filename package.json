@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node scripts/seed.js",
-    "test": "rm -f data/scheduler.sqlite* && node --test --experimental-test-coverage 'test/*.test.mjs'",
-    "test:plain": "rm -f data/scheduler.sqlite* && node --test 'test/*.test.mjs'",
+    "test": "SCHEDULER_DB=\"${TMPDIR:-/tmp}/otav-test.sqlite\" bash -c 'rm -f \"$SCHEDULER_DB\"* && node --test --experimental-test-coverage test/*.test.mjs'",
+    "test:plain": "SCHEDULER_DB=\"${TMPDIR:-/tmp}/otav-test.sqlite\" bash -c 'rm -f \"$SCHEDULER_DB\"* && node --test test/*.test.mjs'",
     "setup": "bash setup.sh",
     "pack": "bash pack.sh"
   },

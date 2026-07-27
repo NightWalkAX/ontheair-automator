@@ -14,9 +14,12 @@ import { mkdirSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
-const DB_PATH = join(DATA_DIR, 'scheduler.sqlite');
+// SCHEDULER_DB lets tests (and USB/alternate deployments) point at a throwaway
+// database instead of the live one. Tests MUST set it so a run never touches
+// data/scheduler.sqlite — the operator's real schedule lives there.
+const DB_PATH = process.env.SCHEDULER_DB || join(DATA_DIR, 'scheduler.sqlite');
 
-mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 
