@@ -28,6 +28,12 @@ import {
   accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { localizePath as loc } from '../config.js';
+
+// All paths in this module are CANONICAL (the OTAV Mac's view) — that's what
+// goes into the schedule JSON and the push report. Only the filesystem calls
+// go through loc(), so the same code works on a machine that mounts the share
+// elsewhere (config.pathMap).
 
 /** Events this app owns are tagged in their display name so upserts are safe. */
 const EVENT_TAG = 'ontheair-automator';
@@ -43,8 +49,8 @@ function isOurs(ev, displayName) {
 }
 
 export function readSchedule(schedulePath) {
-  if (!existsSync(schedulePath)) return { version: '2.0', events: [] };
-  const raw = readFileSync(schedulePath, 'utf8').trim();
+  if (!existsSync(loc(schedulePath))) return { version: '2.0', events: [] };
+  const raw = readFileSync(loc(schedulePath), 'utf8').trim();
   if (!raw) return { version: '2.0', events: [] };
   const doc = JSON.parse(raw);
   if (!Array.isArray(doc.events)) doc.events = [];
@@ -53,12 +59,13 @@ export function readSchedule(schedulePath) {
 
 /** Write via temp file + rename so OTAV never observes a half-written schedule. */
 export function writeSchedule(schedulePath, doc) {
-  const tmp = `${schedulePath}.tmp-${process.pid}`;
+  const local = loc(schedulePath);
+  const tmp = `${local}.tmp-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
-  if (existsSync(schedulePath) && !existsSync(`${schedulePath}.bak`)) {
-    copyFileSync(schedulePath, `${schedulePath}.bak`); // one pristine copy, kept forever
+  if (existsSync(local) && !existsSync(`${local}.bak`)) {
+    copyFileSync(local, `${local}.bak`); // one pristine copy, kept forever
   }
-  renameSync(tmp, schedulePath);
+  renameSync(tmp, local);
 }
 
 /**
@@ -117,21 +124,21 @@ export function prepareDaySchedule(channel, {
     throw new Error(`"${schedulePath}" is not a JSON event schedule — a folder-based schedule needs no file editing`);
   }
 
-  if (!existsSync(template)) {
+  if (!existsSync(loc(template))) {
     throw new Error(`playlist template not found at "${template}" — save an empty playlist from OTAV there`);
   }
-  if (!existsSync(dirname(schedulePath))) {
+  if (!existsSync(loc(dirname(schedulePath)))) {
     throw new Error(`schedule folder not reachable: "${dirname(schedulePath)}" (is the share mounted?)`);
   }
-  if (!existsSync(playlistDir)) mkdirSync(playlistDir, { recursive: true });
+  if (!existsSync(loc(playlistDir))) mkdirSync(loc(playlistDir), { recursive: true });
 
   const playlistPath = join(playlistDir, `${playlistName}.xpls`);
-  const playlistCreated = !existsSync(playlistPath);
+  const playlistCreated = !existsSync(loc(playlistPath));
   if (playlistCreated) {
-    copyFileSync(template, playlistPath); // byte copy: format untouched
+    copyFileSync(loc(template), loc(playlistPath)); // byte copy: format untouched
     // OTAV edits this file as a different user over the share; a template copied
     // with restrictive permissions would open read-only there.
-    try { chmodSync(playlistPath, 0o666); } catch { /* share may not support it */ }
+    try { chmodSync(loc(playlistPath), 0o666); } catch { /* share may not support it */ }
   }
 
   const displayName = eventDisplayName(channel.channel_name ?? channel.name, targetDate);
@@ -149,7 +156,7 @@ export function prepareDaySchedule(channel, {
  */
 export function inspectPaths(channel, reportedSchedulePath) {
   const schedulePath = channel.schedule_path || reportedSchedulePath || null;
-  const canWrite = (p) => { try { accessSync(p, constants.W_OK); return true; } catch { return false; } };
+  const canWrite = (p) => { try { accessSync(loc(p), constants.W_OK); return true; } catch { return false; } };
 
   const playlistDir = channel.playlist_dir || (schedulePath ? dirname(schedulePath) : null);
   const out = {
@@ -160,7 +167,7 @@ export function inspectPaths(channel, reportedSchedulePath) {
     playlist_template: channel.playlist_template ?? null,
   };
   if (schedulePath) {
-    out.schedule_exists = existsSync(schedulePath);
+    out.schedule_exists = existsSync(loc(schedulePath));
     out.schedule_writable = out.schedule_exists ? canWrite(schedulePath) : canWrite(dirname(schedulePath));
     out.schedule_is_json = /\.json$/i.test(schedulePath);
     if (out.schedule_exists) {
@@ -174,9 +181,9 @@ export function inspectPaths(channel, reportedSchedulePath) {
     }
   }
   if (playlistDir) {
-    out.playlist_dir_exists = existsSync(playlistDir);
+    out.playlist_dir_exists = existsSync(loc(playlistDir));
     out.playlist_dir_writable = out.playlist_dir_exists && canWrite(playlistDir);
   }
-  if (channel.playlist_template) out.template_exists = existsSync(channel.playlist_template);
+  if (channel.playlist_template) out.template_exists = existsSync(loc(channel.playlist_template));
   return out;
 }

@@ -13,6 +13,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { localizePath } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,10 @@ const execFileAsync = promisify(execFile);
  */
 export function isMounted(mountPoint) {
   try {
-    return existsSync(mountPoint) && readdirSync(mountPoint).length > 0;
+    // config.pathMap lets a non-Mac machine satisfy this check through its own
+    // mount of the same share (e.g. gvfs) without anything at the Mac path.
+    const local = localizePath(mountPoint);
+    return existsSync(local) && readdirSync(local).length > 0;
   } catch {
     return false;
   }

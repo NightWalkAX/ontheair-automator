@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
 import { join, extname, basename, dirname } from 'node:path';
 import { db, withTx } from '../db.js';
-import { loadConfig } from '../config.js';
+import { loadConfig, localizePath, delocalizePath } from '../config.js';
 import { parseEpisode, encodeChapter } from './episodeParse.js';
 
 const execFileAsync = promisify(execFile);
@@ -229,14 +229,18 @@ export async function scanMediaRoot(mediaRoot) {
   const typeIsFiller = showType?.is_filler ? 1 : 0;
   const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
 
-  const files = await collectVideoFiles(mediaRoot.path);
+  // Walk the tree via the LOCAL path (config.pathMap), but store every
+  // file_path in canonical (OTAV Mac) form — that string is what gets pushed
+  // as the clip url, so it must be valid on the playout Mac, not here.
+  const files = await collectVideoFiles(localizePath(mediaRoot.path));
   let ingested = 0;
   const errors = [];
   const subjects = new Set();
 
-  for (const file of files) {
+  for (const localFile of files) {
+    const file = delocalizePath(localFile);
     try {
-      const duration = await probeDuration(file);
+      const duration = await probeDuration(localFile);
       if (duration == null) {
         errors.push({ file, error: 'no duration from ffprobe' });
         continue;
@@ -245,7 +249,7 @@ export async function scanMediaRoot(mediaRoot) {
       // "Filler(s)" folder — any length (the operator explicitly organizes these
       // as fillers, so no duration cap).
       const isFiller = typeIsFiller || (looksLikeFillerFolder(file) ? 1 : 0);
-      const info = await stat(file);
+      const info = await stat(localFile);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
       const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file);
       if (subject) subjects.add(subject);

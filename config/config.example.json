@@ -18,5 +18,6 @@
   "filler": {
     "maxUnderrunSeconds": 5,
     "maxOverrunSeconds": 0
-  }
+  },
+  "pathMap": {}
 }
