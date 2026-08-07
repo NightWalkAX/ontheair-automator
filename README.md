@@ -97,6 +97,7 @@ some PUT/DELETE CRUD branches.
 | `ffprobePath` | Path to `ffprobe` (default `ffprobe` on `PATH`). |
 | `cron.weeklyDraft` | Cron expr for auto draft generation (default Thu 06:00). |
 | `filler.maxUnderrunSeconds` / `maxOverrunSeconds` | Fit tolerance (default −5s / 0s). |
+| `pathMap` | Optional `{canonical-prefix: local-prefix}` map for running the app on a machine that mounts the media share somewhere other than the Mac paths stored in the DB (e.g. Linux + gvfs: `{"/Volumes/Public": "/run/user/1000/gvfs/smb-share:server=…,share=public"}`). Local filesystem access is translated; everything stored in SQLite or sent to OTAV stays canonical. |
 
 > **Security note:** SMB and OTAV credentials are stored in plaintext in
 > `config/config.json` / the SQLite file. This is an accepted tradeoff for a

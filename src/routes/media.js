@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { db } from '../db.js';
-import { loadConfig } from '../config.js';
+import { loadConfig, localizePath } from '../config.js';
 import { mountShare, isMounted } from '../services/smbMount.js';
 import { scanAll, scanMediaRoot, cloneScannedResources } from '../services/ingestion.js';
 
@@ -47,7 +47,9 @@ router.get('/browse', async (req, res) => {
     return res.status(400).json({ error: 'path is outside the configured mount point' });
   }
   try {
-    const entries = await readdir(abs, { withFileTypes: true });
+    // List via the local view of the path (config.pathMap); the paths returned
+    // to the UI (and later stored as MediaRoots) stay canonical.
+    const entries = await readdir(localizePath(abs), { withFileTypes: true });
     const folders = [];
     let fileCount = 0;
     for (const e of entries) {
