@@ -32,6 +32,29 @@ import { db } from '../db.js';
 import { inspectPaths, prepareDaySchedule } from './otavSchedule.js';
 import { EPISODE_NO_CTE, withLabel } from './labels.js';
 
+/**
+ * Node's fetch throws a bare "fetch failed" TypeError and hides the real
+ * network error (ECONNREFUSED, EHOSTUNREACH, ...) in err.cause. Surface it,
+ * name the target, and say which knob to check — an operator reading the push
+ * report can't act on "fetch failed".
+ */
+function describeFetchError(err, base) {
+  const cause = err?.cause ?? err;
+  const code = cause?.code || (err?.name === 'TimeoutError' ? 'ETIMEDOUT' : '');
+  const hints = {
+    ECONNREFUSED: 'connection refused — nothing is listening there (is OTAV running, and is its REST API enabled on that port?)',
+    EHOSTUNREACH: 'host unreachable — wrong IP, or this machine is not on that network',
+    ENETUNREACH: 'network unreachable from this machine',
+    ETIMEDOUT: 'timed out — host silent (firewall, wrong IP, or Mac asleep?)',
+    ENOTFOUND: 'hostname not found (DNS)',
+    ECONNRESET: 'connection reset by the host',
+  };
+  const detail = hints[code] || cause?.message || String(err);
+  return `cannot reach OTAV at ${base}: ${detail}${code ? ` [${code}]` : ''}. Check the channel's api_ip/api_port.`;
+}
+
+const FETCH_TIMEOUT_MS = 10_000;
+
 class OtavClient {
   constructor(channel) {
     this.channel = channel;
@@ -48,11 +71,17 @@ class OtavClient {
   async authorize() {
     const { api_username, api_password } = this.channel;
     if (!api_username) return; // instance doesn't require auth
-    const res = await fetch(this.base + '/authorize', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: api_username, password: api_password }),
-    });
+    let res;
+    try {
+      res = await fetch(this.base + '/authorize', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: api_username, password: api_password }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new Error(`OTAV authorize for "${this.channel.name}": ${describeFetchError(err, this.base)}`);
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.token) {
       throw new Error(`OTAV authorize failed for "${this.channel.name}": ${data.error || res.status}`);
@@ -62,11 +91,19 @@ class OtavClient {
 
   /** Request with one automatic re-auth + retry on 401. */
   async request(method, path, body, _retried = false) {
-    const res = await fetch(this.url(path), {
-      method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(this.url(path), {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (err) {
+      const wrapped = new Error(`OTAV ${method} ${path}: ${describeFetchError(err, this.base)}`);
+      wrapped.fatal = true; // a dead host won't come back mid-push; don't cascade fallbacks
+      throw wrapped;
+    }
     if (res.status === 401 && !_retried) {
       await this.authorize();
       return this.request(method, path, body, true);
