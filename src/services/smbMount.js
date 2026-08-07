@@ -42,8 +42,6 @@ export async function mountShare(smb) {
     return { mounted: true, alreadyMounted: true };
   }
 
-  mkdirSync(mountPoint, { recursive: true });
-
   // //user:password@host/share  — credentials are URL-encoded to survive
   // characters like @ or / inside the password.
   const cred =
@@ -52,10 +50,25 @@ export async function mountShare(smb) {
       : '';
   const url = `//${cred}${host}/${share}`;
 
+  // Platform check BEFORE touching the filesystem: on Linux, mkdir'ing a
+  // root-owned path like /Volumes throws a bare EACCES that hides this message.
   if (process.platform !== 'darwin') {
     throw new Error(
       `mount_smbfs is macOS-only; current platform is "${process.platform}". ` +
-        'On the deployment Mac this will mount ' + url + ' at ' + mountPoint + '.'
+        `Mount the share manually (e.g. sudo mount -t cifs //${host}/<share> ${mountPoint} ` +
+        `-o username=${username || 'guest'}) so "${mountPoint}" is populated, then retry — ` +
+        'an already-mounted path is used as-is. On the deployment Mac this will mount ' +
+        url + ' at ' + mountPoint + '.'
+    );
+  }
+
+  try {
+    mkdirSync(mountPoint, { recursive: true });
+  } catch (err) {
+    throw new Error(
+      `cannot create mount point "${mountPoint}": ${err.code || err.message}. ` +
+        'Create it manually (it may need admin rights) or point smb.mountPoint in ' +
+        'config/config.json at a writable path.'
     );
   }
 
