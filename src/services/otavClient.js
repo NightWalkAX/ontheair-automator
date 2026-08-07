@@ -58,7 +58,19 @@ const FETCH_TIMEOUT_MS = 10_000;
 class OtavClient {
   constructor(channel) {
     this.channel = channel;
-    this.base = `http://${channel.api_ip}:${channel.api_port}`;
+    // Operators paste the address in every shape — "192.168.75.5",
+    // "http://192.168.75.5", "192.168.75.5:8000/", … Normalize instead of
+    // producing "http://http://…" (which fails DNS with ENOTFOUND).
+    let host = String(channel.api_ip || '').trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/[/?#].*$/, '');
+    let port = channel.api_port;
+    const withPort = host.match(/^(.+):(\d+)$/);
+    if (withPort) {
+      host = withPort[1];
+      port = port || Number(withPort[2]);
+    }
+    this.base = `http://${host}:${port}`;
     this.token = null;
   }
 
