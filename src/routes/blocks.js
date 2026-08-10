@@ -3,15 +3,15 @@
 
 import { Router } from 'express';
 import { db, withTx } from '../db.js';
-import { loadConfig } from '../config.js';
-import { blockDurationSeconds, generateWeek, populateBlock } from '../services/scheduling.js';
+import { blockDurationSeconds, fitTolerance, fitsTolerance, generateWeek, populateBlock } from '../services/scheduling.js';
 import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
 // ---- Duration validation (shared truth for UI + server) --------------------
-// A block "fits" when the total item duration does not exceed the block length
-// (0s overrun ceiling) and is not more than maxUnderrun seconds short.
+// A block "fits" when it is no more than maxUnderrun seconds short of the block
+// length and no more than maxOverrun seconds past it — exact is still the
+// target, but a small overrun is preferred over a bigger hole (see fitTolerance).
 function validateBlock(blockId) {
   const block = db.prepare(`
     SELECT sb.*,
@@ -46,11 +46,11 @@ function validateBlock(blockId) {
   const blockSeconds = blockDurationSeconds(block.start_time, block.end_time);
   const totalSeconds = items.reduce((s, i) => s + i.duration, 0);
   const diff = blockSeconds - totalSeconds; // >0 underrun, <0 overrun
-  const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
+  const { maxUnderrun, maxOverrun } = fitTolerance();
 
   const overrun = diff < 0;
-  const fits = !overrun && diff <= maxUnderrun;
-  return { block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, fits };
+  const fits = fitsTolerance(diff, { maxUnderrun, maxOverrun });
+  return { block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, maxOverrun, fits };
 }
 
 // Record that a block's items aired: write PlayHistory (drives movie cooldown +
@@ -619,7 +619,7 @@ router.post('/:id/approve', (req, res) => {
   if (!v.fits) {
     return res.status(409).json({
       error: 'block is outside the filler tolerance and cannot be approved',
-      diff: v.diff, overrun: v.overrun, maxUnderrun: v.maxUnderrun,
+      diff: v.diff, overrun: v.overrun, maxUnderrun: v.maxUnderrun, maxOverrun: v.maxOverrun,
     });
   }
   if (v.block.status !== 'approved') recordBlockPlays(v); // record only on first approval

@@ -646,9 +646,30 @@ test('unbounded filler fill reaches near-exact (repeats allowed)', () => {
   // With the seeded coarse filler pool, filling 1000s to within tolerance is only
   // possible if fillers may repeat (subset-sum with each filler once tops out far short).
   const fit = fitFillers(chId, 1000);
-  assert.ok(fit.total >= 995 && fit.total <= 1000, `filled ${fit.total}/1000 within 0..5s underrun`);
+  assert.ok(fit.total >= 995 && fit.total <= 1005, `filled ${fit.total}/1000 within -5..+5s tolerance`);
+  assert.ok(fit.fits, 'fill reported as within tolerance');
   assert.ok(fit.items.length > new Set(fit.items.map((i) => i.id)).size || fit.items.length >= 9,
     'fill reused fillers (or drew the whole pool) to close the gap');
+});
+
+test('a hole bigger than maxUnderrun is closed by overrunning instead', () => {
+  // Pool of one 7s clip: reachable totals are 7, 14, 21… For a 13s gap the best
+  // under-fill is 7 (6s short, past the 5s underrun limit), so the packer must
+  // go 1s OVER (14) rather than leave the hole — and report that as fitting.
+  const ch = db.prepare("INSERT INTO ChannelType (name, api_ip, api_port) VALUES ('Coarse Pool', '127.0.0.1', 1) RETURNING id").get().id;
+  db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+              VALUES ('seven', '/tmp/seven.mov', 7, 1, 1, ?)`).run(ch);
+
+  const fit = fitFillers(ch, 13);
+  assert.equal(fit.total, 14, 'overran by 1s instead of leaving a 6s hole');
+  assert.ok(fit.fits, 'a within-tolerance overrun counts as fitting');
+
+  // An under-fill that already lands inside the underrun window is left alone.
+  const under = fitFillers(ch, 10);
+  assert.equal(under.total, 7, 'a 3s hole is inside tolerance — no overrun');
+  assert.ok(under.fits);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
 
 let ch2Id;

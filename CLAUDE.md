@@ -42,7 +42,7 @@ Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable exte
 - **Lessons/Series:** next resource is `chapter = last_played_chapter + 1` per subject, from `PlayHistory`.
 - **Movies:** random selection with cooldown = `total available movies / 2` days.
 - **TV episodes:** weekday 18:00 slots act as movie fillers (cooldown applies); Sunday slots explicitly pick the latest-added episode.
-- **Filler fitting:** stack `is_filler = true` resources before/between/after main content until the block reaches as close to exact duration as possible — 0s overrun is the target, -5s is the max allowed underrun. Any manual edit that violates this tolerance must block approval in the UI until fixed.
+- **Filler fitting:** stack `is_filler = true` resources before/between/after main content until the block reaches as close to exact duration as possible. Exact is the target; the block may end up to `filler.maxUnderrunSeconds` (default 5s) short, and when the filler pool is too coarse to land inside that window the fill goes up to `filler.maxOverrunSeconds` (default 5s) PAST the block end instead of leaving a bigger hole. Tolerance is one shared helper — `fitTolerance()` / `fitsTolerance(diff)` in `src/services/scheduling.js`, mirrored client-side in `renderValidation()`. Any manual edit that violates this tolerance must block approval in the UI until fixed.
 
 ## OnTheAir Video REST API (integration target)
 
