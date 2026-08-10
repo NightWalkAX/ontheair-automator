@@ -187,35 +187,39 @@
         <!-- Left: the resource library (filter, search, stride-select, drag out) -->
         <section class="be-pane" id="beLib">
           <div class="be-head">
-            <strong>Biblioteca</strong>
+            <strong>Library</strong>
             <span id="libCount" class="muted"></span>
           </div>
+          <p class="pane-hint">Drag a clip into the block, or click <span class="kbd">→</span> to append it.</p>
           <div class="be-filters">
-            <input id="libSearch" type="search" placeholder="Buscar clip o show…" />
-            <select id="libType" title="Tipo de show"></select>
-            <select id="libSubject" title="Show"></select>
+            <input id="libSearch" type="search" placeholder="Search clips or shows…" aria-label="Search the library" />
+            <select id="libType" aria-label="Filter by show type"></select>
+            <select id="libSubject" aria-label="Filter by show"></select>
           </div>
           <div class="be-stride">
-            <span class="muted">Tomar 1 de cada</span>
-            <input id="libStrideN" type="number" min="1" step="1" value="2" title="Paso" />
-            <span class="muted">desde</span>
-            <input id="libStrideOff" type="number" min="1" step="1" value="1" title="Posición inicial" />
-            <button id="btnLibStride" class="mini ghost" type="button">Seleccionar</button>
-            <button id="btnLibAll" class="mini ghost" type="button">Todos</button>
-            <button id="btnLibNone" class="mini ghost" type="button">Ninguno</button>
+            <span class="muted">Pick every</span>
+            <input id="libStrideN" type="number" min="1" step="1" value="2" aria-label="Take one clip every N" />
+            <span class="muted">starting at</span>
+            <input id="libStrideOff" type="number" min="1" step="1" value="1" aria-label="Start at position" />
+            <button id="btnLibStride" class="mini ghost" type="button">Select</button>
+            <span class="be-stride-sep"></span>
+            <button id="btnLibAll" class="mini ghost" type="button">All</button>
+            <button id="btnLibNone" class="mini ghost" type="button">None</button>
           </div>
+          <p class="pane-hint">Two shows interleaved in one folder? Filter to that folder, then pick every 2nd.</p>
           <div class="be-scroll"><ol id="libList" class="items compact"></ol></div>
           <div class="be-foot">
-            <button id="btnAddSelected" class="ghost" type="button">➕ Añadir selección</button>
+            <button id="btnAddSelected" class="ghost" type="button">Add selected to block</button>
           </div>
         </section>
 
         <!-- Right: the block being built -->
         <section class="be-pane" id="beBlock">
           <div class="be-head">
-            <strong>Bloque</strong>
+            <strong>Block</strong>
             <span id="blockCount" class="muted"></span>
           </div>
+          <p class="pane-hint">Drag rows to reorder. Times on the left are when each clip goes on air.</p>
           <div class="be-scroll"><ol id="itemList" class="items"></ol></div>
         </section>
       </div>
@@ -257,10 +261,11 @@
 
   <!-- Block template editor modal -->
   <div id="templateModal" class="modal hidden">
-    <div class="modal-body">
+    <div class="modal-body wide">
       <button id="tplmClose" class="close" aria-label="Close">×</button>
       <h3 id="tplmTitle">Block template</h3>
       <div class="modal-scroll">
+        <div class="tpl-grid">
         <div class="stack">
           <div class="field">
             <span class="form-title">Channels <small class="muted">(check every channel this block airs on; each picks its own content)</small></span>
@@ -276,14 +281,35 @@
             <div id="tplmSlots"></div>
             <button id="btnAddSlot" class="mini ghost" type="button">+ add airing</button>
           </div>
-          <div class="field">
-            <span class="form-title">Series <small class="muted">(check to include; drag to set the cycle order)</small></span>
-            <ol id="tplmSeries" class="items"></ol>
-          </div>
           <label class="field">Max episodes per show, per block
             <input id="tplmMaxPerShow" type="number" min="0" step="1" placeholder="0 = unlimited" style="max-width:180px" />
             <small class="muted">Caps how many times each show repeats to fill a block. Blank/0 = fill with as many as fit.</small>
           </label>
+        </div>
+
+        <div class="stack">
+          <div class="field">
+            <span class="form-title">Series <small class="muted">(drag a show into the block, then drag to set the play order)</small></span>
+            <div class="dual-pane" id="tplSeriesPanes">
+              <section class="dp-pane">
+                <div class="dp-head">
+                  <strong>Available</strong>
+                  <span id="tplAvailCount" class="muted"></span>
+                </div>
+                <input id="tplSeriesSearch" type="search" placeholder="Search series…" aria-label="Search available series" />
+                <div class="dp-scroll"><ol id="tplmAvail" class="items compact"></ol></div>
+              </section>
+              <section class="dp-pane">
+                <div class="dp-head">
+                  <strong>In this block</strong>
+                  <span id="tplChosenCount" class="muted"></span>
+                </div>
+                <p class="pane-hint">Play order — the top show airs first.</p>
+                <div class="dp-scroll"><ol id="tplmChosen" class="items compact"></ol></div>
+              </section>
+            </div>
+          </div>
+        </div>
         </div>
       </div>
       <div id="tplmValidation" class="validation"></div>

@@ -398,6 +398,9 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   animation: fade .18s var(--ease);
 }
 .modal.hidden { display: none; }
+/* The generic confirm/report dialog is opened FROM the other modals, so it must
+   sit above them — all .modal share one z-index, and it loses on DOM order. */
+#dialog { z-index: 70; }
 .modal-body {
   background: var(--panel); border-radius: var(--radius-lg); padding: 22px;
   width: min(580px, 94vw); max-height: 90vh;
@@ -430,7 +433,12 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 }
 .items li .drag { cursor: grab; color: var(--muted); font-size: 15px; user-select: none; }
 .items li .idx { font-size: 11px; font-weight: 700; color: var(--muted); min-width: 20px; }
-.items li .grow { flex: 1; font-size: 13px; }
+/* min-width:0 lets a long label shrink instead of overflowing and covering the
+   row's buttons (they became unclickable in the narrow two-pane layout). */
+.items li .grow { flex: 1; min-width: 0; font-size: 13px; }
+.items li button { flex: 0 0 auto; }
+/* Compact rows are single-line: truncate, full text stays in the tooltip. */
+.items.compact li .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .items li .dur { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ink-soft); }
 .items li.filler { border-left: 3px solid var(--warn); }
 .items li.filler .grow::before {
@@ -605,10 +613,52 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .slot-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .slot-row .idx { min-width: 58px; }
 .slot-row input[type="time"] { width: auto; min-width: 96px; }
-.slot-row .dur { font-size: 12.5px; color: var(--muted); margin-left: 4px; }
+.slot-row .dur { font-size: 12.5px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.slot-row { flex-wrap: wrap; }
 .slot-row.invalid input[type="time"] { border-color: var(--bad); }
 .slot-row.invalid .dur { color: var(--bad); font-weight: 600; }
 .series-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* ---- Block template editor layout ----------------------------------------- */
+/* Settings left, series picker right, so the wide modal isn't mostly dead space. */
+.tpl-grid { display: grid; grid-template-columns: minmax(0, 370px) minmax(0, 1fr); gap: 22px; align-items: start; }
+.tpl-grid > .stack { margin-top: 0; }
+/* `label` sets align-items:center app-wide; in a column field that centers the
+   input. Harmless at 580px, glaring once this modal went wide. */
+#templateModal .field { align-items: flex-start; }
+#templateModal .field > input:not([type="checkbox"]) { width: 100%; }
+
+/* ---- Two-pane series picker (block template editor) ------------------------ */
+.dual-pane { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.dp-pane {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); padding: 9px;
+}
+.dp-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.dp-head strong { font-size: 12.5px; }
+.dp-head .muted { font-size: 11.5px; margin-left: auto; }
+.dp-pane input[type="search"] { font-size: 12.5px; padding: 5px 7px; margin-bottom: 6px; }
+.dp-scroll { overflow-y: auto; max-height: 210px; min-height: 120px; margin: 0 -2px; padding: 0 2px; }
+/* The drop target must read as one even while empty. */
+.dp-empty {
+  border-style: dashed !important; justify-content: center; text-align: center;
+  font-size: 12px; padding: 18px 10px !important;
+}
+#tplmChosen li.drag-over, #tplmAvail li.drag-over { border-color: var(--accent); box-shadow: var(--ring); }
+
+/* Short instruction under a pane header — explains the drag affordance. */
+.pane-hint { font-size: 11.5px; color: var(--muted); margin: 0 0 8px; line-height: 1.45; }
+.kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel);
+}
+.be-stride-sep { flex: 1 1 auto; }
+
+@media (max-width: 860px) {
+  .dual-pane { grid-template-columns: minmax(0, 1fr); }
+  .tpl-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+}
 .items.compact li { padding: 4px 8px; }
 #seriesChapters { margin-top: 10px; max-height: 200px; overflow-y: auto; }
 #seriesList .chk, #tplmSeries .chk { margin-left: 6px; }

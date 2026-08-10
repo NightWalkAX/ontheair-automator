@@ -309,7 +309,7 @@ const libSel = new Set();   // selected resource ids
 let libAnchorId = null;     // last-clicked row — anchor for shift-range selection
 let blkDrag = null;         // { kind: 'lib', ids: [...] } | { kind: 'item', idx }
 
-const TYPE_LABELS = { movies: 'Películas', documentaries: 'Documentales', tv_shows: 'Series TV', lessons: 'Clases', fillers: 'Fillers' };
+const TYPE_LABELS = { movies: 'Movies', documentaries: 'Documentaries', tv_shows: 'TV shows', lessons: 'Lessons', fillers: 'Fillers' };
 const LIB_RENDER_CAP = 300;   // rows drawn at once; filtering/stride still see all
 const BULK_ADD_WARN = 25;     // ask before dumping this many clips into a block
 
@@ -551,7 +551,7 @@ function renderLibFilters() {
   const typeSel = $('#libType');
   const types = [...new Set(allResources.map((r) => r.show_type_code).filter(Boolean))].sort();
   typeSel.innerHTML = '';
-  typeSel.append(el('option', { value: '', textContent: 'Todos los tipos' }));
+  typeSel.append(el('option', { value: '', textContent: 'All show types' }));
   for (const c of types) typeSel.append(el('option', { value: c, textContent: TYPE_LABELS[c] || c, selected: c === libType }));
 
   const subjSel = $('#libSubject');
@@ -559,7 +559,7 @@ function renderLibFilters() {
     .filter((r) => !libType || r.show_type_code === libType)
     .map((r) => r.subject).filter(Boolean))].sort();
   subjSel.innerHTML = '';
-  subjSel.append(el('option', { value: '', textContent: 'Todos los shows' }));
+  subjSel.append(el('option', { value: '', textContent: 'All shows' }));
   for (const s of subjects) subjSel.append(el('option', { value: s, textContent: s, selected: s === libSubject }));
   if (libSubject && !subjects.includes(libSubject)) { libSubject = ''; subjSel.value = ''; }
 }
@@ -570,10 +570,10 @@ function renderLibrary() {
   const rows = libFiltered();
   const list = $('#libList');
   list.innerHTML = '';
-  $('#libCount').textContent = `${rows.length} clip(s)${libSel.size ? ` · ${libSel.size} seleccionado(s)` : ''}`;
+  $('#libCount').textContent = `${rows.length} clip(s)${libSel.size ? ` · ${libSel.size} selected` : ''}`;
 
   if (!rows.length) {
-    list.append(el('li', { className: 'muted', textContent: 'Nada coincide con el filtro.' }));
+    list.append(el('li', { className: 'muted', textContent: 'Nothing matches this filter.' }));
     return;
   }
   // A full channel catalogue runs to thousands of clips and this re-renders on
@@ -582,8 +582,8 @@ function renderLibrary() {
   shown.forEach((r, idx) => {
     const li = el('li', { className: r.is_filler ? 'filler' : '', draggable: true });
     li.dataset.id = r.id;
-    li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Arrastra al bloque' }));
-    const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: libSel.has(r.id), title: 'Selecciona — Shift-clic para un rango' });
+    li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Drag into the block' }));
+    const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: libSel.has(r.id), title: 'Select — Shift-click for a range' });
     cb.addEventListener('click', (e) => {
       if (e.shiftKey && libAnchorId != null) {
         const order = rows.map((x) => x.id);
@@ -600,7 +600,7 @@ function renderLibrary() {
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
     li.append(el('span', { className: 'grow', textContent: r.label || r.name, title: r.name }));
     li.append(el('span', { className: 'dur', textContent: fmt(r.duration) }));
-    const add = el('button', { className: 'mini ghost', textContent: '→', title: 'Añadir al final del bloque' });
+    const add = el('button', { className: 'mini ghost', textContent: '→', title: 'Append to the block' });
     add.onclick = () => { currentItems.push(resourceToItem(r)); renderItems(); };
     li.append(add);
 
@@ -616,7 +616,7 @@ function renderLibrary() {
   });
   if (rows.length > shown.length) {
     list.append(el('li', { className: 'muted', textContent:
-      `Mostrando ${shown.length} de ${rows.length} — afina el filtro. La selección y el paso se aplican a los ${rows.length}.` }));
+      `Showing ${shown.length} of ${rows.length} — narrow the filter. Selection and stride still apply to all ${rows.length}.` }));
   }
 }
 
@@ -628,9 +628,9 @@ async function addResourcesToBlock(ids, idx) {
   if (!rows.length) return;
   if (rows.length >= BULK_ADD_WARN) {
     const secs = rows.reduce((s, r) => s + r.duration, 0);
-    if (!await confirmDialog('Añadir al bloque',
-      `Vas a añadir ${rows.length} clips (${fmt(secs)}) a un bloque de ${fmt(currentBlock.blockSeconds)}. ¿Continuar?`,
-      { confirmLabel: `Añadir ${rows.length}` })) return;
+    if (!await confirmDialog('Add to block',
+      `This adds ${rows.length} clips (${fmt(secs)}) to a ${fmt(currentBlock.blockSeconds)} block. Continue?`,
+      { confirmLabel: `Add ${rows.length}` })) return;
   }
   const items = rows.map(resourceToItem);
   if (idx == null || idx >= currentItems.length) currentItems.push(...items);
@@ -655,12 +655,12 @@ $('#btnLibStride').addEventListener('click', () => {
   libSel.clear();
   for (let i = off - 1; i < rows.length; i += n) libSel.add(rows[i].id);
   renderLibrary();
-  toast(`${libSel.size} clip(s) seleccionados (1 de cada ${n} desde ${off})`, 'ok', 'Selección');
+  toast(`Selected ${libSel.size} clip(s) — every ${n} starting at ${off}`, 'ok', 'Selection');
 });
 
 $('#btnAddSelected').addEventListener('click', () => {
   const rows = libFiltered().filter((r) => libSel.has(r.id));
-  if (!rows.length) return toast('No hay nada seleccionado', 'bad', 'Biblioteca');
+  if (!rows.length) return toast('Nothing is selected', 'bad', 'Library');
   addResourcesToBlock(rows.map((r) => r.id), null);
 });
 
@@ -2103,8 +2103,10 @@ $('#seriesModal').addEventListener('click', (e) => { if (e.target.id === 'series
 // ---- Template editor modal -------------------------------------------------
 let tplEditing = null;      // template id when editing, null when creating
 let tplSlots = [];          // [{start_time, end_time}]
-let tplSeries = [];         // [{subject, checked}] ordered
-let tplSeriesDragIdx = null;
+let tplSeries = [];         // [{subject, meta}] every active series on the channel
+let tplChosen = [];         // [subject] the ones this template cycles, in play order
+let tplSeriesSearch = '';
+let tplDrag = null;         // subject being dragged between the two panes
 let tplDirty = false;       // unsaved-changes guard for the close handlers
 
 const markTplDirty = () => { tplDirty = true; };
@@ -2136,7 +2138,7 @@ async function openTemplate(t) {
   const chBox = $('#tplmChannels'); chBox.innerHTML = '';
   for (const c of setupChannels) {
     const lbl = el('label', { className: 'chk' }, el('input', { type: 'checkbox', value: c.id, checked: selected.has(c.id) }), document.createTextNode(' ' + c.name));
-    lbl.querySelector('input').onchange = () => { markTplDirty(); loadTplSeries(tplPrimaryChannel(), tplSeries.filter((s) => s.checked).map((s) => s.subject)); };
+    lbl.querySelector('input').onchange = () => { markTplDirty(); loadTplSeries(tplPrimaryChannel(), tplChosen.slice()); };
     chBox.append(lbl);
   }
   $('#tplmName').value = t ? t.name : '';
@@ -2157,6 +2159,7 @@ async function openTemplate(t) {
   renderTplSlots();
 
   const included = (t?.series || []).map((s) => s.subject);
+  tplSeriesSearch = ''; $('#tplSeriesSearch').value = ''; tplDrag = null;
   await loadTplSeries(tplPrimaryChannel(), included);
 
   tplDirty = false;   // opening a template is not itself a change
@@ -2167,12 +2170,10 @@ async function loadTplSeries(channelId, included = []) {
   let rows = [];
   try { rows = await api.get(`/api/channels/${channelId}/series`); } catch { /* none */ }
   const active = rows.filter((r) => r.is_active);
-  // Ordered: included-in-order first, then the rest.
-  const bySubject = Object.fromEntries(active.map((r) => [r.subject, r]));
-  const ordered = [];
-  for (const subj of included) if (bySubject[subj]) { ordered.push({ subject: subj, checked: true, meta: bySubject[subj] }); delete bySubject[subj]; }
-  for (const r of active) if (bySubject[r.subject]) ordered.push({ subject: r.subject, checked: false, meta: r });
-  tplSeries = ordered;
+  tplSeries = active.map((r) => ({ subject: r.subject, meta: r }));
+  // Keep the saved play order, dropping shows that are no longer active.
+  const known = new Set(active.map((r) => r.subject));
+  tplChosen = included.filter((s) => known.has(s));
   renderTplSeries();
 }
 
@@ -2187,7 +2188,7 @@ function renderTplSlots() {
     const paint = () => {
       const min = slotMinutes(s);
       if (min == null) { row.classList.remove('invalid'); dur.textContent = ''; }
-      else if (min <= 0) { row.classList.add('invalid'); dur.textContent = 'fin debe ser mayor que inicio'; }
+      else if (min <= 0) { row.classList.add('invalid'); dur.textContent = 'end must be after start'; }
       else { row.classList.remove('invalid'); dur.textContent = fmtMinutes(min); }
     };
     start.onchange = () => { s.start_time = start.value; markTplDirty(); paint(); };
@@ -2204,55 +2205,119 @@ function renderTplSlots() {
 }
 $('#btnAddSlot').addEventListener('click', () => { tplSlots.push({ start_time: '20:00', end_time: '22:00' }); markTplDirty(); renderTplSlots(); });
 
+// The series picker is two panes: every active series on the left, the ones
+// this template cycles (in play order) on the right. Membership is which pane a
+// show sits in; order is its position on the right — no checkbox/order overload.
+const tplMeta = (subject) => tplSeries.find((s) => s.subject === subject)?.meta || {};
+
+function tplSeriesRow(subject, { chosen }) {
+  const meta = tplMeta(subject);
+  const li = el('li', { draggable: true });
+  li.dataset.subject = subject;
+  li.append(el('span', { className: 'drag', textContent: '⠿', title: chosen ? 'Drag to reorder' : 'Drag into the block' }));
+  if (chosen) li.append(el('span', { className: 'idx', textContent: String(tplChosen.indexOf(subject) + 1) }));
+  li.append(el('span', { className: 'grow', textContent: `${subject}  `, title: subject },
+    el('small', { className: 'muted', textContent: `${meta.show_type_name || '—'}${meta.is_serial ? ' · serial' : ''}` })));
+  const btn = el('button', {
+    className: chosen ? 'mini danger' : 'mini ghost', type: 'button',
+    textContent: chosen ? '✕' : '→',
+    title: chosen ? 'Remove from this block' : 'Add to this block',
+  });
+  btn.onclick = () => {
+    if (chosen) tplChosen = tplChosen.filter((x) => x !== subject);
+    else if (!tplChosen.includes(subject)) tplChosen.push(subject);
+    markTplDirty();
+    renderTplSeries();
+  };
+  li.append(btn);
+  li.addEventListener('dragstart', () => { tplDrag = subject; li.classList.add('dragging'); });
+  li.addEventListener('dragend', () => { tplDrag = null; li.classList.remove('dragging'); $$('#tplSeriesPanes li').forEach((x) => x.classList.remove('drag-over')); });
+  return li;
+}
+
 function renderTplSeries() {
-  const list = $('#tplmSeries'); list.innerHTML = '';
+  const avail = $('#tplmAvail'), chosenList = $('#tplmChosen');
+  avail.innerHTML = ''; chosenList.innerHTML = '';
+
+  // Left pane: everything not already in the block, filtered by the search box.
+  const q = tplSeriesSearch.trim().toLowerCase();
+  const available = tplSeries
+    .map((s) => s.subject)
+    .filter((s) => !tplChosen.includes(s))
+    .filter((s) => !q || s.toLowerCase().includes(q));
+
+  $('#tplAvailCount').textContent = `${available.length}`;
+  $('#tplChosenCount').textContent = `${tplChosen.length}`;
+
   if (!tplSeries.length) {
     const li = el('li', { className: 'muted' });
-    li.append(el('div', { textContent: 'No hay series activas en este canal.' }));
+    li.append(el('div', { textContent: 'No active series on this channel yet.' }));
     const actions = el('div', { className: 'series-empty-actions' });
-    const detect = el('button', { className: 'mini primary', type: 'button', textContent: 'Detectar del catálogo' });
+    const detect = el('button', { className: 'mini primary', type: 'button', textContent: 'Detect from catalog' });
     detect.onclick = (e) => withBusy(e.currentTarget, async () => {
       const ch = tplPrimaryChannel();
-      if (!ch) return toast('Selecciona un canal primero', 'bad', 'Series');
-      const included = tplSeries.filter((s) => s.checked).map((s) => s.subject);
+      if (!ch) return toast('Pick a channel first', 'bad', 'Series');
       const r = await api.send('POST', `/api/channels/${ch}/series/detect`);
       toast(`Detected ${r.added} new series`, 'ok');
-      await loadTplSeries(ch, included);
+      await loadTplSeries(ch, tplChosen.slice());
     });
-    const manage = el('button', { className: 'mini ghost', type: 'button', textContent: 'Abrir gestor de series' });
+    const manage = el('button', { className: 'mini ghost', type: 'button', textContent: 'Open series manager' });
     manage.onclick = async () => {
       const ch = setupChannels.find((c) => c.id === tplPrimaryChannel());
       if (!ch) return;
-      if (tplDirty && !await confirmDialog('Descartar cambios', 'Tienes cambios sin guardar en esta plantilla. ¿Salir al gestor de series?', { confirmLabel: 'Salir', danger: true })) return;
+      if (tplDirty && !await confirmDialog('Discard changes', 'This template has unsaved changes. Leave for the series manager?', { confirmLabel: 'Leave', danger: true })) return;
       $('#templateModal').classList.add('hidden');
       openSeries(ch);
     };
     actions.append(detect, manage);
     li.append(actions);
-    list.append(li);
-    return;
+    avail.append(li);
+  } else if (!available.length) {
+    avail.append(el('li', { className: 'muted', textContent: q ? 'No series match that search.' : 'Every series is already in this block.' }));
+  } else {
+    for (const s of available) avail.append(tplSeriesRow(s, { chosen: false }));
   }
-  tplSeries.forEach((s, idx) => {
-    const li = el('li', { draggable: true });
-    li.append(el('span', { className: 'drag', textContent: '⠿' }));
-    const cb = el('input', { type: 'checkbox', checked: s.checked });
-    cb.onchange = () => { s.checked = cb.checked; markTplDirty(); };
-    li.append(cb);
-    li.append(el('span', { className: 'grow', textContent: ` ${s.subject}  ` }, el('small', { className: 'muted', textContent: `${s.meta.show_type_name || '—'}${s.meta.is_serial ? ' · serial' : ''}` })));
-    li.addEventListener('dragstart', () => { tplSeriesDragIdx = idx; li.classList.add('dragging'); });
-    li.addEventListener('dragend', () => { tplSeriesDragIdx = null; li.classList.remove('dragging'); });
-    li.addEventListener('dragover', (e) => e.preventDefault());
-    li.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (tplSeriesDragIdx === null || tplSeriesDragIdx === idx) return;
-      const [m] = tplSeries.splice(tplSeriesDragIdx, 1);
-      tplSeries.splice(idx, 0, m);
-      markTplDirty();
-      renderTplSeries();
-    });
-    list.append(li);
+
+  if (!tplChosen.length) {
+    chosenList.append(el('li', { className: 'muted dp-empty', textContent: 'Drag shows here — they play in this order.' }));
+  } else {
+    for (const s of tplChosen) chosenList.append(tplSeriesRow(s, { chosen: true }));
+  }
+}
+
+// Drop onto a row: reorder within the block, or insert an incoming show there.
+function tplWireRowDrops(root, { chosen }) {
+  root.addEventListener('dragover', (e) => {
+    if (!tplDrag) return;
+    e.preventDefault();
+    const li = e.target.closest('li[data-subject]');
+    if (li) li.classList.add('drag-over');
+  });
+  root.addEventListener('dragleave', (e) => {
+    const li = e.target.closest?.('li[data-subject]');
+    if (li) li.classList.remove('drag-over');
+  });
+  root.addEventListener('drop', (e) => {
+    if (!tplDrag) return;
+    e.preventDefault();
+    const subject = tplDrag;
+    tplDrag = null;
+    if (!chosen) {                       // dropped back on the left = remove
+      tplChosen = tplChosen.filter((x) => x !== subject);
+    } else {
+      const li = e.target.closest('li[data-subject]');
+      const at = li ? tplChosen.indexOf(li.dataset.subject) : -1;
+      tplChosen = tplChosen.filter((x) => x !== subject);
+      if (at === -1) tplChosen.push(subject);
+      else tplChosen.splice(at, 0, subject);
+    }
+    markTplDirty();
+    renderTplSeries();
   });
 }
+tplWireRowDrops($('#tplmChosen'), { chosen: true });
+tplWireRowDrops($('#tplmAvail'), { chosen: false });
+$('#tplSeriesSearch').addEventListener('input', (e) => { tplSeriesSearch = e.currentTarget.value; renderTplSeries(); });
 
 function showTplErrors(problems) {
   const box = $('#tplmValidation');
@@ -2265,22 +2330,22 @@ $('#btnSaveTpl').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
   const name = $('#tplmName').value.trim();
   const channels = $$('#tplmChannels input:checked').map((i) => Number(i.value));
   const validSlots = tplSlots.filter((s) => s.start_time && s.end_time);
-  const series = tplSeries.filter((s) => s.checked).map((s) => s.subject);
+  const series = tplChosen.slice();
 
   // Build concrete, per-issue messages instead of one generic toast.
   const problems = [];
-  if (!name) problems.push('falta el nombre');
-  if (!channels.length) problems.push('elige al menos un canal');
-  if (!weekdays.length) problems.push('elige al menos un día');
-  if (!validSlots.length) problems.push('define al menos un airing');
-  if (validSlots.some((s) => slotMinutes(s) != null && slotMinutes(s) <= 0)) problems.push('un airing tiene fin ≤ inicio');
+  if (!name) problems.push('name is required');
+  if (!channels.length) problems.push('pick at least one channel');
+  if (!weekdays.length) problems.push('pick at least one weekday');
+  if (!validSlots.length) problems.push('add at least one airing');
+  if (validSlots.some((s) => slotMinutes(s) != null && slotMinutes(s) <= 0)) problems.push('an airing ends before it starts');
   // Overlap check within this template (by minute range).
   const toMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
   const ranges = validSlots
     .map((s) => ({ a: toMin(s.start_time), b: toMin(s.end_time) }))
     .filter((r) => r.a != null && r.b != null && r.b > r.a)
     .sort((x, y) => x.a - y.a);
-  for (let i = 1; i < ranges.length; i++) if (ranges[i].a < ranges[i - 1].b) { problems.push('hay airings que se solapan'); break; }
+  for (let i = 1; i < ranges.length; i++) if (ranges[i].a < ranges[i - 1].b) { problems.push('airings overlap'); break; }
 
   showTplErrors(problems);
   if (problems.length) return;
@@ -2305,7 +2370,7 @@ $('#btnDeleteTpl').addEventListener('click', (e) => withBusy(e.currentTarget, as
 }));
 // Close the template modal, confirming first if there are unsaved edits.
 async function closeTemplateModal() {
-  if (tplDirty && !await confirmDialog('Descartar cambios', 'Tienes cambios sin guardar. ¿Cerrar de todos modos?', { confirmLabel: 'Descartar', danger: true })) return;
+  if (tplDirty && !await confirmDialog('Discard changes', 'This template has unsaved changes. Close anyway?', { confirmLabel: 'Discard', danger: true })) return;
   tplDirty = false;
   $('#templateModal').classList.add('hidden');
 }
