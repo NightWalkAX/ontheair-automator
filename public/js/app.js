@@ -1943,6 +1943,19 @@ let tplEditing = null;      // template id when editing, null when creating
 let tplSlots = [];          // [{start_time, end_time}]
 let tplSeries = [];         // [{subject, checked}] ordered
 let tplSeriesDragIdx = null;
+let tplDirty = false;       // unsaved-changes guard for the close handlers
+
+const markTplDirty = () => { tplDirty = true; };
+
+// Minutes between two 'HH:MM' strings; null if either is unparseable.
+function slotMinutes(s) {
+  const p = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? (+m[1] * 60 + +m[2]) : null; };
+  const a = p(s.start_time), b = p(s.end_time);
+  if (a == null || b == null) return null;
+  return b - a;
+}
+// "2h 05m" from a minute count.
+const fmtMinutes = (min) => `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`;
 
 // The channel whose series populate the picker (subjects are shared across
 // channels that share folders, so the first checked channel is representative).
@@ -1954,22 +1967,27 @@ function tplPrimaryChannel() {
 async function openTemplate(t) {
   tplEditing = t ? t.id : null;
   $('#tplmTitle').textContent = t ? `Edit template — ${t.name}` : 'New block template';
+  $('#tplmValidation').className = 'validation';
+  $('#tplmValidation').textContent = '';
   if (!setupChannels.length) setupChannels = await api.get('/api/channels');
   const selected = new Set(t ? (t.channels?.length ? t.channels : [t.channel_id]) : (setupChannels[0] ? [setupChannels[0].id] : []));
   const chBox = $('#tplmChannels'); chBox.innerHTML = '';
   for (const c of setupChannels) {
     const lbl = el('label', { className: 'chk' }, el('input', { type: 'checkbox', value: c.id, checked: selected.has(c.id) }), document.createTextNode(' ' + c.name));
-    lbl.querySelector('input').onchange = () => loadTplSeries(tplPrimaryChannel(), tplSeries.filter((s) => s.checked).map((s) => s.subject));
+    lbl.querySelector('input').onchange = () => { markTplDirty(); loadTplSeries(tplPrimaryChannel(), tplSeries.filter((s) => s.checked).map((s) => s.subject)); };
     chBox.append(lbl);
   }
   $('#tplmName').value = t ? t.name : '';
+  $('#tplmName').oninput = markTplDirty;
   $('#tplmMaxPerShow').value = t && t.max_per_show ? t.max_per_show : '';
+  $('#tplmMaxPerShow').oninput = markTplDirty;
   $('#btnDeleteTpl').style.display = t ? '' : 'none';
 
   const days = new Set((t?.weekdays || t?.weekday || '').split(',').map((x) => x.trim()).filter(Boolean));
   const wd = $('#tplmWeekdays'); wd.innerHTML = '';
   for (const d of WEEKDAYS) {
     const lbl = el('label', { className: 'chk' }, el('input', { type: 'checkbox', value: d, checked: days.has(d) }), document.createTextNode(' ' + d));
+    lbl.querySelector('input').onchange = markTplDirty;
     wd.append(lbl);
   }
 
@@ -1979,6 +1997,7 @@ async function openTemplate(t) {
   const included = (t?.series || []).map((s) => s.subject);
   await loadTplSeries(tplPrimaryChannel(), included);
 
+  tplDirty = false;   // opening a template is not itself a change
   $('#templateModal').classList.remove('hidden');
 }
 
@@ -2000,29 +2019,62 @@ function renderTplSlots() {
   tplSlots.forEach((s, idx) => {
     const row = el('div', { className: 'slot-row' });
     row.append(el('span', { className: 'idx', textContent: idx === 0 ? 'primary' : `#${idx + 1}` }));
-    const start = el('input', { value: s.start_time, placeholder: 'HH:MM', size: 5 });
-    const end = el('input', { value: s.end_time, placeholder: 'HH:MM', size: 5 });
-    start.onchange = () => { s.start_time = start.value; };
-    end.onchange = () => { s.end_time = end.value; };
-    row.append(start, document.createTextNode(' – '), end);
+    const start = el('input', { type: 'time', value: s.start_time });
+    const end = el('input', { type: 'time', value: s.end_time });
+    const dur = el('span', { className: 'dur' });
+    const paint = () => {
+      const min = slotMinutes(s);
+      if (min == null) { row.classList.remove('invalid'); dur.textContent = ''; }
+      else if (min <= 0) { row.classList.add('invalid'); dur.textContent = 'fin debe ser mayor que inicio'; }
+      else { row.classList.remove('invalid'); dur.textContent = fmtMinutes(min); }
+    };
+    start.onchange = () => { s.start_time = start.value; markTplDirty(); paint(); };
+    end.onchange = () => { s.end_time = end.value; markTplDirty(); paint(); };
+    row.append(start, document.createTextNode(' – '), end, dur);
     if (tplSlots.length > 1) {
       const rm = el('button', { className: 'mini danger', type: 'button', textContent: '✕' });
-      rm.onclick = () => { tplSlots.splice(idx, 1); renderTplSlots(); };
+      rm.onclick = () => { tplSlots.splice(idx, 1); markTplDirty(); renderTplSlots(); };
       row.append(rm);
     }
+    paint();
     box.append(row);
   });
 }
-$('#btnAddSlot').addEventListener('click', () => { tplSlots.push({ start_time: '20:00', end_time: '22:00' }); renderTplSlots(); });
+$('#btnAddSlot').addEventListener('click', () => { tplSlots.push({ start_time: '20:00', end_time: '22:00' }); markTplDirty(); renderTplSlots(); });
 
 function renderTplSeries() {
   const list = $('#tplmSeries'); list.innerHTML = '';
-  if (!tplSeries.length) { list.append(el('li', { className: 'muted', textContent: 'No active series on this channel — open the channel’s Series manager first.' })); return; }
+  if (!tplSeries.length) {
+    const li = el('li', { className: 'muted' });
+    li.append(el('div', { textContent: 'No hay series activas en este canal.' }));
+    const actions = el('div', { className: 'series-empty-actions' });
+    const detect = el('button', { className: 'mini primary', type: 'button', textContent: 'Detectar del catálogo' });
+    detect.onclick = (e) => withBusy(e.currentTarget, async () => {
+      const ch = tplPrimaryChannel();
+      if (!ch) return toast('Selecciona un canal primero', 'bad', 'Series');
+      const included = tplSeries.filter((s) => s.checked).map((s) => s.subject);
+      const r = await api.send('POST', `/api/channels/${ch}/series/detect`);
+      toast(`Detected ${r.added} new series`, 'ok');
+      await loadTplSeries(ch, included);
+    });
+    const manage = el('button', { className: 'mini ghost', type: 'button', textContent: 'Abrir gestor de series' });
+    manage.onclick = async () => {
+      const ch = setupChannels.find((c) => c.id === tplPrimaryChannel());
+      if (!ch) return;
+      if (tplDirty && !await confirmDialog('Descartar cambios', 'Tienes cambios sin guardar en esta plantilla. ¿Salir al gestor de series?', { confirmLabel: 'Salir', danger: true })) return;
+      $('#templateModal').classList.add('hidden');
+      openSeries(ch);
+    };
+    actions.append(detect, manage);
+    li.append(actions);
+    list.append(li);
+    return;
+  }
   tplSeries.forEach((s, idx) => {
     const li = el('li', { draggable: true });
     li.append(el('span', { className: 'drag', textContent: '⠿' }));
     const cb = el('input', { type: 'checkbox', checked: s.checked });
-    cb.onchange = () => { s.checked = cb.checked; };
+    cb.onchange = () => { s.checked = cb.checked; markTplDirty(); };
     li.append(cb);
     li.append(el('span', { className: 'grow', textContent: ` ${s.subject}  ` }, el('small', { className: 'muted', textContent: `${s.meta.show_type_name || '—'}${s.meta.is_serial ? ' · serial' : ''}` })));
     li.addEventListener('dragstart', () => { tplSeriesDragIdx = idx; li.classList.add('dragging'); });
@@ -2033,23 +2085,49 @@ function renderTplSeries() {
       if (tplSeriesDragIdx === null || tplSeriesDragIdx === idx) return;
       const [m] = tplSeries.splice(tplSeriesDragIdx, 1);
       tplSeries.splice(idx, 0, m);
+      markTplDirty();
       renderTplSeries();
     });
     list.append(li);
   });
 }
 
+function showTplErrors(problems) {
+  const box = $('#tplmValidation');
+  box.className = problems.length ? 'validation bad' : 'validation';
+  box.textContent = problems.length ? problems.join(' · ') : '';
+}
+
 $('#btnSaveTpl').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const weekdays = $$('#tplmWeekdays input:checked').map((i) => i.value);
   const name = $('#tplmName').value.trim();
   const channels = $$('#tplmChannels input:checked').map((i) => Number(i.value));
-  const slots = tplSlots.filter((s) => s.start_time && s.end_time);
+  const validSlots = tplSlots.filter((s) => s.start_time && s.end_time);
   const series = tplSeries.filter((s) => s.checked).map((s) => s.subject);
-  if (!name || !channels.length || !weekdays.length || !slots.length) return toast('Name, at least one channel, one weekday and one airing are required', 'bad', 'Template');
+
+  // Build concrete, per-issue messages instead of one generic toast.
+  const problems = [];
+  if (!name) problems.push('falta el nombre');
+  if (!channels.length) problems.push('elige al menos un canal');
+  if (!weekdays.length) problems.push('elige al menos un día');
+  if (!validSlots.length) problems.push('define al menos un airing');
+  if (validSlots.some((s) => slotMinutes(s) != null && slotMinutes(s) <= 0)) problems.push('un airing tiene fin ≤ inicio');
+  // Overlap check within this template (by minute range).
+  const toMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t); return m ? +m[1] * 60 + +m[2] : null; };
+  const ranges = validSlots
+    .map((s) => ({ a: toMin(s.start_time), b: toMin(s.end_time) }))
+    .filter((r) => r.a != null && r.b != null && r.b > r.a)
+    .sort((x, y) => x.a - y.a);
+  for (let i = 1; i < ranges.length; i++) if (ranges[i].a < ranges[i - 1].b) { problems.push('hay airings que se solapan'); break; }
+
+  showTplErrors(problems);
+  if (problems.length) return;
+
   const maxPerShow = Number($('#tplmMaxPerShow').value) > 0 ? Number($('#tplmMaxPerShow').value) : 0;
-  const body = { channels, channel_id: channels[0], name, weekdays, slots, series, max_per_show: maxPerShow };
+  const body = { channels, channel_id: channels[0], name, weekdays, slots: validSlots, series, max_per_show: maxPerShow };
   if (tplEditing) await api.send('PUT', `/api/blocks/templates/${tplEditing}`, body);
   else await api.send('POST', '/api/blocks/templates', body);
+  tplDirty = false;
   $('#templateModal').classList.add('hidden');
   toast('Template saved', 'ok');
   await loadSetupTab();
@@ -2058,13 +2136,23 @@ $('#btnDeleteTpl').addEventListener('click', (e) => withBusy(e.currentTarget, as
   if (!tplEditing) return;
   if (!await confirmDialog('Delete template', 'Delete this template?', { confirmLabel: 'Delete', danger: true })) return;
   await api.send('DELETE', `/api/blocks/templates/${tplEditing}`);
+  tplDirty = false;
   $('#templateModal').classList.add('hidden');
   toast('Template deleted', 'ok');
   await loadSetupTab();
 }));
+// Close the template modal, confirming first if there are unsaved edits.
+async function closeTemplateModal() {
+  if (tplDirty && !await confirmDialog('Descartar cambios', 'Tienes cambios sin guardar. ¿Cerrar de todos modos?', { confirmLabel: 'Descartar', danger: true })) return;
+  tplDirty = false;
+  $('#templateModal').classList.add('hidden');
+}
 $('#btnNewTemplate').addEventListener('click', () => openTemplate(null));
-$('#tplmClose').addEventListener('click', () => $('#templateModal').classList.add('hidden'));
-$('#templateModal').addEventListener('click', (e) => { if (e.target.id === 'templateModal') $('#templateModal').classList.add('hidden'); });
+$('#tplmClose').addEventListener('click', closeTemplateModal);
+$('#templateModal').addEventListener('click', (e) => { if (e.target.id === 'templateModal') closeTemplateModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#templateModal').classList.contains('hidden')) closeTemplateModal();
+});
 
 // ---- Channel editor modal --------------------------------------------------
 let chEditing = null;
