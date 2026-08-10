@@ -301,6 +301,39 @@ let currentItems = [];      // [{resource_id, name, duration, is_filler, is_manu
 let allResources = [];
 let currentMirror = false;  // true when the open block is a mirrored airing (read-only)
 
+// Library pane (left side of the block editor).
+let libSearch = '';
+let libType = '';           // show_type_code
+let libSubject = '';        // Resource.subject
+const libSel = new Set();   // selected resource ids
+let libAnchorId = null;     // last-clicked row — anchor for shift-range selection
+let blkDrag = null;         // { kind: 'lib', ids: [...] } | { kind: 'item', idx }
+
+const TYPE_LABELS = { movies: 'Películas', documentaries: 'Documentales', tv_shows: 'Series TV', lessons: 'Clases', fillers: 'Fillers' };
+const LIB_RENDER_CAP = 300;   // rows drawn at once; filtering/stride still see all
+const BULK_ADD_WARN = 25;     // ask before dumping this many clips into a block
+
+// A library row turned into a block item (same shape the add-button used).
+const resourceToItem = (r) => ({
+  resource_id: r.id, name: r.name, label: r.label, subject: r.subject,
+  season: r.season, episode_no: r.episode_no, episode_code: r.episode_code,
+  chapter: r.chapter, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1,
+});
+
+// The library list as currently filtered — the order stride-select works on.
+function libFiltered() {
+  const q = libSearch.trim().toLowerCase();
+  return allResources.filter((r) => {
+    if (libType && (r.show_type_code || '') !== libType) return false;
+    if (libSubject && (r.subject || '') !== libSubject) return false;
+    if (!q) return true;
+    return (r.label || '').toLowerCase().includes(q)
+      || (r.display_name || '').toLowerCase().includes(q)
+      || (r.name || '').toLowerCase().includes(q)
+      || (r.subject || '').toLowerCase().includes(q);
+  });
+}
+
 async function openBlock(id) {
   let v;
   try {
@@ -315,14 +348,14 @@ async function openBlock(id) {
   $('#modalMeta').textContent = `${v.block.start_time}–${v.block.end_time} · block ${fmt(v.blockSeconds)} · channel ${v.block.channel_id}`
     + (currentMirror ? ' · 🔁 mirrored airing (read-only — edit the primary airing)' : '');
   // Mirror airings copy their primary verbatim: hide the editing controls.
-  $('.add-item').style.display = currentMirror ? 'none' : '';
+  $('#beLib').style.display = currentMirror ? 'none' : '';
+  $('.block-editor').classList.toggle('mirror', currentMirror);
   $('#btnSaveItems').style.display = currentMirror ? 'none' : '';
 
-  const sel = $('#addResourceSel');
-  sel.innerHTML = '';
-  for (const r of allResources) {
-    sel.append(el('option', { value: r.id, textContent: `${r.is_filler ? '[filler] ' : ''}${r.label || r.name} (${fmt(r.duration)})` }));
-  }
+  libSearch = ''; libType = ''; libSubject = '';
+  libSel.clear(); libAnchorId = null;
+  $('#libSearch').value = '';
+  renderLibrary();
   renderBlockControls();
   renderItems();
   $('#modal').classList.remove('hidden');
@@ -410,10 +443,11 @@ function clockAt(baseHHMM, offsetSecs) {
   return `${String(Math.floor(t / 3600)).padStart(2, '0')}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
 }
 
-let dragIdx = null;
 function renderItems() {
   const list = $('#itemList');
   list.innerHTML = '';
+  const totalSecs = currentItems.reduce((s, i) => s + i.duration, 0);
+  $('#blockCount').textContent = `${currentItems.length} item(s) · ${fmt(totalSecs)}`;
   const blockStart = currentBlock?.block?.start_time || '00:00';
   let acc = 0; // running seconds from block start, for air-times
   currentItems.forEach((it, idx) => {
@@ -467,14 +501,25 @@ function renderItems() {
     del.onclick = () => { currentItems.splice(idx, 1); renderItems(); };
     li.append(up, down, del);
 
-    li.addEventListener('dragstart', () => { dragIdx = idx; li.classList.add('dragging'); });
-    li.addEventListener('dragend', () => { dragIdx = null; li.classList.remove('dragging'); $$('#itemList li').forEach((x) => x.classList.remove('drag-over')); });
+    li.addEventListener('dragstart', () => { blkDrag = { kind: 'item', idx }; li.classList.add('dragging'); });
+    li.addEventListener('dragend', () => { blkDrag = null; li.classList.remove('dragging'); $$('#itemList li').forEach((x) => x.classList.remove('drag-over')); });
     li.addEventListener('dragover', (e) => { e.preventDefault(); li.classList.add('drag-over'); });
     li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
     li.addEventListener('drop', (e) => {
       e.preventDefault();
-      if (dragIdx === null || dragIdx === idx) return;
-      const [moved] = currentItems.splice(dragIdx, 1);
+      e.stopPropagation();
+      li.classList.remove('drag-over');
+      if (!blkDrag) return;
+      if (blkDrag.kind === 'lib') {
+        const ids = blkDrag.ids;
+        blkDrag = null;
+        addResourcesToBlock(ids, idx);
+        return;
+      }
+      const from = blkDrag.idx;
+      blkDrag = null;
+      if (from === idx) return;
+      const [moved] = currentItems.splice(from, 1);
       currentItems.splice(idx, 0, moved);
       renderItems();
     });
@@ -499,17 +544,134 @@ function renderValidation() {
   return fits;
 }
 
-$('#btnAddItem').addEventListener('click', () => {
-  const id = Number($('#addResourceSel').value);
-  const r = allResources.find((x) => x.id === id);
-  if (r) {
-    currentItems.push({
-      resource_id: r.id, name: r.name, label: r.label, subject: r.subject,
-      season: r.season, episode_no: r.episode_no, episode_code: r.episode_code,
-      chapter: r.chapter, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1,
-    });
-    renderItems();
+// ---- Library pane ----------------------------------------------------------
+// Rebuild the two filter dropdowns from what the channel actually has, keeping
+// the current pick when it survives the other filter.
+function renderLibFilters() {
+  const typeSel = $('#libType');
+  const types = [...new Set(allResources.map((r) => r.show_type_code).filter(Boolean))].sort();
+  typeSel.innerHTML = '';
+  typeSel.append(el('option', { value: '', textContent: 'Todos los tipos' }));
+  for (const c of types) typeSel.append(el('option', { value: c, textContent: TYPE_LABELS[c] || c, selected: c === libType }));
+
+  const subjSel = $('#libSubject');
+  const subjects = [...new Set(allResources
+    .filter((r) => !libType || r.show_type_code === libType)
+    .map((r) => r.subject).filter(Boolean))].sort();
+  subjSel.innerHTML = '';
+  subjSel.append(el('option', { value: '', textContent: 'Todos los shows' }));
+  for (const s of subjects) subjSel.append(el('option', { value: s, textContent: s, selected: s === libSubject }));
+  if (libSubject && !subjects.includes(libSubject)) { libSubject = ''; subjSel.value = ''; }
+}
+
+function renderLibrary() {
+  if (currentMirror) return;
+  renderLibFilters();
+  const rows = libFiltered();
+  const list = $('#libList');
+  list.innerHTML = '';
+  $('#libCount').textContent = `${rows.length} clip(s)${libSel.size ? ` · ${libSel.size} seleccionado(s)` : ''}`;
+
+  if (!rows.length) {
+    list.append(el('li', { className: 'muted', textContent: 'Nada coincide con el filtro.' }));
+    return;
   }
+  // A full channel catalogue runs to thousands of clips and this re-renders on
+  // every keystroke — draw a window, keep selection/stride over the full match.
+  const shown = rows.slice(0, LIB_RENDER_CAP);
+  shown.forEach((r, idx) => {
+    const li = el('li', { className: r.is_filler ? 'filler' : '', draggable: true });
+    li.dataset.id = r.id;
+    li.append(el('span', { className: 'drag', textContent: '⠿', title: 'Arrastra al bloque' }));
+    const cb = el('input', { type: 'checkbox', className: 'cat-sel', checked: libSel.has(r.id), title: 'Selecciona — Shift-clic para un rango' });
+    cb.addEventListener('click', (e) => {
+      if (e.shiftKey && libAnchorId != null) {
+        const order = rows.map((x) => x.id);
+        const a = order.indexOf(libAnchorId), b = order.indexOf(r.id);
+        if (a !== -1 && b !== -1) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let i = lo; i <= hi; i++) { if (cb.checked) libSel.add(order[i]); else libSel.delete(order[i]); }
+        }
+      } else if (cb.checked) libSel.add(r.id); else libSel.delete(r.id);
+      libAnchorId = r.id;
+      renderLibrary();
+    });
+    li.append(cb);
+    li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
+    li.append(el('span', { className: 'grow', textContent: r.label || r.name, title: r.name }));
+    li.append(el('span', { className: 'dur', textContent: fmt(r.duration) }));
+    const add = el('button', { className: 'mini ghost', textContent: '→', title: 'Añadir al final del bloque' });
+    add.onclick = () => { currentItems.push(resourceToItem(r)); renderItems(); };
+    li.append(add);
+
+    // Dragging a selected row carries the whole selection, in list order.
+    li.addEventListener('dragstart', (e) => {
+      const ids = libSel.has(r.id) ? rows.filter((x) => libSel.has(x.id)).map((x) => x.id) : [r.id];
+      blkDrag = { kind: 'lib', ids };
+      e.dataTransfer.effectAllowed = 'copy';
+      li.classList.add('dragging');
+    });
+    li.addEventListener('dragend', () => { blkDrag = null; li.classList.remove('dragging'); });
+    list.append(li);
+  });
+  if (rows.length > shown.length) {
+    list.append(el('li', { className: 'muted', textContent:
+      `Mostrando ${shown.length} de ${rows.length} — afina el filtro. La selección y el paso se aplican a los ${rows.length}.` }));
+  }
+}
+
+// Insert library resources into the block at `idx` (end when idx is null).
+// Every path in (button, drag-drop) goes through here so the bulk guard can't
+// be sidestepped — dragging one selected row carries the whole selection.
+async function addResourcesToBlock(ids, idx) {
+  const rows = ids.map((id) => allResources.find((r) => r.id === id)).filter(Boolean);
+  if (!rows.length) return;
+  if (rows.length >= BULK_ADD_WARN) {
+    const secs = rows.reduce((s, r) => s + r.duration, 0);
+    if (!await confirmDialog('Añadir al bloque',
+      `Vas a añadir ${rows.length} clips (${fmt(secs)}) a un bloque de ${fmt(currentBlock.blockSeconds)}. ¿Continuar?`,
+      { confirmLabel: `Añadir ${rows.length}` })) return;
+  }
+  const items = rows.map(resourceToItem);
+  if (idx == null || idx >= currentItems.length) currentItems.push(...items);
+  else currentItems.splice(idx, 0, ...items);
+  libSel.clear();
+  renderItems();
+  renderLibrary();
+}
+
+$('#libSearch').addEventListener('input', (e) => { libSearch = e.currentTarget.value; renderLibrary(); });
+$('#libType').addEventListener('change', (e) => { libType = e.currentTarget.value; renderLibrary(); });
+$('#libSubject').addEventListener('change', (e) => { libSubject = e.currentTarget.value; renderLibrary(); });
+$('#btnLibAll').addEventListener('click', () => { libFiltered().forEach((r) => libSel.add(r.id)); renderLibrary(); });
+$('#btnLibNone').addEventListener('click', () => { libSel.clear(); renderLibrary(); });
+
+// Stride select: take every Nth row starting at the Xth, over the filtered list.
+// Two shows interleaved in one folder land as 1,3,5… and 2,4,6… — this splits them.
+$('#btnLibStride').addEventListener('click', () => {
+  const n = Math.max(1, Number($('#libStrideN').value) || 1);
+  const off = Math.max(1, Number($('#libStrideOff').value) || 1);
+  const rows = libFiltered();
+  libSel.clear();
+  for (let i = off - 1; i < rows.length; i += n) libSel.add(rows[i].id);
+  renderLibrary();
+  toast(`${libSel.size} clip(s) seleccionados (1 de cada ${n} desde ${off})`, 'ok', 'Selección');
+});
+
+$('#btnAddSelected').addEventListener('click', () => {
+  const rows = libFiltered().filter((r) => libSel.has(r.id));
+  if (!rows.length) return toast('No hay nada seleccionado', 'bad', 'Biblioteca');
+  addResourcesToBlock(rows.map((r) => r.id), null);
+});
+
+// Dropping on empty space below the last item appends.
+$('#itemList').addEventListener('dragover', (e) => { if (blkDrag) e.preventDefault(); });
+$('#itemList').addEventListener('drop', (e) => {
+  if (!blkDrag || currentMirror) return;
+  e.preventDefault();
+  if (e.target.closest('li')) return;   // a row handled it
+  if (blkDrag.kind === 'lib') addResourcesToBlock(blkDrag.ids, null);
+  blkDrag = null;
 });
 $('#btnSaveItems').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
@@ -532,7 +694,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $('#modal').classList.add('hidden');
     $('#seriesModal')?.classList.add('hidden');
-    $('#templateModal')?.classList.add('hidden');
+    // #templateModal has its own Esc handler — it confirms before discarding edits.
     $('#channelModal')?.classList.add('hidden');
     closeDialog();
   }

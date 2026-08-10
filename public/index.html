@@ -182,13 +182,44 @@
       <h3 id="modalTitle"></h3>
       <div id="modalMeta" class="muted"></div>
       <div id="blockControls" class="block-controls"></div>
-      <div class="modal-scroll">
-        <ol id="itemList" class="items"></ol>
+
+      <div class="block-editor">
+        <!-- Left: the resource library (filter, search, stride-select, drag out) -->
+        <section class="be-pane" id="beLib">
+          <div class="be-head">
+            <strong>Biblioteca</strong>
+            <span id="libCount" class="muted"></span>
+          </div>
+          <div class="be-filters">
+            <input id="libSearch" type="search" placeholder="Buscar clip o show…" />
+            <select id="libType" title="Tipo de show"></select>
+            <select id="libSubject" title="Show"></select>
+          </div>
+          <div class="be-stride">
+            <span class="muted">Tomar 1 de cada</span>
+            <input id="libStrideN" type="number" min="1" step="1" value="2" title="Paso" />
+            <span class="muted">desde</span>
+            <input id="libStrideOff" type="number" min="1" step="1" value="1" title="Posición inicial" />
+            <button id="btnLibStride" class="mini ghost" type="button">Seleccionar</button>
+            <button id="btnLibAll" class="mini ghost" type="button">Todos</button>
+            <button id="btnLibNone" class="mini ghost" type="button">Ninguno</button>
+          </div>
+          <div class="be-scroll"><ol id="libList" class="items compact"></ol></div>
+          <div class="be-foot">
+            <button id="btnAddSelected" class="ghost" type="button">➕ Añadir selección</button>
+          </div>
+        </section>
+
+        <!-- Right: the block being built -->
+        <section class="be-pane" id="beBlock">
+          <div class="be-head">
+            <strong>Bloque</strong>
+            <span id="blockCount" class="muted"></span>
+          </div>
+          <div class="be-scroll"><ol id="itemList" class="items"></ol></div>
+        </section>
       </div>
-      <div class="add-item">
-        <select id="addResourceSel"></select>
-        <button id="btnAddItem" class="ghost">➕ Add item</button>
-      </div>
+
       <div id="modalValidation" class="validation"></div>
       <div class="modal-actions">
         <button id="btnSaveItems" class="ghost">Save order</button>

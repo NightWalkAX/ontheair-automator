@@ -407,7 +407,8 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   border: 1px solid var(--line);
   animation: pop .22s var(--ease);
 }
-.modal-body.wide { width: min(680px, 94vw); }
+/* The block editor is two panes side by side, so it needs the room. */
+.modal-body.wide { width: min(1080px, 96vw); }
 /* The scrollable middle region: takes the leftover height, scrolls internally.
    min-height:0 is required for a flex child to shrink below its content. */
 .modal-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; margin: 0 -2px; padding: 0 2px; }
@@ -436,6 +437,9 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   content: "FILLER"; font-size: 9px; font-weight: 700; letter-spacing: .5px;
   background: var(--warn-soft); color: var(--warn); padding: 1px 5px; border-radius: 4px; margin-right: 7px;
 }
+/* The episode corrector must not stretch and push the duration/buttons out
+   of the (now narrower) block pane. */
+.items li .ep-sel { flex: 0 0 auto; max-width: 108px; font-size: 12px; padding: 3px 6px; }
 .items li.dragging { opacity: .5; }
 .items li.drag-over { border-color: var(--accent); box-shadow: var(--ring); }
 .items .mini { padding: 3px 8px; font-size: 12px; }
@@ -460,12 +464,39 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 }
 .show-order .chip-order.dragging { opacity: .5; }
 
-.add-item {
-  display: flex; gap: 9px; margin: 14px 0;
-  padding-top: 14px; border-top: 1px dashed var(--line);
-  flex: 0 0 auto;
+/* ---- Block editor: library pane | block pane ------------------------------- */
+/* Takes the modal's leftover height; each pane scrolls on its own. */
+.block-editor {
+  flex: 1 1 auto; min-height: 0; display: grid; gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: 10px 0 4px;
 }
-.add-item select { flex: 1; }
+.block-editor.mirror { grid-template-columns: minmax(0, 1fr); }
+.be-pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); padding: 10px;
+}
+.be-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex: 0 0 auto; }
+.be-head strong { font-size: 13px; }
+.be-head .muted { font-size: 11.5px; margin-left: auto; }
+.be-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; flex: 0 0 auto; }
+.be-filters input, .be-filters select { flex: 1 1 120px; min-width: 0; font-size: 12.5px; padding: 5px 7px; }
+.be-stride {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 12px;
+  margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--line); flex: 0 0 auto;
+}
+.be-stride input { width: 52px; padding: 4px 6px; font-size: 12.5px; }
+/* min-height:0 lets these flex children shrink so the inner list scrolls. */
+.be-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; margin: 0 -2px; padding: 0 2px; }
+.be-foot { flex: 0 0 auto; padding-top: 8px; border-top: 1px dashed var(--line); margin-top: 6px; }
+.be-foot button { width: 100%; }
+#libList li { cursor: grab; }
+#libList li .idx { min-width: 24px; }
+
+@media (max-width: 860px) {
+  .block-editor { grid-template-columns: minmax(0, 1fr); }
+  .be-pane { max-height: 46vh; }
+}
 .validation {
   padding: 11px 13px; border-radius: var(--radius-sm); margin: 12px 0; font-weight: 600;
   font-size: 13px; display: flex; align-items: center; gap: 9px; flex: 0 0 auto;
@@ -481,8 +512,8 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
   flex: 0 0 auto;
 }
-/* The block editor already has the dashed add-item separator above its actions,
-   so drop the redundant second rule there. */
+/* The block editor's panes are already boxed, so the extra divider above its
+   actions reads as clutter. */
 #modal .modal-actions { border-top: 0; padding-top: 0; margin-top: 10px; }
 
 /* Report / confirm dialog body */
