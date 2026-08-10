@@ -12,6 +12,29 @@ import { nextChapter, randomWithCooldown, latestEpisode } from './playHistory.js
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// --- Fit tolerance (shared truth for the engine, the API and the UI) ---------
+// A block's `diff` is blockSeconds - totalSeconds: positive = underrun (dead
+// air at the end), negative = overrun (the block runs past its slot).
+//
+// Exact (diff 0) is still the target. Underrun is acceptable up to
+// maxUnderrunSeconds. When the filler pool is too coarse to land inside that
+// window, a SMALL OVERRUN is preferred over a bigger hole — so the fill goes
+// over the block end instead, bounded by maxOverrunSeconds.
+
+/** { maxUnderrun, maxOverrun } in seconds, from config.filler. */
+export function fitTolerance() {
+  const f = loadConfig().filler || {};
+  return {
+    maxUnderrun: f.maxUnderrunSeconds ?? 5,
+    maxOverrun: f.maxOverrunSeconds ?? 5,
+  };
+}
+
+/** Is a blockSeconds-totalSeconds difference inside the fit tolerance? */
+export function fitsTolerance(diff, tol = fitTolerance()) {
+  return diff <= tol.maxUnderrun && diff >= -tol.maxOverrun;
+}
+
 /** Block length in seconds from 'HH:MM' start/end (handles past-midnight). */
 export function blockDurationSeconds(startTime, endTime) {
   const [sh, sm] = startTime.split(':').map(Number);
@@ -202,10 +225,17 @@ export function pickMainContent(template, block, blockSecs) {
  *
  * `pack(target)` runs an unbounded knapsack over integer-second durations —
  * fillers MAY repeat, which lets a small/coarse pool fill a gap to the second —
- * and returns { items, total } for the LARGEST reachable total <= target (0s
- * overrun ceiling), preferring fewer/longer fillers. The LRU rotation cursor is
- * SHARED across successive pack() calls, so filling several gaps in one block
- * spreads repeats over the whole pool instead of hammering one clip per gap.
+ * and returns { items, total } for the LARGEST reachable total <= target,
+ * preferring fewer/longer fillers. The LRU rotation cursor is SHARED across
+ * successive pack() calls, so filling several gaps in one block spreads repeats
+ * over the whole pool instead of hammering one clip per gap.
+ *
+ * `pack(target, { overrun: true })` relaxes the ceiling: if no reachable total
+ * lands within maxUnderrun of the target, it takes the SMALLEST total above the
+ * target instead (up to maxOverrun over). Used for the fill that closes a block,
+ * where a few seconds long beats a bigger hole. Alignment gaps inside a block
+ * keep the strict <= target ceiling, since overshooting one would push the next
+ * main item off its quarter-hour mark.
  */
 export function makeFillerPacker(channelId) {
   const fillers = db.prepare(
@@ -223,24 +253,32 @@ export function makeFillerPacker(channelId) {
   const allDurations = [...byDur.keys()].filter((d) => d > 0).sort((a, b) => a - b);
   const cursor = new Map(); // duration -> LRU rotation offset, shared across pack() calls
 
-  function pack(target) {
+  function pack(target, { overrun = false } = {}) {
     if (target <= 0 || !fillers.length) return { items: [], total: 0 };
-    const durations = allDurations.filter((d) => d <= target);
+    const tol = fitTolerance();
+    // Composition search window: exactly `target` normally, a little past it when
+    // overrun is allowed (so a total just above the block end is reachable).
+    const limit = target + (overrun ? Math.max(0, tol.maxOverrun) : 0);
+    const durations = allDurations.filter((d) => d <= limit);
     if (!durations.length) return { items: [], total: 0 };
 
     // reach[t] = t seconds is exactly composable; fromDur[t] records a duration
     // used to reach t, preferring the LARGEST that fits (fewer, longer fillers).
-    const reach = new Array(target + 1).fill(false);
-    const fromDur = new Array(target + 1).fill(0);
+    const reach = new Array(limit + 1).fill(false);
+    const fromDur = new Array(limit + 1).fill(0);
     reach[0] = true;
-    for (let t = 1; t <= target; t++) {
+    for (let t = 1; t <= limit; t++) {
       for (let k = durations.length - 1; k >= 0; k--) {
         const d = durations[k];
         if (d <= t && reach[t - d]) { reach[t] = true; fromDur[t] = d; break; }
       }
     }
     let best = 0;
-    for (let t = target; t >= 0; t--) { if (reach[t]) { best = t; break; } }
+    for (let t = Math.min(target, limit); t >= 0; t--) { if (reach[t]) { best = t; break; } }
+    // Best under-fill leaves too big a hole: take the smallest overrun instead.
+    if (target - best > tol.maxUnderrun) {
+      for (let t = target + 1; t <= limit; t++) { if (reach[t]) { best = t; break; } }
+    }
 
     const durSeq = [];
     for (let t = best; t > 0; t -= fromDur[t]) durSeq.push(fromDur[t]);
@@ -258,16 +296,16 @@ export function makeFillerPacker(channelId) {
 
 /**
  * Filler packer (single-shot). Choose fillers whose total duration is as close
- * to `remaining` as possible without exceeding it, within maxUnderrun.
- * Returns { items, total, fits }.
+ * to `remaining` as possible — under it when that lands within maxUnderrun,
+ * otherwise slightly over (up to maxOverrun). Returns { items, total, fits }.
  */
 export function fitFillers(channelId, remaining) {
-  const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
+  const tol = fitTolerance();
   const packer = makeFillerPacker(channelId);
-  if (remaining <= 0) return { items: [], total: 0, fits: remaining >= -maxUnderrun };
-  if (!packer.hasFillers) return { items: [], total: 0, fits: remaining <= maxUnderrun };
-  const { items, total } = packer.pack(remaining);
-  return { items, total, fits: remaining - total <= maxUnderrun };
+  if (remaining <= 0) return { items: [], total: 0, fits: fitsTolerance(remaining, tol) };
+  if (!packer.hasFillers) return { items: [], total: 0, fits: fitsTolerance(remaining, tol) };
+  const { items, total } = packer.pack(remaining, { overrun: true });
+  return { items, total, fits: fitsTolerance(remaining - total, tol) };
 }
 
 // Quarter-hour boundary, in seconds. Main content is aligned to :00/:15/:30/:45.
@@ -290,7 +328,8 @@ function timeOfDaySeconds(hhmm) {
  * Alignment is best-effort ("if possible"): a gap the coarse filler pool can't
  * hit exactly just leaves the next item slightly early, and the running clock
  * self-corrects at the following boundary. The TRAILING gap does the precise
- * fill, so the block-level 0s-overrun / maxUnderrun tolerance still holds.
+ * fill, and is the only one allowed to overshoot (see fitTolerance), so the
+ * block lands inside the maxUnderrun / maxOverrun window.
  *
  * Returns { items, total } — the ordered resource sequence and its duration.
  */
@@ -339,7 +378,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   // Trailing fillers fill to the block end and carry the tolerance guarantee.
   const trailing = blockSecs - total;
   if (trailing > 0) {
-    const fill = packer.pack(trailing);
+    const fill = packer.pack(trailing, { overrun: true });
     for (const f of fill.items) items.push(f);
     total += fill.total;
   }
@@ -441,9 +480,8 @@ export function populateBlock(block) {
     const total = db.prepare(
       'SELECT COALESCE(SUM(r.duration),0) AS s FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?'
     ).get(block.id).s;
-    const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
     const underrun = blockSecs - total;
-    return { blockId: block.id, blockSeconds: blockSecs, mainCount: count, fillerCount: 0, underrun, fits: underrun >= 0 && underrun <= maxUnderrun, mirrored: true };
+    return { blockId: block.id, blockSeconds: blockSecs, mainCount: count, fillerCount: 0, underrun, fits: fitsTolerance(underrun), mirrored: true };
   }
 
   // Primary airing: regenerate auto items, preserve manual overrides.
@@ -457,7 +495,6 @@ export function populateBlock(block) {
   const insert = db.prepare(
     'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, ?, 0)'
   );
-  const maxUnderrun = loadConfig().filler?.maxUnderrunSeconds ?? 5;
   let mainCount = 0;
   let fillerCount = 0;
   let placedSecs = 0;
@@ -495,7 +532,7 @@ export function populateBlock(block) {
     mainCount,
     fillerCount,
     underrun,
-    fits: underrun >= 0 && underrun <= maxUnderrun,
+    fits: fitsTolerance(underrun),
     mirrored: false,
   };
 }

@@ -534,12 +534,17 @@ function renderValidation() {
   const total = currentItems.reduce((s, i) => s + i.duration, 0);
   const diff = currentBlock.blockSeconds - total;
   const maxUnderrun = currentBlock.maxUnderrun ?? 5;
-  const fits = diff >= 0 && diff <= maxUnderrun;
+  const maxOverrun = currentBlock.maxOverrun ?? 0;
+  const fits = diff <= maxUnderrun && diff >= -maxOverrun;
   const box = $('#modalValidation');
   box.className = `validation ${fits ? 'ok' : 'bad'}`;
   box.textContent = fits
-    ? `Fits — total ${fmt(total)}, ${fmt(diff)} under (≤ ${maxUnderrun}s)`
-    : (diff < 0 ? `OVERRUN by ${fmt(-diff)} — must not exceed block length` : `UNDERRUN ${fmt(diff)} — exceeds ${maxUnderrun}s tolerance`);
+    ? (diff >= 0
+        ? `Fits — total ${fmt(total)}, ${fmt(diff)} under (≤ ${maxUnderrun}s)`
+        : `Fits — total ${fmt(total)}, ${fmt(-diff)} over (≤ ${maxOverrun}s)`)
+    : (diff < 0
+        ? `OVERRUN by ${fmt(-diff)} — exceeds ${maxOverrun}s tolerance`
+        : `UNDERRUN ${fmt(diff)} — exceeds ${maxUnderrun}s tolerance`);
   $('#btnApproveBlock').disabled = !fits;
   return fits;
 }
