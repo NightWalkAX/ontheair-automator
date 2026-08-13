@@ -109,6 +109,40 @@ router.post('/roots', (req, res) => {
   }
 });
 
+// POST /api/media/roots/copy  { from_channel_id, to_channel_ids: number[] }
+// Give one or more channels the same media availability as an existing channel:
+// every root of the donor is registered for each target, reusing the already
+// scanned catalog (durations, operator fixes, approval) instead of re-probing.
+// Roots a target already has are skipped, so this is safe to re-run.
+router.post('/roots/copy', (req, res) => {
+  const { from_channel_id, to_channel_ids } = req.body || {};
+  const from = Number(from_channel_id);
+  const targets = (Array.isArray(to_channel_ids) ? to_channel_ids : [])
+    .map(Number).filter((id) => id && id !== from);
+  if (!from || !targets.length) {
+    return res.status(400).json({ error: 'from_channel_id and at least one other to_channel_ids entry are required' });
+  }
+  const roots = db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(from);
+  if (!roots.length) return res.status(400).json({ error: 'the source channel has no media roots' });
+
+  const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
+  const created = [];
+  let clonedResources = 0;
+  try {
+    for (const cid of targets) {
+      for (const r of roots) {
+        const info = ins.run(cid, r.show_type_id, r.path);
+        if (!info.changes) continue;
+        created.push({ id: info.lastInsertRowid, channel_id: cid, show_type_id: r.show_type_id, path: r.path });
+        clonedResources += cloneScannedResources(cid, r.show_type_id, r.path);
+      }
+    }
+    res.status(201).json({ ok: true, created, clonedResources, sourceRoots: roots.length });
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
 // PUT /api/media/roots/:id  { channel_id?, show_type_id?, path? }
 // Edit a root's channel / show type (folder type) / path. A re-scan is needed
 // afterwards to re-catalog under the new assignment.

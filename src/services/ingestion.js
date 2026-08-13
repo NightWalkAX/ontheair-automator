@@ -158,7 +158,8 @@ function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
  * Clone already-cataloged Resource rows (and their overrides) from a donor
  * channel into `newChannelId`, for a folder that was just assigned to another
  * channel. Avoids a fresh ffprobe pass: the same physical files already have
- * durations + operator subject/chapter/name fixes under some other channel.
+ * durations + operator subject/chapter/name fixes (and review state) under some
+ * other channel.
  * Matches the root path as a subtree (path itself or path/...). No-op (returns
  * 0) when no donor exists — the caller then falls back to a normal scan.
  * Returns the number of resources cloned.
@@ -176,10 +177,10 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO Resource
       (name, file_path, duration, subject, season, chapter, is_filler, audience_rating,
-       channel_id, show_type_id, added_at, last_used_at, sort_order)
+       channel_id, show_type_id, added_at, last_used_at, sort_order, approved)
     VALUES
       (@name, @file_path, @duration, @subject, @season, @chapter, @is_filler, @audience_rating,
-       @channel_id, @show_type_id, @added_at, @last_used_at, @sort_order)
+       @channel_id, @show_type_id, @added_at, @last_used_at, @sort_order, @approved)
   `);
   const idFor = db.prepare('SELECT id FROM Resource WHERE channel_id = ? AND file_path = ?');
   const getOverride = db.prepare('SELECT * FROM ResourceOverride WHERE resource_id = ?');
@@ -199,6 +200,10 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
         audience_rating: d.audience_rating, channel_id: newChannelId,
         show_type_id: showTypeId ?? d.show_type_id, added_at: d.added_at,
         last_used_at: d.last_used_at ?? null, sort_order: d.sort_order ?? null,
+        // Carry the donor's review state: these are the same physical files the
+        // operator already vetted, so a shared folder is schedulable on arrival
+        // instead of needing a second pass through the Catalog Editor.
+        approved: d.approved ?? 0,
       });
       if (!info.changes) continue; // already present for this channel
       cloned++;

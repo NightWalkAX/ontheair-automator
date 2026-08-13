@@ -90,7 +90,10 @@
         </div>
       </div>
       <div class="panel">
-        <h3>🗂 Configured media roots</h3>
+        <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <h3 style="margin:0">🗂 Configured media roots</h3>
+          <button id="btnCopyRoots" class="mini ghost" title="Give a new channel the same media availability as an existing one">📋 Copy all roots to another channel</button>
+        </div>
         <table id="rootsTable"><thead><tr><th>Channel</th><th>Show type</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -296,7 +299,12 @@
                   <strong>Available</strong>
                   <span id="tplAvailCount" class="muted"></span>
                 </div>
-                <input id="tplSeriesSearch" type="search" placeholder="Search series…" aria-label="Search available series" />
+                <div class="dp-filters">
+                  <input id="tplSeriesSearch" type="search" placeholder="Search series…" aria-label="Search available series" />
+                  <select id="tplSeriesTypeFilter" aria-label="Filter available series by show type">
+                    <option value="">All show types</option>
+                  </select>
+                </div>
                 <div class="dp-scroll"><ol id="tplmAvail" class="items compact"></ol></div>
               </section>
               <section class="dp-pane">
