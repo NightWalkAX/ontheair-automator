@@ -376,9 +376,24 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   }
 
   // Trailing fillers fill to the block end and carry the tolerance guarantee.
-  const trailing = blockSecs - total;
+  let trailing = blockSecs - total;
   if (trailing > 0) {
-    const fill = packer.pack(trailing, { overrun: true });
+    let fill = packer.pack(trailing, { overrun: true });
+    // A residual gap shorter than the shortest filler is unreachable on its own —
+    // the pool simply has no clip that small, so pack() returns nothing and the
+    // hole survives. Give the pack more room by taking back fillers already
+    // placed in the block and re-packing the widened span at the end: a span of
+    // gap + a released filler is coarse enough to hit the target. The main item
+    // that followed a released filler loses its quarter-hour alignment, which is
+    // best-effort anyway; the block-end tolerance is the hard guarantee.
+    while (!fitsTolerance(trailing - fill.total)) {
+      const i = items.findLastIndex((r) => r.is_filler);
+      if (i < 0) break; // no filler to release — leave the hole, validation flags it
+      total -= items[i].duration;
+      items.splice(i, 1);
+      trailing = blockSecs - total;
+      fill = packer.pack(trailing, { overrun: true });
+    }
     for (const f of fill.items) items.push(f);
     total += fill.total;
   }
