@@ -255,6 +255,11 @@ export function initSchema() {
   addColumnIfMissing('ChannelType', 'playlist_template', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_username', 'TEXT');
   addColumnIfMissing('ChannelType', 'api_password', 'TEXT');
+  // Per-clip watermark. NULL means "follow the naming convention" — see
+  // channelLogoFilename() in otavClient.js. The file itself lives on the OTAV
+  // Mac; the API can neither list nor upload logos.
+  addColumnIfMissing('ChannelType', 'logo_filename', 'TEXT');
+  addColumnIfMissing('ChannelType', 'logo_enabled', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing('BlockTemplate', 'target_subject', 'TEXT');
   // content_type is retained for backward compatibility but no longer read by
   // the engine (the scheduling rule is derived per series). Kept so old DBs and

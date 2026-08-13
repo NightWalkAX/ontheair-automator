@@ -639,6 +639,9 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .dp-head strong { font-size: 12.5px; }
 .dp-head .muted { font-size: 11.5px; margin-left: auto; }
 .dp-pane input[type="search"] { font-size: 12.5px; padding: 5px 7px; margin-bottom: 6px; }
+.dp-filters { display: flex; gap: 6px; margin-bottom: 6px; }
+.dp-filters input[type="search"] { flex: 1 1 auto; margin-bottom: 0; min-width: 0; }
+.dp-filters select { flex: 0 1 auto; font-size: 12.5px; padding: 5px 7px; min-width: 0; max-width: 45%; }
 .dp-scroll { overflow-y: auto; max-height: 210px; min-height: 120px; margin: 0 -2px; padding: 0 2px; }
 /* The drop target must read as one even while empty. */
 .dp-empty {

@@ -284,6 +284,14 @@ test('approve-week then push to fake OTAV marks blocks exported', async () => {
   assert.equal(fakeOtav.state.received[0].clip_type, 0);
   assert.equal(fakeOtav.state.received[0].playlist, ch1.playlist);
 
+  // Every pushed clip carries the channel's watermark, named by the house rule.
+  const logo = `${ch1.channel} Watermark.png`;
+  assert.equal(ch1.logo, logo, 'the report names the watermark that was stamped');
+  assert.ok(!ch1.logo_warning, `watermark applied cleanly: ${ch1.logo_warning || ''}`);
+  const clips = fakeOtav.state.playlists.get(ch1.playlist).items;
+  assert.ok(clips.every((c) => c.logo_filename === logo && c.logo_enabled === true),
+    'all clips got logo_filename + logo_enabled');
+
   const exported = db.prepare("SELECT COUNT(*) n FROM ScheduledBlock WHERE status='exported' AND target_date='2026-07-20'").get();
   assert.ok(exported.n > 0);
 
@@ -552,6 +560,42 @@ test('a refused clear on an empty day playlist does not fail the push', async ()
   } finally {
     db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL
                 WHERE id = ?`).run(prev.api_port, ch.id);
+    await otav.close();
+  }
+});
+
+test('an instance that rejects the logo properties still airs the day', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  // logo_filename is outside OTAV's documented clip-update list, so an instance
+  // may refuse it. A missing watermark must not cost the channel its schedule.
+  const otav = await start({ refuseLogo: true });
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port, logo_filename FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(otav.port, ch.id);
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+
+  try {
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep?.ok, `push survives the rejected watermark: ${rep?.error || ''}`);
+    assert.ok(rep.pushed > 0, 'clips still went in');
+    assert.match(rep.logo_warning || '', /watermark not applied/, 'the failure is reported, not swallowed');
+
+    // One failed attempt is enough — it must not retry per clip.
+    const attempts = otav.state.received.filter((c) => c.logo_filename).length;
+    assert.equal(attempts, 0, 'no clip ended up with a logo');
+
+    // Turning the watermark off leaves the push entirely alone.
+    db.prepare('UPDATE ChannelType SET logo_enabled = 0 WHERE id = ?').run(ch.id);
+    db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20'").run();
+    const off = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep2 = off.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep2.ok);
+    assert.equal(rep2.logo, undefined, 'no watermark reported when the channel has it off');
+    assert.equal(rep2.logo_warning, undefined, 'and nothing to warn about');
+  } finally {
+    db.prepare('UPDATE ChannelType SET api_port = ?, logo_enabled = 1, logo_filename = ? WHERE id = ?')
+      .run(prev.api_port, prev.logo_filename ?? null, ch.id);
     await otav.close();
   }
 });

@@ -340,6 +340,10 @@
           <label class="field">API port <input id="chmPort" type="number" placeholder="8081" /></label>
           <label class="field">Day playlist name <input id="chmPlaylistName" placeholder="{channel} {date}" /></label>
           <label class="field">Fallback playlist ref <input id="chmPlaylist" placeholder="index or unique_id (optional)" /></label>
+          <div class="form-title" style="margin-top:6px">Watermark (logo per clip)</div>
+          <p class="muted" style="margin:0 0 6px">Stamped on every clip pushed to this channel. Blank follows the house rule “{channel} Watermark.png”. The file has to already exist on that OTAV Mac — the API can't upload it, and a name that matches nothing just shows no logo.</p>
+          <label class="field">Logo file name <input id="chmLogo" placeholder="{channel} Watermark.png" /></label>
+          <label class="chk"><input id="chmLogoEnabled" type="checkbox" /> stamp the watermark on pushed clips</label>
           <div class="form-title" style="margin-top:6px">Event-based schedule (file level)</div>
           <p class="muted" style="margin:0 0 6px">For OTAV instances running an event schedule REST can't edit. Only the template is required — the schedule defaults to the one OTAV reports, and day playlists to its folder. Paths as this machine sees them; the share must be mounted at the same path on the OTAV Mac.</p>
           <label class="field">Schedule JSON <input id="chmSchedulePath" placeholder="(blank = the schedule OTAV reports)" /></label>

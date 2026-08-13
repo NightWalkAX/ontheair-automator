@@ -14,6 +14,7 @@ export function startFakeOtav({
   scheduleFile = null,        // event schedule JSON on disk, like the real Macs run
   refuseClear = false,        // 422 "not editable" on DELETE, as scheduler-opened playlists do
   folderBased = false,        // playlists play a folder's contents: item lists aren't editable
+  refuseLogo = false,         // instance rejects the undocumented logo properties on a clip
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -96,10 +97,27 @@ export function startFakeOtav({
         if (req.method === 'POST') {
           if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index (items)' });
           if (pl.folderBased) return send(422, { success: false, error: 'The specified playlist is not editable' });
-          pl.items.push(json);
-          state.received.push({ ...json, playlist: pl.name });
-          return send(201, { success: true, unique_id: `id-${state.received.length}` });
+          const clip = { ...json, unique_id: `id-${state.received.length + 1}` };
+          pl.items.push(clip);
+          state.received.push({ ...clip, playlist: pl.name });
+          return send(201, { success: true, unique_id: clip.unique_id });
         }
+      }
+      // A single clip, addressed by unique_id or index — used to stamp the
+      // watermark after the clip is created, and to read it back.
+      const itemMatch = /^\/playlists\/([^/]+)\/items\/([^/]+)$/.exec(path);
+      if (itemMatch && (req.method === 'PUT' || req.method === 'GET')) {
+        const pl = findPlaylist(decodeURIComponent(itemMatch[1]));
+        if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index' });
+        const clipRef = decodeURIComponent(itemMatch[2]);
+        const clip = pl.items.find((c) => c.unique_id === clipRef) ?? pl.items[Number(clipRef)];
+        if (!clip) return send(404, { success: false, error: 'No clip matches the given unique ID or index' });
+        if (req.method === 'GET') return send(200, clip);
+        if (refuseLogo) return send(400, { success: false, error: 'Unknown property logo_filename' });
+        Object.assign(clip, json);
+        const mirror = state.received.find((c) => c.unique_id === clip.unique_id);
+        if (mirror) Object.assign(mirror, json);
+        return send(200, { success: true });
       }
       if (req.method === 'GET' && path === '/scheduler') {
         return send(200, {
