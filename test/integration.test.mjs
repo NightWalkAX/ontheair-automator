@@ -600,6 +600,35 @@ test('an instance that rejects the logo properties still airs the day', async ()
   }
 });
 
+test('re-pushing an already-exported day refreshes its clip attributes', async () => {
+  const { startFakeOtav: start } = await import('./fake-otav.mjs');
+  const otav = await start({});
+  const ch = db.prepare('SELECT id, name FROM ChannelType LIMIT 1').get();
+  const prev = db.prepare('SELECT api_port, logo_filename FROM ChannelType WHERE id = ?').get(ch.id);
+  db.prepare('UPDATE ChannelType SET api_port = ? WHERE id = ?').run(otav.port, ch.id);
+
+  try {
+    // The day has already gone out once — nothing left in 'approved'.
+    db.prepare("UPDATE ScheduledBlock SET status='exported' WHERE target_date='2026-07-20'").run();
+    // Operator now changes the watermark and pushes the same day again.
+    db.prepare("UPDATE ChannelType SET logo_filename = 'Changed Watermark.png' WHERE id = ?").run(ch.id);
+
+    const r = await j('POST', '/api/otav/push?date=2026-07-20');
+    const rep = r.data.channels.find((c) => c.channel === ch.name);
+    assert.ok(rep, 'an exported day is still pushed, not skipped');
+    assert.ok(rep.ok, `re-push ok: ${rep?.error || ''}`);
+    assert.ok(rep.pushed > 0, 'clips were sent again');
+    assert.equal(rep.logo, 'Changed Watermark.png');
+    const clips = otav.state.playlists.get(rep.playlist).items;
+    assert.ok(clips.length > 0 && clips.every((c) => c.logo_filename === 'Changed Watermark.png'),
+      'the new watermark reached every clip of the already-exported day');
+  } finally {
+    db.prepare('UPDATE ChannelType SET api_port = ?, logo_filename = ? WHERE id = ?')
+      .run(prev.api_port, prev.logo_filename ?? null, ch.id);
+    await otav.close();
+  }
+});
+
 test('diagnose?probe_create=1 reports which creation route the instance accepts', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const ch = db.prepare('SELECT id FROM ChannelType LIMIT 1').get();
