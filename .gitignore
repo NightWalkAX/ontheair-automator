@@ -13,6 +13,10 @@ data/*.sqlite-shm
 # Build / distribution artifacts
 dist/
 
+# DB backups and one-off cleanup run reports (machine-specific, not source)
+data/backups/
+scripts/cleanup/reports/
+
 # Local Claude Code settings
 .claude/settings.local.json
 
