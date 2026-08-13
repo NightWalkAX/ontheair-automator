@@ -281,7 +281,8 @@ async function pushToAir(btn, { scope }) {
         ? `${c.pushed} clips → “${c.playlist}” (${{
             prepared: 'file written + event upserted', created: 'created', open: 'reused',
             schedule: 'opened from schedule', fallback: 'fallback playlist',
-          }[c.source] || c.source || 'ok'})${c.warning ? ` — ${c.warning}` : ''}`
+          }[c.source] || c.source || 'ok'})${c.logo ? ` · logo ${c.logo}` : ''}`
+          + `${c.warning ? ` — ${c.warning}` : ''}${c.logo_warning ? ` — ${c.logo_warning}` : ''}`
         : c.error,
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
@@ -2537,6 +2538,8 @@ function openChannelEditor(c) {
   $('#chmPort').value = c.api_port ?? '';
   $('#chmPlaylistName').value = c.playlist_name_pattern ?? '';
   $('#chmPlaylist').value = c.playlist_ref ?? '';
+  $('#chmLogo').value = c.logo_filename ?? '';
+  $('#chmLogoEnabled').checked = c.logo_enabled !== 0;
   $('#chmSchedulePath').value = c.schedule_path ?? '';
   $('#chmPlaylistDir').value = c.playlist_dir ?? '';
   $('#chmPlaylistTemplate').value = c.playlist_template ?? '';
@@ -2553,6 +2556,8 @@ $('#chmSave').addEventListener('click', (e) => withBusy(e.currentTarget, async (
     api_port: $('#chmPort').value ? Number($('#chmPort').value) : null,
     playlist_name_pattern: $('#chmPlaylistName').value.trim() || null,
     playlist_ref: $('#chmPlaylist').value.trim() || null,
+    logo_filename: $('#chmLogo').value.trim() || null,
+    logo_enabled: $('#chmLogoEnabled').checked ? 1 : 0,
     schedule_path: $('#chmSchedulePath').value.trim() || null,
     playlist_dir: $('#chmPlaylistDir').value.trim() || null,
     playlist_template: $('#chmPlaylistTemplate').value.trim() || null,

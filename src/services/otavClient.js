@@ -407,6 +407,23 @@ class OtavClient {
     });
   }
 
+  /**
+   * Set the watermark on one clip. The create-clip body has no logo fields, so
+   * the logo is a follow-up edit: OTAV's clip update accepts "all properties of
+   * a clip" even though only the common ones are listed. Addressed by the clip's
+   * unique_id (the POST hands it back) rather than an index, which shifts.
+   */
+  setClipLogo(ref, clipRef, { filename, enabled }) {
+    return this.request('PUT', `/playlists/${OtavClient.ref(ref)}/items/${OtavClient.ref(clipRef)}`, {
+      logo_filename: filename,
+      logo_enabled: !!enabled,
+    });
+  }
+
+  getClip(ref, clipRef) {
+    return this.request('GET', `/playlists/${OtavClient.ref(ref)}/items/${OtavClient.ref(clipRef)}`);
+  }
+
   resynchronize() { return this.request('GET', '/scheduler/resynchronize'); }
 }
 
@@ -433,6 +450,24 @@ function blockItems(blockId) {
 }
 
 const DEFAULT_PLAYLIST_PATTERN = '{channel} {date}';
+
+// House rule for the per-clip watermark: every channel's logo file is named
+// after the channel. A channel may override it (the stored value also accepts
+// the {channel} token), and logo_enabled = 0 turns the watermark off entirely.
+const DEFAULT_LOGO_PATTERN = '{channel} Watermark.png';
+
+/**
+ * The watermark to stamp on every clip of a channel, or null when the channel
+ * has it switched off. The named file has to exist on that OTAV Mac — the REST
+ * API can neither list nor upload logos, so a name that matches nothing simply
+ * shows no watermark. pushApprovedBlocks reads one clip back to catch that.
+ */
+export function channelLogo(channel) {
+  if (channel.logo_enabled === 0) return null;
+  const pattern = (channel.logo_filename || '').trim() || DEFAULT_LOGO_PATTERN;
+  const filename = pattern.replaceAll('{channel}', channel.channel_name ?? channel.name ?? '').trim();
+  return filename ? { filename, enabled: true } : null;
+}
 
 /**
  * Name of the playlist that holds one channel's schedule for one day.
@@ -465,7 +500,8 @@ export async function pushApprovedBlocks(targetDate) {
     SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
            c.name AS channel_name, c.api_ip, c.api_port,
            c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
-           c.schedule_path, c.playlist_dir, c.playlist_template
+           c.schedule_path, c.playlist_dir, c.playlist_template,
+           c.logo_filename, c.logo_enabled
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     JOIN ChannelType   c  ON c.id = bt.channel_id
@@ -551,10 +587,40 @@ export async function pushApprovedBlocks(targetDate) {
         result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
         await client.clearIfNeeded(ref, await client.getPlaylist(ref).catch(() => null));
       }
+      // Watermark: a follow-up edit per clip, and never fatal — a day that airs
+      // without its logo still beats a day that doesn't air. The first failure
+      // stops further attempts so one unsupported instance can't turn into 80
+      // failing round-trips.
+      const logo = channelLogo(channel);
+      let logoDone = false;   // one read-back is enough to prove it stuck
+      let logoBroken = false;
+      const noteLogo = (msg) => { if (!result.logo_warning) result.logo_warning = msg; };
+      if (logo) result.logo = logo.filename;
+
       for (const b of dayItems) {
         for (const item of b.items) {
-          await client.addFileClip(ref, item.file_path, item.label || item.name);
+          const added = await client.addFileClip(ref, item.file_path, item.label || item.name);
           result.pushed++;
+          if (!logo || logoBroken) continue;
+          const clipRef = added?.unique_id;
+          if (!clipRef) {
+            logoBroken = true;
+            noteLogo('OTAV returned no clip id on create, so the watermark could not be addressed');
+            continue;
+          }
+          try {
+            await client.setClipLogo(ref, clipRef, logo);
+            if (!logoDone) {
+              logoDone = true;
+              const back = await client.getClip(ref, clipRef).catch(() => null);
+              if (back && back.logo_filename !== logo.filename) {
+                noteLogo(`OTAV kept logo_filename "${back.logo_filename}" instead of "${logo.filename}"`);
+              }
+            }
+          } catch (err) {
+            logoBroken = true;
+            noteLogo(`watermark not applied: ${err.message}`);
+          }
         }
         markExported.run(b.block_id);
       }
