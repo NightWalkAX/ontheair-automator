@@ -860,6 +860,35 @@ async function loadRoots() {
       toast(`Ingested ${ingested} of ${scanned} across ${g.channels.length} channel(s)`, 'ok', label);
       await loadResources();
     });
+    // Share: hand this already-scanned folder to more channels. The catalog is
+    // cloned from the donor channel, so the new channel has the clips available
+    // (durations, edits and approval intact) without an ffprobe pass.
+    const btnShare = el('button', { className: 'mini ghost', textContent: 'share' });
+    btnShare.onclick = async () => {
+      const have = new Set(g.channels.map((c) => c.channel_id));
+      const missing = mediaChannels.filter((c) => !have.has(c.id));
+      if (!missing.length) return toast('Every channel already has this folder', 'ok', label);
+      const picked = await channelsDialog(
+        'Share folder with channels',
+        `“${g.path}” (${g.show_type_name}) — pick the channels that should also carry this media.`,
+        missing, { confirmLabel: 'Share' },
+      );
+      if (!picked?.length) return;
+      await withBusy(btnShare, async () => {
+        const r = await api.send('POST', '/api/media/roots', {
+          channel_ids: picked, show_type_id: g.channels[0].show_type_id, path: g.path,
+        });
+        const n = r.created?.length ?? 0;
+        const cloned = r.clonedResources ?? 0;
+        toast(
+          `Shared with ${n} channel${n === 1 ? '' : 's'}`
+            + (cloned ? ` — ${cloned} clip(s) reused, no scan needed` : ' — run a scan to catalog it'),
+          'ok', label,
+        );
+        await loadRoots();
+        await loadResources();
+      });
+    };
     const btnEdit = el('button', { className: 'mini ghost', textContent: 'edit' });
     // Edit stays per-channel; when shared, edit the first assignment.
     btnEdit.onclick = () => editRoot({ ...g.channels[0], path: g.path, show_type_name: g.show_type_name });
@@ -879,7 +908,8 @@ async function loadRoots() {
       });
     };
     const td = el('td'); td.style.textAlign = 'right';
-    td.append(btnScan, document.createTextNode(' '), btnEdit, document.createTextNode(' '), btnDel); tr.append(td);
+    td.append(btnScan, document.createTextNode(' '), btnShare, document.createTextNode(' '),
+      btnEdit, document.createTextNode(' '), btnDel); tr.append(td);
     tb.append(tr);
   }
 }
@@ -915,6 +945,99 @@ async function editRoot(r) {
   actions.append(cancel, save);
   $('#dialog').classList.remove('hidden');
 }
+
+// A checkbox list of channels on the generic #dialog. Resolves the checked ids,
+// or null on cancel. Used wherever media has to be handed to more channels.
+function channelsDialog(title, msg, channels, { confirmLabel = 'Apply' } = {}) {
+  return new Promise((resolve) => {
+    $('#dialogTitle').textContent = title;
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    content.append(el('p', { className: 'dialog-msg', textContent: msg }));
+    const box = el('div', { className: 'weekday-row' });
+    const boxes = channels.map((c) => {
+      const input = el('input', { type: 'checkbox', value: c.id });
+      box.append(el('label', { className: 'chk' }, input, document.createTextNode(' ' + c.name)));
+      return input;
+    });
+    content.append(box);
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: 'primary', textContent: confirmLabel });
+    cancel.onclick = () => { closeDialog(); resolve(null); };
+    ok.onclick = () => {
+      const picked = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+      closeDialog();
+      resolve(picked);
+    };
+    actions.append(cancel, ok);
+    $('#dialog').classList.remove('hidden');
+  });
+}
+
+// Copy every root of one channel onto others — the fast path for a channel that
+// was just created and should carry the same media as an existing one.
+$('#btnCopyRoots')?.addEventListener('click', async () => {
+  if (mediaChannels.length < 2) return toast('Add a second channel first', 'bad');
+  const roots = await api.get('/api/media/roots');
+  const withRoots = mediaChannels.filter((c) => roots.some((r) => r.channel_id === c.id));
+  if (!withRoots.length) return toast('No channel has media roots to copy yet', 'bad');
+
+  $('#dialogTitle').textContent = 'Copy media roots';
+  const content = $('#dialogContent');
+  content.innerHTML = '';
+  const src = el('select');
+  for (const c of withRoots) {
+    const n = roots.filter((r) => r.channel_id === c.id).length;
+    src.append(el('option', { value: c.id, textContent: `${c.name} (${n} root${n === 1 ? '' : 's'})` }));
+  }
+  const box = el('div', { className: 'weekday-row' });
+  const boxes = new Map();
+  for (const c of mediaChannels) {
+    const input = el('input', { type: 'checkbox', value: c.id });
+    const lbl = el('label', { className: 'chk' }, input, document.createTextNode(' ' + c.name));
+    boxes.set(c.id, { input, lbl });
+    box.append(lbl);
+  }
+  // A channel can't copy onto itself: hide the source from the target list.
+  const syncTargets = () => {
+    for (const [id, { lbl, input }] of boxes) {
+      const isSource = id === Number(src.value);
+      lbl.style.display = isSource ? 'none' : '';
+      if (isSource) input.checked = false;
+    }
+  };
+  src.onchange = syncTargets;
+  syncTargets();
+  content.append(
+    el('label', { className: 'field' }, document.createTextNode('Copy roots from'), src),
+    el('span', { className: 'form-title' }, document.createTextNode('To these channels')),
+    box,
+    el('p', { className: 'hint muted', textContent: 'Already-scanned clips are reused as-is — durations, catalog edits and approval carry over, so no ffprobe pass is needed.' }),
+  );
+  const actions = $('#dialogActions');
+  actions.innerHTML = '';
+  const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+  const ok = el('button', { className: 'primary', textContent: 'Copy' });
+  cancel.onclick = closeDialog;
+  ok.onclick = () => withBusy(ok, async () => {
+    const to_channel_ids = [...boxes.values()].filter((b) => b.input.checked).map((b) => Number(b.input.value));
+    if (!to_channel_ids.length) return toast('Pick at least one target channel', 'bad');
+    const r = await api.send('POST', '/api/media/roots/copy', { from_channel_id: Number(src.value), to_channel_ids });
+    closeDialog();
+    const n = r.created?.length ?? 0;
+    toast(
+      n ? `Copied ${n} root assignment(s) — ${r.clonedResources} clip(s) reused`
+        : 'Nothing to copy — those channels already have every root',
+      'ok',
+    );
+    await loadRoots();
+    await loadResources();
+  });
+  actions.append(cancel, ok);
+  $('#dialog').classList.remove('hidden');
+});
 
 // A single text-input dialog built on the generic #dialog, with an optional
 // datalist of suggestions. Resolves the entered string, or null on cancel.
@@ -2111,6 +2234,7 @@ let tplSlots = [];          // [{start_time, end_time}]
 let tplSeries = [];         // [{subject, meta}] every active series on the channel
 let tplChosen = [];         // [subject] the ones this template cycles, in play order
 let tplSeriesSearch = '';
+let tplSeriesTypeFilter = ''; // show_type_name to restrict the Available pane to, '' = all
 let tplDrag = null;         // subject being dragged between the two panes
 let tplDirty = false;       // unsaved-changes guard for the close handlers
 
@@ -2164,7 +2288,9 @@ async function openTemplate(t) {
   renderTplSlots();
 
   const included = (t?.series || []).map((s) => s.subject);
-  tplSeriesSearch = ''; $('#tplSeriesSearch').value = ''; tplDrag = null;
+  tplSeriesSearch = ''; $('#tplSeriesSearch').value = '';
+  tplSeriesTypeFilter = ''; $('#tplSeriesTypeFilter').value = '';
+  tplDrag = null;
   await loadTplSeries(tplPrimaryChannel(), included);
 
   tplDirty = false;   // opening a template is not itself a change
@@ -2240,16 +2366,30 @@ function tplSeriesRow(subject, { chosen }) {
   return li;
 }
 
+// Rebuild the show-type filter's options from whatever series are on this
+// channel, keeping the current selection if it still exists.
+function renderTplTypeFilter() {
+  const sel = $('#tplSeriesTypeFilter');
+  const types = [...new Set(tplSeries.map((s) => s.meta.show_type_name).filter(Boolean))].sort();
+  if (tplSeriesTypeFilter && !types.includes(tplSeriesTypeFilter)) tplSeriesTypeFilter = '';
+  sel.innerHTML = '';
+  sel.append(el('option', { value: '', textContent: 'All show types' }));
+  for (const t of types) sel.append(el('option', { value: t, textContent: t, selected: t === tplSeriesTypeFilter }));
+}
+
 function renderTplSeries() {
   const avail = $('#tplmAvail'), chosenList = $('#tplmChosen');
   avail.innerHTML = ''; chosenList.innerHTML = '';
+  renderTplTypeFilter();
 
-  // Left pane: everything not already in the block, filtered by the search box.
+  // Left pane: everything not already in the block, filtered by the search box
+  // and (optionally) by show type.
   const q = tplSeriesSearch.trim().toLowerCase();
   const available = tplSeries
     .map((s) => s.subject)
     .filter((s) => !tplChosen.includes(s))
-    .filter((s) => !q || s.toLowerCase().includes(q));
+    .filter((s) => !q || s.toLowerCase().includes(q))
+    .filter((s) => !tplSeriesTypeFilter || tplMeta(s).show_type_name === tplSeriesTypeFilter);
 
   $('#tplAvailCount').textContent = `${available.length}`;
   $('#tplChosenCount').textContent = `${tplChosen.length}`;
@@ -2323,6 +2463,7 @@ function tplWireRowDrops(root, { chosen }) {
 tplWireRowDrops($('#tplmChosen'), { chosen: true });
 tplWireRowDrops($('#tplmAvail'), { chosen: false });
 $('#tplSeriesSearch').addEventListener('input', (e) => { tplSeriesSearch = e.currentTarget.value; renderTplSeries(); });
+$('#tplSeriesTypeFilter').addEventListener('change', (e) => { tplSeriesTypeFilter = e.currentTarget.value; renderTplSeries(); });
 
 function showTplErrors(problems) {
   const box = $('#tplmValidation');

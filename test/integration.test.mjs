@@ -834,6 +834,32 @@ test('clone on re-add: a scanned folder assigned to a new channel needs no re-sc
   assert.ok(reg.includes('Math') && reg.includes('History') && reg.includes('Biology'));
 });
 
+test('copy roots: a new channel inherits every root of an existing one, catalog included', async () => {
+  const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
+  const fresh = (await j('POST', '/api/channels', { name: 'Channel 4', api_ip: '127.0.0.1', api_port: fakeOtav.port })).data.id;
+  const sourceRoots = db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(c1);
+  assert.ok(sourceRoots.length >= 2, 'source channel has several roots');
+
+  const copy = await j('POST', '/api/media/roots/copy', { from_channel_id: c1, to_channel_ids: [fresh] });
+  assert.equal(copy.status, 201);
+  assert.equal(copy.data.created.length, sourceRoots.length, 'every root was registered for the new channel');
+  assert.ok(copy.data.clonedResources > 0, 'the scanned catalog was reused, not re-probed');
+
+  const paths = db.prepare('SELECT path FROM MediaRoot WHERE channel_id = ? ORDER BY path').all(fresh).map((r) => r.path);
+  assert.deepEqual(paths, sourceRoots.map((r) => r.path).sort(), 'same folders as the source channel');
+  // Clips arrive schedulable: approval state carries over from the donor.
+  const approved = db.prepare('SELECT COUNT(*) n FROM Resource WHERE channel_id = ? AND approved = 1').get(fresh).n;
+  assert.ok(approved > 0, `cloned clips kept the donor's approval (${approved})`);
+
+  // Re-running is a no-op, and a channel can't copy onto itself.
+  const again = await j('POST', '/api/media/roots/copy', { from_channel_id: c1, to_channel_ids: [fresh] });
+  assert.equal(again.data.created.length, 0, 'second copy adds nothing');
+  const self = await j('POST', '/api/media/roots/copy', { from_channel_id: c1, to_channel_ids: [c1] });
+  assert.equal(self.status, 400, 'copying a channel onto itself is rejected');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(fresh);
+});
+
 test('latestEpisode returns the newest-added episode, not the highest chapter', () => {
   const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
   const ins = db.prepare(`INSERT INTO Resource (name, file_path, duration, subject, chapter, is_filler, approved, channel_id, show_type_id, added_at)
