@@ -37,7 +37,8 @@ const { router: media } = await import('../src/routes/media.js');
 const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
-const { fitFillers, spreadFillers } = await import('../src/services/scheduling.js');
+const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock } =
+  await import('../src/services/scheduling.js');
 const { cloneScannedResources } = await import('../src/services/ingestion.js');
 const { latestEpisode } = await import('../src/services/playHistory.js');
 const { startFakeOtav } = await import('./fake-otav.mjs');
@@ -668,6 +669,31 @@ test('a hole bigger than maxUnderrun is closed by overrunning instead', () => {
   const under = fitFillers(ch, 10);
   assert.equal(under.total, 7, 'a 3s hole is inside tolerance — no overrun');
   assert.ok(under.fits);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('a trailing gap shorter than the shortest filler is closed by taking a filler back', () => {
+  // Pool of 60s/70s clips: a residual gap under 60s is unreachable on its own —
+  // pack() can place nothing and the hole survives. The builder must release a
+  // filler it already placed and re-pack the widened span to close the block.
+  const ch = db.prepare("INSERT INTO ChannelType (name, api_ip, api_port) VALUES ('Coarse Trailing', '127.0.0.1', 1) RETURNING id").get().id;
+  const addFiller = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+                                VALUES (?, ?, ?, 1, 1, ?)`);
+  addFiller.run('f60', '/tmp/f60.mov', 60, ch);
+  addFiller.run('f70', '/tmp/f70.mov', 70, ch);
+  const addMain = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter)
+                              VALUES (?, ?, ?, 0, 1, ?, 'Coarse', ?)`);
+  // 830 + [70 align] + 500 + [400 align] + 1760 = 3560 → a 40s trailing hole.
+  [830, 500, 1760].forEach((d, i) => addMain.run(`ch${i + 1}`, `/tmp/ch${i + 1}.mov`, d, ch, i + 1));
+
+  const template = { id: -1, channel_id: ch, target_subject: 'Coarse', content_type: 'lesson_series' };
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+  const packer = makeFillerPacker(ch);
+  const { items, total } = buildAlignedBlock(template, block, 3600, 8 * 3600, ch, packer);
+
+  assert.ok(fitsTolerance(3600 - total), `block closed to ${total}/3600s, within tolerance`);
+  assert.ok(items.some((r) => r.is_filler), 'fillers were placed');
 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
