@@ -487,10 +487,16 @@ export function dayPlaylistName(channel, targetDate) {
 }
 
 /**
- * Push all approved blocks for `targetDate` to their channels' OTAV instances.
- * Groups blocks by channel, creates (or reuses+clears) that channel's playlist
- * FOR THAT DAY, then appends every clip in schedule order. On success marks
- * blocks 'exported'.
+ * Push every block for `targetDate` that has cleared review — 'approved' AND
+ * 'exported' — to their channels' OTAV instances. Groups blocks by channel,
+ * creates (or reuses+clears) that channel's playlist FOR THAT DAY, then appends
+ * every clip in schedule order. On success marks blocks 'exported'.
+ *
+ * Already-exported days are re-pushed rather than skipped: a push is "make OTAV
+ * match the schedule as it stands now", so clip attributes changed after the
+ * first push (the channel watermark, a renamed clip) reach air on the next one.
+ * Drafts are still never pushed. Note this rebuilds the day's playlist, so
+ * pushing a day that is currently on air interrupts it briefly.
  *
  * Returns a per-channel report; failures are captured per channel rather than
  * aborting the whole run (one dead OTAV shouldn't block the other 5).
@@ -505,7 +511,7 @@ export async function pushApprovedBlocks(targetDate) {
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     JOIN ChannelType   c  ON c.id = bt.channel_id
-    WHERE sb.target_date = ? AND sb.status = 'approved'
+    WHERE sb.target_date = ? AND sb.status IN ('approved', 'exported')
     ORDER BY bt.channel_id, bt.start_time
   `).all(targetDate);
 
@@ -645,8 +651,9 @@ export async function pushApprovedBlocks(targetDate) {
  * own playlist (and, on event schedules, its own schedule event) — so pushing a
  * single date only ever airs that one day.
  *
- * Dates with no approved blocks are skipped and listed, rather than reported as
- * failures: an empty Wednesday is normal for a Mon/Tue/Thu template.
+ * Dates with nothing past review are skipped and listed, rather than reported as
+ * failures: an empty Wednesday is normal for a Mon/Tue/Thu template. Days pushed
+ * before are pushed again, so a week push refreshes what already aired out.
  */
 export async function pushApprovedRange(fromDate, toDate) {
   const dates = [];
