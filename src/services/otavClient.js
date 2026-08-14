@@ -29,7 +29,9 @@
 // the same path, Resource.file_path is used verbatim as the clip "url".
 
 import { db } from '../db.js';
-import { inspectPaths, prepareDaySchedule } from './otavSchedule.js';
+import {
+  createScheduleBatch, flushScheduleBatch, inspectPaths, prepareDaySchedule,
+} from './otavSchedule.js';
 import { EPISODE_NO_CTE, withLabel } from './labels.js';
 
 /**
@@ -209,15 +211,19 @@ class OtavClient {
   }
 
   /**
-   * The safest ref for a playlist we know by file path: its index. A
-   * scheduler-opened playlist reports a name that still carries the .xpls
-   * extension, so the day name alone is not a reliable handle.
+   * The safest ref for a playlist we know by file path: its unique_id, falling
+   * back to its index. A scheduler-opened playlist reports a name that still
+   * carries the .xpls extension, so the day name is not a reliable handle — and
+   * the index is worse than it looks: it is just the playlist's position among
+   * the open ones, so it shifts whenever OTAV closes/reopens playlists (which it
+   * does on every schedule reload). Filling a day through a stale index empties
+   * and rewrites SOMEBODY ELSE'S day; a unique_id simply 404s instead.
    */
   async refForPath(path, fallback) {
     const open = await this.openPlaylists().catch(() => []);
     const hit = open.find((pl) => pl.path === path)
       || open.find((pl) => (pl.name || '').replace(/\.xpls$/i, '') === String(fallback));
-    return hit ? { ref: hit.index, playlist: hit } : { ref: fallback, playlist: null };
+    return hit ? { ref: hit.unique_id ?? hit.index, playlist: hit } : { ref: fallback, playlist: null };
   }
 
   /**
@@ -486,6 +492,246 @@ export function dayPlaylistName(channel, targetDate) {
     .trim();
 }
 
+/** Blocks of one date that have cleared review, with their channel's settings. */
+function dayBlocks(targetDate) {
+  return db.prepare(`
+    SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
+           c.name AS channel_name, c.api_ip, c.api_port,
+           c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
+           c.schedule_path, c.playlist_dir, c.playlist_template,
+           c.logo_filename, c.logo_enabled
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    JOIN ChannelType   c  ON c.id = bt.channel_id
+    WHERE sb.target_date = ? AND sb.status IN ('approved', 'exported')
+    ORDER BY bt.channel_id, bt.start_time
+  `).all(targetDate);
+}
+
+/**
+ * One push at a time, process-wide.
+ *
+ * A push is a long read-modify-write against a live OTAV: clear the day's
+ * playlist, then append ~80 clips one REST call at a time. Two overlapping
+ * pushes (an impatient second click, a retried request, a week push racing a day
+ * push) interleave those steps, so one run clears the playlist the other is
+ * halfway through filling — the clips visibly appear, vanish and reappear.
+ * Queueing costs nothing here: pushes are operator-triggered and rare.
+ */
+let pushQueue = Promise.resolve();
+function serialized(fn) {
+  const run = pushQueue.then(fn);
+  pushQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+/**
+ * Fill one channel's day playlist with that day's clips and mark the blocks
+ * exported. `plan` carries the day's blocks, their clips and the prepared
+ * schedule entry; the caller owns error reporting.
+ */
+async function fillDayPlaylist(client, channel, plan) {
+  const { result, dayItems, prepared } = plan;
+  const playlistName = result.playlist;
+  const markExported = db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?");
+
+  let ref;
+  try {
+    const day = await client.ensureDayPlaylist(playlistName, prepared?.playlistPath);
+    ref = day.ref;
+    result.playlist_ref = ref;
+    result.created = prepared?.playlistCreated ?? day.created;
+    result.source = day.source;
+    if (day.notes?.length) result.warning = day.notes.join('; ');
+  } catch (err) {
+    // Instances without the "traffic" option can neither create playlists
+    // nor (usually) expose a schedule folder. Fall back to the channel's
+    // fixed playlist_ref if one is configured; otherwise say what to fix.
+    if (channel.playlist_ref == null || channel.playlist_ref === '') {
+      throw new Error(
+        `${err.message}. Fix one of: point that OTAV's scheduler at a ` +
+        `FOLDER-BASED schedule (a folder of playlists) so it can create the ` +
+        `day's playlist there, pre-create/open a playlist named ` +
+        `"${playlistName}" on that Mac, or set the channel's fallback playlist ref.`,
+      );
+    }
+    ref = channel.playlist_ref;
+    result.playlist_ref = ref;
+    result.created = false;
+    result.source = 'fallback';
+    result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
+    await client.clearIfNeeded(ref, await client.getPlaylist(ref).catch(() => null));
+  }
+
+  // Watermark: a follow-up edit per clip, and never fatal — a day that airs
+  // without its logo still beats a day that doesn't air. The first failure
+  // stops further attempts so one unsupported instance can't turn into 80
+  // failing round-trips.
+  const logo = channelLogo(channel);
+  let logoDone = false;   // one read-back is enough to prove it stuck
+  let logoBroken = false;
+  const noteLogo = (msg) => { if (!result.logo_warning) result.logo_warning = msg; };
+  if (logo) result.logo = logo.filename;
+
+  for (const b of dayItems) {
+    for (const item of b.items) {
+      const added = await client.addFileClip(ref, item.file_path, item.label || item.name);
+      result.pushed++;
+      if (!logo || logoBroken) continue;
+      const clipRef = added?.unique_id;
+      if (!clipRef) {
+        logoBroken = true;
+        noteLogo('OTAV returned no clip id on create, so the watermark could not be addressed');
+        continue;
+      }
+      try {
+        await client.setClipLogo(ref, clipRef, logo);
+        if (!logoDone) {
+          logoDone = true;
+          const back = await client.getClip(ref, clipRef).catch(() => null);
+          if (back && back.logo_filename !== logo.filename) {
+            noteLogo(`OTAV kept logo_filename "${back.logo_filename}" instead of "${logo.filename}"`);
+          }
+        }
+      } catch (err) {
+        logoBroken = true;
+        noteLogo(`watermark not applied: ${err.message}`);
+      }
+    }
+    markExported.run(b.block_id);
+  }
+}
+
+/**
+ * Push every requested day of ONE channel, in one pass over that instance.
+ *
+ * The order matters and is the fix for playlists churning during a week push:
+ * all the days' playlist files and schedule events are prepared first and the
+ * schedule is written ONCE (only if it actually changed), then a single
+ * resynchronize lets OTAV reload and settle, and only then are playlists
+ * resolved and filled. Preparing-and-resyncing per day instead made OTAV close
+ * and reopen its playlists between (and during) days, which both churned the
+ * playlist list and invalidated the ref of the day being filled.
+ *
+ * Returns [{ targetDate, result }] — one report row per day, failures included.
+ */
+async function pushChannelDays(channel, days) {
+  const client = new OtavClient(channel);
+  const plans = [];
+  for (const [targetDate, blocks] of days) {
+    // Read the day's clips up front: the schedule event needs their total run
+    // time, and pushing them is the next step anyway.
+    const dayItems = blocks.map((b) => ({ block_id: b.block_id, items: blockItems(b.block_id) }));
+    plans.push({
+      targetDate,
+      blocks,
+      dayItems,
+      daySeconds: dayItems.reduce((sum, b) => sum + b.items.reduce((s, i) => s + (i.duration || 0), 0), 0),
+      result: {
+        channel: channel.channel_name,
+        playlist: dayPlaylistName(channel, targetDate),
+        pushed: 0,
+        blocks: blocks.length,
+      },
+    });
+  }
+  const rows = () => plans.map((p) => ({ targetDate: p.targetDate, result: p.result }));
+
+  // Auth is per instance, not per day.
+  try {
+    await client.authorize();
+  } catch (err) {
+    for (const plan of plans) { plan.result.ok = false; plan.result.error = String(err.message || err); }
+    return rows();
+  }
+
+  // Event-based schedules can't be modified over REST, so when the channel is
+  // configured for it, the days' playlist files and their schedule events are
+  // prepared on disk first — that is also what makes a playlist openable by path
+  // below (OTAV only opens paths its schedule references). When the channel
+  // doesn't name a schedule, ask the instance which one it has open rather than
+  // making the operator retype the path.
+  let reportedSchedulePath = null;
+  if (!channel.schedule_path && channel.playlist_template) {
+    const sched = await client.request('GET', '/scheduler').catch(() => null);
+    reportedSchedulePath = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
+  }
+  const batch = createScheduleBatch();
+  for (const plan of plans) {
+    try {
+      plan.prepared = prepareDaySchedule(channel, {
+        playlistName: plan.result.playlist,
+        targetDate: plan.targetDate,
+        startDateTime: `${plan.targetDate} ${String(plan.blocks[0]?.start_time || '00:00').slice(0, 5)}:00`,
+        durationSeconds: plan.daySeconds,
+        reportedSchedulePath,
+        batch,
+      });
+      if (plan.prepared) {
+        plan.result.playlist_path = plan.prepared.playlistPath;
+        plan.result.schedule_event = plan.prepared.event;
+        plan.result.schedule_path = plan.prepared.schedulePath;
+      }
+    } catch (err) {
+      plan.prepareError = err; // this day only; the other days still go out
+    }
+  }
+  const written = flushScheduleBatch(batch);
+  // One resync per channel, before any playlist is resolved: OTAV re-reads the
+  // schedule (picking up the new .xpls files) and settles its open playlists
+  // BEFORE we take refs, instead of shuffling them under a fill in progress.
+  // Nothing changed on disk -> nothing to reload, so don't ask for one.
+  if (written.length || plans.some((p) => p.prepared?.playlistCreated)) {
+    await client.resynchronize().catch(() => {}); // best-effort
+  }
+
+  for (const plan of plans) {
+    try {
+      if (plan.prepareError) throw plan.prepareError;
+      await fillDayPlaylist(client, channel, plan);
+      plan.result.ok = true;
+    } catch (err) {
+      plan.result.ok = false;
+      plan.result.error = String(err.message || err);
+      if (/not editable/i.test(plan.result.error)) {
+        plan.result.error += '. OTAV refuses edits on that playlist — stop the scheduler '
+          + '(GET /scheduler/stop), or open the playlist in OTAV and unlock it, then push again.';
+      }
+    }
+  }
+  return rows();
+}
+
+/**
+ * Push a set of dates, one channel at a time (a channel's whole run — every day
+ * it owns — completes before the next instance is touched). Returns one entry
+ * per date that had something to push.
+ */
+async function pushDays(dates) {
+  const perChannel = new Map(); // channel_id -> { channel, days: Map(date -> blocks) }
+  const nonEmpty = new Set();
+  for (const targetDate of dates) {
+    for (const b of dayBlocks(targetDate)) {
+      nonEmpty.add(targetDate);
+      let entry = perChannel.get(b.channel_id);
+      if (!entry) perChannel.set(b.channel_id, (entry = { channel: b, days: new Map() }));
+      if (!entry.days.has(targetDate)) entry.days.set(targetDate, []);
+      entry.days.get(targetDate).push(b);
+    }
+  }
+
+  const rows = [];
+  for (const entry of perChannel.values()) {
+    rows.push(...await pushChannelDays(entry.channel, entry.days));
+  }
+  // Report stays date-major (channels within a day in channel order), which is
+  // what the push report renders, even though the run is channel-major.
+  return dates.filter((d) => nonEmpty.has(d)).map((targetDate) => ({
+    targetDate,
+    channels: rows.filter((r) => r.targetDate === targetDate).map((r) => r.result),
+  }));
+}
+
 /**
  * Push every block for `targetDate` that has cleared review — 'approved' AND
  * 'exported' — to their channels' OTAV instances. Groups blocks by channel,
@@ -501,148 +747,11 @@ export function dayPlaylistName(channel, targetDate) {
  * Returns a per-channel report; failures are captured per channel rather than
  * aborting the whole run (one dead OTAV shouldn't block the other 5).
  */
-export async function pushApprovedBlocks(targetDate) {
-  const blocks = db.prepare(`
-    SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
-           c.name AS channel_name, c.api_ip, c.api_port,
-           c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
-           c.schedule_path, c.playlist_dir, c.playlist_template,
-           c.logo_filename, c.logo_enabled
-    FROM ScheduledBlock sb
-    JOIN BlockTemplate bt ON bt.id = sb.template_id
-    JOIN ChannelType   c  ON c.id = bt.channel_id
-    WHERE sb.target_date = ? AND sb.status IN ('approved', 'exported')
-    ORDER BY bt.channel_id, bt.start_time
-  `).all(targetDate);
-
-  // Group by channel.
-  const byChannel = new Map();
-  for (const b of blocks) {
-    if (!byChannel.has(b.channel_id)) byChannel.set(b.channel_id, { channel: b, blocks: [] });
-    byChannel.get(b.channel_id).blocks.push(b);
-  }
-
-  const report = [];
-  const markExported = db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?");
-
-  for (const { channel, blocks: chBlocks } of byChannel.values()) {
-    const playlistName = dayPlaylistName(channel, targetDate);
-    const client = new OtavClient(channel);
-    // Read the day's clips up front: the schedule event needs their total run
-    // time, and pushing them is the next step anyway.
-    const dayItems = chBlocks.map((b) => ({ block_id: b.block_id, items: blockItems(b.block_id) }));
-    const daySeconds = dayItems.reduce(
-      (sum, b) => sum + b.items.reduce((s, i) => s + (i.duration || 0), 0), 0);
-    const result = {
-      channel: channel.channel_name,
-      playlist: playlistName,
-      pushed: 0,
-      blocks: chBlocks.length,
-    };
-    try {
-      await client.authorize();
-
-      // Event-based schedules can't be modified over REST, so when the channel
-      // is configured for it, the day's playlist file and its schedule event are
-      // prepared on disk first — that is also what makes the playlist openable
-      // by path below (OTAV only opens paths its schedule references).
-      // When the channel doesn't name a schedule, ask the instance which one it
-      // has open rather than making the operator retype the path.
-      let reportedSchedulePath = null;
-      if (!channel.schedule_path && channel.playlist_template) {
-        const sched = await client.request('GET', '/scheduler').catch(() => null);
-        reportedSchedulePath = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
-      }
-      const prepared = prepareDaySchedule(channel, {
-        playlistName,
-        targetDate,
-        startDateTime: `${targetDate} ${String(chBlocks[0]?.start_time || '00:00').slice(0, 5)}:00`,
-        durationSeconds: daySeconds,
-        reportedSchedulePath,
-      });
-      if (prepared) {
-        result.playlist_path = prepared.playlistPath;
-        result.schedule_event = prepared.event;
-        result.schedule_path = prepared.schedulePath;
-      }
-
-      let ref;
-      try {
-        const day = await client.ensureDayPlaylist(playlistName, prepared?.playlistPath);
-        ref = day.ref;
-        result.playlist_ref = ref;
-        result.created = prepared?.playlistCreated ?? day.created;
-        result.source = day.source;
-        if (day.notes?.length) result.warning = day.notes.join('; ');
-      } catch (err) {
-        // Instances without the "traffic" option can neither create playlists
-        // nor (usually) expose a schedule folder. Fall back to the channel's
-        // fixed playlist_ref if one is configured; otherwise say what to fix.
-        if (channel.playlist_ref == null || channel.playlist_ref === '') {
-          throw new Error(
-            `${err.message}. Fix one of: point that OTAV's scheduler at a ` +
-            `FOLDER-BASED schedule (a folder of playlists) so it can create the ` +
-            `day's playlist there, pre-create/open a playlist named ` +
-            `"${playlistName}" on that Mac, or set the channel's fallback playlist ref.`,
-          );
-        }
-        ref = channel.playlist_ref;
-        result.playlist_ref = ref;
-        result.created = false;
-        result.source = 'fallback';
-        result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
-        await client.clearIfNeeded(ref, await client.getPlaylist(ref).catch(() => null));
-      }
-      // Watermark: a follow-up edit per clip, and never fatal — a day that airs
-      // without its logo still beats a day that doesn't air. The first failure
-      // stops further attempts so one unsupported instance can't turn into 80
-      // failing round-trips.
-      const logo = channelLogo(channel);
-      let logoDone = false;   // one read-back is enough to prove it stuck
-      let logoBroken = false;
-      const noteLogo = (msg) => { if (!result.logo_warning) result.logo_warning = msg; };
-      if (logo) result.logo = logo.filename;
-
-      for (const b of dayItems) {
-        for (const item of b.items) {
-          const added = await client.addFileClip(ref, item.file_path, item.label || item.name);
-          result.pushed++;
-          if (!logo || logoBroken) continue;
-          const clipRef = added?.unique_id;
-          if (!clipRef) {
-            logoBroken = true;
-            noteLogo('OTAV returned no clip id on create, so the watermark could not be addressed');
-            continue;
-          }
-          try {
-            await client.setClipLogo(ref, clipRef, logo);
-            if (!logoDone) {
-              logoDone = true;
-              const back = await client.getClip(ref, clipRef).catch(() => null);
-              if (back && back.logo_filename !== logo.filename) {
-                noteLogo(`OTAV kept logo_filename "${back.logo_filename}" instead of "${logo.filename}"`);
-              }
-            }
-          } catch (err) {
-            logoBroken = true;
-            noteLogo(`watermark not applied: ${err.message}`);
-          }
-        }
-        markExported.run(b.block_id);
-      }
-      await client.resynchronize().catch(() => {}); // best-effort
-      result.ok = true;
-    } catch (err) {
-      result.ok = false;
-      result.error = String(err.message || err);
-      if (/not editable/i.test(result.error)) {
-        result.error += '. OTAV refuses edits on that playlist — stop the scheduler '
-          + '(GET /scheduler/stop), or open the playlist in OTAV and unlock it, then push again.';
-      }
-    }
-    report.push(result);
-  }
-  return { targetDate, channels: report };
+export function pushApprovedBlocks(targetDate) {
+  return serialized(async () => {
+    const days = await pushDays([targetDate]);
+    return { targetDate, channels: days[0]?.channels ?? [] };
+  });
 }
 
 /**
@@ -655,28 +764,24 @@ export async function pushApprovedBlocks(targetDate) {
  * failures: an empty Wednesday is normal for a Mon/Tue/Thu template. Days pushed
  * before are pushed again, so a week push refreshes what already aired out.
  */
-export async function pushApprovedRange(fromDate, toDate) {
-  const dates = [];
-  for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
-       d.setUTCDate(d.getUTCDate() + 1)) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  const days = [];
-  const skipped = [];
-  for (const date of dates) {
-    const day = await pushApprovedBlocks(date);
-    if (day.channels.length) days.push(day);
-    else skipped.push(date);
-  }
-  return {
-    from: fromDate,
-    to: toDate,
-    days,
-    skipped,
-    // Flat per-channel-per-day view, for reports that just want a list.
-    channels: days.flatMap((d) => d.channels.map((c) => ({ ...c, date: d.targetDate }))),
-  };
+export function pushApprovedRange(fromDate, toDate) {
+  return serialized(async () => {
+    const dates = [];
+    for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
+         d.setUTCDate(d.getUTCDate() + 1)) {
+      dates.push(d.toISOString().slice(0, 10));
+    }
+    const days = await pushDays(dates);
+    const pushed = new Set(days.map((d) => d.targetDate));
+    return {
+      from: fromDate,
+      to: toDate,
+      days,
+      skipped: dates.filter((d) => !pushed.has(d)),
+      // Flat per-channel-per-day view, for reports that just want a list.
+      channels: days.flatMap((d) => d.channels.map((c) => ({ ...c, date: d.targetDate }))),
+    };
+  });
 }
 
 /** Connectivity check: hit /info on one channel. */

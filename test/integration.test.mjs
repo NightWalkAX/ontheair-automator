@@ -430,7 +430,7 @@ test('event-based schedule: push writes the day playlist file, upserts one event
 test('push week: every date a template repeats on gets its own playlist and event', async () => {
   const { startFakeOtav: start } = await import('./fake-otav.mjs');
   const { readSchedule } = await import('../src/services/otavSchedule.js');
-  const { mkdtempSync, writeFileSync, existsSync } = await import('node:fs');
+  const { mkdtempSync, writeFileSync, readFileSync, existsSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { tmpdir } = await import('node:os');
 
@@ -476,6 +476,31 @@ test('push week: every date a template repeats on gets its own playlist and even
     }
     // Days with nothing approved are reported as skipped, not as failures.
     assert.equal(r.data.skipped.length, 7 - dates.length);
+
+    // The whole week goes out in ONE pass per channel: the schedule is written
+    // once and OTAV asked to reload once. Reloading per day made it close and
+    // reopen its playlists between days, which churned the playlist list and
+    // invalidated the ref of the day being filled.
+    assert.equal(otav.state.resynced, 1, 'one resynchronize for the entire week');
+    const clipsPerDay = new Map(dates.map((date) => [
+      `${ch.name} ${date}`,
+      otav.state.received.filter((c) => c.playlist === `${ch.name} ${date}`).length,
+    ]));
+    for (const [name, n] of clipsPerDay) assert.ok(n > 0, `clips landed in "${name}"`);
+
+    // Re-push of the same week (every block now 'exported'): nothing about the
+    // schedule changed, so it must not be rewritten and OTAV must not reload —
+    // and each day's playlist ends up holding exactly its own clips again,
+    // rather than being cleared and refilled by another day's push.
+    const scheduleBefore = readFileSync(schedulePath, 'utf8');
+    const r2 = await j('POST', '/api/otav/push?week=2026-07-20');
+    assert.equal(r2.status, 200);
+    assert.ok(r2.data.channels.every((c) => c.ok), r2.data.channels.find((c) => !c.ok)?.error);
+    assert.equal(readFileSync(schedulePath, 'utf8'), scheduleBefore, 're-push leaves the schedule alone');
+    assert.equal(otav.state.resynced, 1, 're-push triggers no schedule reload');
+    for (const [name, n] of clipsPerDay) {
+      assert.equal(otav.state.playlists.get(name)?.items.length, n, `"${name}" still holds its own clips`);
+    }
   } finally {
     db.prepare(`UPDATE ChannelType SET api_port = ?, schedule_path = NULL, playlist_template = NULL
                 WHERE id = ?`).run(prev.api_port, ch.id);
