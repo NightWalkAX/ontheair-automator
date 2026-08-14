@@ -69,15 +69,34 @@ export function writeSchedule(schedulePath, doc) {
 }
 
 /**
+ * Key-order-independent comparison — the operator's editor may reorder keys, and
+ * a re-push that rewrites an identical event costs a schedule reload on the OTAV
+ * side (see upsertDayEvent).
+ */
+function sameEvent(a, b) {
+  const canon = (v) => JSON.stringify(v, (_k, val) => (
+    val && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+      : val));
+  return canon(a) === canon(b);
+}
+
+/**
  * Insert or replace this app's event for one channel-day, in place.
  * Other events are left byte-for-byte as they were.
+ *
+ * An event that already says exactly what we would write reports 'unchanged' so
+ * the caller can skip the file write: OTAV watches the schedule and reloads it on
+ * every change, closing and reopening the playlists it references — a re-push
+ * that rewrote an identical schedule made the day's playlist vanish and come back
+ * under us while we were filling it.
  *
  * @param doc            parsed schedule document
  * @param displayName    tagged name identifying our event (see eventDisplayName)
  * @param playlistPath   .xpls path as the OTAV Mac sees it
  * @param startDateTime  "YYYY-MM-DD HH:MM:SS"
  * @param durationSeconds total run time of the day's playlist
- * @returns 'inserted' | 'replaced'
+ * @returns 'inserted' | 'replaced' | 'unchanged'
  */
 export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, durationSeconds }) {
   const event = {
@@ -93,6 +112,7 @@ export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, 
   };
   const at = doc.events.findIndex((ev) => isOurs(ev, displayName));
   if (at >= 0) {
+    if (sameEvent(doc.events[at], event)) return 'unchanged';
     doc.events[at] = event;
     return 'replaced';
   }
@@ -101,8 +121,30 @@ export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, 
 }
 
 /**
+ * Collector for a run that prepares several days at once (a week push touches 7
+ * days per channel). Every day of a channel edits the SAME schedule document, so
+ * without batching the file is written — and therefore reloaded by OTAV — once
+ * per day, which closes and reopens that instance's playlists 7 times mid-push.
+ * Pass one batch through every prepareDaySchedule call, then flush it once.
+ */
+export function createScheduleBatch() {
+  return { docs: new Map(), dirty: new Set() };
+}
+
+/** Write every schedule the batch actually changed. Returns the paths written. */
+export function flushScheduleBatch(batch) {
+  const written = [];
+  for (const path of batch.dirty) {
+    writeSchedule(path, batch.docs.get(path));
+    written.push(path);
+  }
+  batch.dirty.clear();
+  return written;
+}
+
+/**
  * Make the day's playlist exist on disk and be referenced by the schedule.
- * Returns { playlistPath, playlistCreated, event, schedulePath } or null when
+ * Returns { playlistPath, playlistCreated, event, changed, schedulePath } or null when
  * this channel isn't set up for file-level scheduling (no playlist folder or no
  * template, or no schedule to edit).
  *
@@ -110,7 +152,7 @@ export function upsertDayEvent(doc, { displayName, playlistPath, startDateTime, 
  * skip here would surface much later as an opaque REST 422.
  */
 export function prepareDaySchedule(channel, {
-  playlistName, targetDate, startDateTime, durationSeconds, reportedSchedulePath,
+  playlistName, targetDate, startDateTime, durationSeconds, reportedSchedulePath, batch,
 }) {
   const template = channel.playlist_template;
   // The channel may name the schedule explicitly; otherwise use the one the
@@ -142,11 +184,21 @@ export function prepareDaySchedule(channel, {
   }
 
   const displayName = eventDisplayName(channel.channel_name ?? channel.name, targetDate);
-  const doc = readSchedule(schedulePath);
+  // Within a batch every day of this channel edits one in-memory document, so
+  // the schedule is read once and written once no matter how many days go out.
+  const doc = batch?.docs.get(schedulePath) ?? readSchedule(schedulePath);
+  batch?.docs.set(schedulePath, doc);
   const event = upsertDayEvent(doc, { displayName, playlistPath, startDateTime, durationSeconds });
-  writeSchedule(schedulePath, doc);
+  // Only touch the file when something really changed: an untouched schedule is
+  // a schedule OTAV doesn't reload, and a reload mid-push reopens its playlists.
+  const changed = event !== 'unchanged';
+  if (batch) {
+    if (changed) batch.dirty.add(schedulePath);
+  } else if (changed) {
+    writeSchedule(schedulePath, doc);
+  }
 
-  return { playlistPath, playlistCreated, event, displayName, schedulePath };
+  return { playlistPath, playlistCreated, event, changed, displayName, schedulePath };
 }
 
 /**
