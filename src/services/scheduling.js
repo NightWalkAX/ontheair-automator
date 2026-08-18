@@ -187,23 +187,40 @@ export function isMovieBlock(template) {
 }
 
 /**
- * The eligible movie pool for a block: every non-filler, approved resource of
- * the block's series, capped at the slot length, minus
+ * The eligible movie pool for a block: every non-filler, approved resource in
+ * scope, capped at the slot length, minus
  *   - titles still inside their cooldown window (PlayHistory), and
  *   - titles already scheduled within 6 days either side of this block's date,
  *     which is what keeps a week from airing the same film twice.
  * Falls back a level at a time rather than returning nothing, so a small or
  * fully-cooled catalog still produces a block.
+ *
+ * `subjects` sets the scope: omit it for the block's own series, pass a list to
+ * narrow it, or pass null for EVERY movie on the channel — which is what a movie
+ * block with no series assigned means ("just fill it with movies"). An empty list
+ * means an empty pool: the operator named series and none of them feed this pass.
  */
-export function moviePool(template, block, blockSecs, channelId) {
-  const subjects = templateSeries(template, channelId).map((s) => s.subject);
-  if (!subjects.length) return [];
-  const marks = subjects.map(() => '?').join(',');
-  const all = db.prepare(`
-    SELECT * FROM Resource
-    WHERE channel_id = ? AND is_filler = 0 AND approved = 1 AND duration <= ?
-      AND subject IN (${marks})
-  `).all(channelId, blockSecs, ...subjects);
+export function moviePool(template, block, blockSecs, channelId, subjects = undefined) {
+  const scope = subjects === undefined
+    ? templateSeries(template, channelId).map((s) => s.subject)
+    : subjects;
+  let all;
+  if (scope === null) {
+    all = db.prepare(`
+      SELECT r.* FROM Resource r
+      JOIN ShowType st ON st.id = r.show_type_id
+      WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
+        AND st.code = 'movies'
+    `).all(channelId, blockSecs);
+  } else {
+    if (!scope.length) return [];
+    const marks = scope.map(() => '?').join(',');
+    all = db.prepare(`
+      SELECT * FROM Resource
+      WHERE channel_id = ? AND is_filler = 0 AND approved = 1 AND duration <= ?
+        AND subject IN (${marks})
+    `).all(channelId, blockSecs, ...scope);
+  }
   if (!all.length) return [];
 
   // Already scheduled in the surrounding week (any block but this one).
@@ -273,6 +290,99 @@ export function chooseMovies(pool, startSecs, blockSecs, limit) {
   return best.items;
 }
 
+/**
+ * The ordered features a movie block airs.
+ *
+ * A movie block is not "pick whatever fits" for every series it holds. A SERIAL
+ * series is a franchise, and a franchise has an order: it contributes its NEXT
+ * part, from the series cursor, exactly as it would in a normal block. Choosing
+ * its part by best fit instead — which is what this used to do — meant a block
+ * assigned "Harry Potter" aired part 2 one night and part 5 the next.
+ *
+ * Whatever slots are left over (up to movie_limit in total) are filled by
+ * best-fit from the standalone pool, which is what keeps a long slot from
+ * becoming mostly filler.
+ *
+ * Scope of that standalone pool:
+ *   - series assigned  -> the non-serial ones among them,
+ *   - nothing assigned -> every movie on the channel. A movie block with no
+ *     series named means "fill it with movies", so it draws on the whole
+ *     library rather than coming back empty.
+ */
+export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
+  const limit = movieLimit(template);
+  if (limit <= 0) return [];
+  const series = templateSeries(template, channelId);
+
+  const items = [];
+  const used = new Set();
+  let pos = startSecs; // running clock, so fit is measured the way the block lays out
+  const endIfPlaced = (r) => Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
+  const fits = (r) => endIfPlaced(r) - startSecs <= blockSecs;
+  const place = (r) => { pos = endIfPlaced(r); items.push(r); used.add(r.id); };
+
+  // 1. Franchises, in the template's series order, each at its next part.
+  //
+  // A franchise may double-bill (parts 1 and 2 the same night) only when it is the
+  // block's only source. With a standalone folder also assigned, each franchise
+  // takes one slot per block so the other series still gets one — the same
+  // one-pick-per-series-per-round cycling a normal block uses.
+  const hasStandalone = series.some((sr) => sr.rule !== 'serial');
+  const maxPerFranchise = hasStandalone ? 1 : limit;
+  const serials = series
+    .filter((sr) => sr.rule === 'serial')
+    .map((sr) => ({ it: serialIterator(channelId, sr.subject, block), count: 0 }));
+  let progressed = true;
+  while (progressed && items.length < limit) {
+    progressed = false;
+    for (const a of serials) {
+      if (items.length >= limit) break;
+      if (a.count >= maxPerFranchise) continue;
+      const r = a.it.peek();
+      if (!r || used.has(r.id) || !fits(r)) continue;
+      place(r);
+      a.it.consume();
+      a.count++;
+      progressed = true;
+    }
+  }
+
+  // 2. Remaining slots: best-fit films for the time still open.
+  if (items.length < limit) {
+    const standalone = series.filter((sr) => sr.rule !== 'serial').map((sr) => sr.subject);
+    const scope = series.length ? standalone : null; // null = every movie on the channel
+    let pool = moviePool(template, block, blockSecs, channelId, scope)
+      .filter((r) => !used.has(r.id));
+    // The whole-library pool sweeps in franchise members too. Picking those purely
+    // by fit would air "Narnia 2" with no "Narnia 1" before it, so each franchise
+    // is narrowed to the one part it is actually due to play.
+    if (scope === null) pool = onlyNextParts(pool, channelId, block);
+    for (const r of chooseMovies(pool, pos, blockSecs - (pos - startSecs), limit - items.length)) {
+      place(r);
+    }
+  }
+  return items;
+}
+
+/**
+ * Keep every unordered film (chapter 0) plus, for each ordered series present, only
+ * the part that series is due to play next. Lets an unrestricted movie block draw
+ * on the whole library without airing a franchise out of order.
+ */
+function onlyNextParts(pool, channelId, block) {
+  const due = new Map(); // subject -> chapter due next
+  return pool.filter((r) => {
+    if (!r.subject || Number(r.chapter) <= 0) return true;
+    if (!due.has(r.subject)) due.set(r.subject, nextChapter(channelId, r.subject, block.target_date));
+    const target = due.get(r.subject);
+    // The series may have run past its last part, in which case it wraps to the
+    // lowest remaining — mirror serialIterator's wrap rather than dropping it.
+    const parts = pool.filter((x) => x.subject === r.subject).map((x) => Number(x.chapter)).sort((a, b) => a - b);
+    const pick = parts.find((c) => c >= target) ?? parts[0];
+    return Number(r.chapter) === pick;
+  });
+}
+
 function iteratorForSeries(series, channelId, block, blockSecs) {
   switch (series.rule) {
     case 'serial':
@@ -303,11 +413,10 @@ function iteratorForSeries(series, channelId, block, blockSecs) {
 export function pickMainContent(template, block, blockSecs) {
   const channelId = block.channel_id ?? template.channel_id;
   const series = templateSeries(template, channelId);
-  if (!series.length) return [];
+  if (!series.length && !isMovieBlock(template)) return [];
 
   const iters = isMovieBlock(template)
-    ? [sequenceIterator(chooseMovies(
-        moviePool(template, block, blockSecs, channelId), 0, blockSecs, movieLimit(template)))]
+    ? [sequenceIterator(pickMovieRun(template, block, blockSecs, 0, channelId))]
     : series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
   const items = [];
   const usedIds = new Set();
@@ -447,16 +556,33 @@ export function makeFillerPacker(channelId) {
     // `reserve` seconds back so packExact can still land the tail on the second.
     // A gap no wider than the reserve skips this pass entirely and is handled by
     // the exact pass alone, exactly as before.
-    const items = [];
-    let total = 0;
-    while (target - total > reserve) {
-      const r = nextInRotation(target - total - reserve);
+    const bulk = [];
+    let bulkTotal = 0;
+    while (target - bulkTotal > reserve) {
+      const r = nextInRotation(target - bulkTotal - reserve);
       if (!r) break;
-      items.push(r);
-      total += r.duration;
+      bulk.push(r);
+      bulkTotal += r.duration;
     }
-    const tail = packExact(target - total, opts);
-    return { items: [...items, ...tail.items], total: total + tail.total };
+    let tail = packExact(target - bulkTotal, opts);
+
+    // Diversity is best-effort; closing the gap is the guarantee. Spending clips
+    // greedily can strand a remainder the pool cannot compose (a 6-clip pool asked
+    // for 1800s lands 13s short this way, where 600+600+600 is exact), so bulk
+    // clips are handed back one at a time until the exact pass can finish the job.
+    // Worst case the whole bulk is returned and this is the old exact-only search.
+    // Only the closing fill carries the tolerance, so only it pays for this: an
+    // alignment gap mid-block is allowed to come up short and self-corrects at the
+    // next quarter mark.
+    if (opts.overrun) {
+      while (bulk.length && !fitsTolerance(target - bulkTotal - tail.total)) {
+        const r = bulk.pop();
+        bulkTotal -= r.duration;
+        rot = (rot - 1 + rotation.length) % rotation.length; // un-spend its turn
+        tail = packExact(target - bulkTotal, opts);
+      }
+    }
+    return { items: [...bulk, ...tail.items], total: bulkTotal + tail.total };
   }
 
   return { pack, hasFillers: fillers.length > 0 };
@@ -502,12 +628,11 @@ function timeOfDaySeconds(hhmm) {
  * Returns { items, total } — the ordered resource sequence and its duration.
  */
 export function buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer) {
-  // A movie block pools every title its series expose and places the best-fitting
-  // run of up to movie_limit of them, instead of cycling one pick per series.
+  // A movie block places its own run: franchises at their next part, then
+  // best-fitting standalone films for whatever time is left. See pickMovieRun.
   const movie = isMovieBlock(template);
   const iters = movie
-    ? [sequenceIterator(chooseMovies(
-        moviePool(template, block, blockSecs, channelId), startSecs, blockSecs, movieLimit(template)))]
+    ? [sequenceIterator(pickMovieRun(template, block, blockSecs, startSecs, channelId))]
     : templateSeries(template, channelId).map((s) => iteratorForSeries(s, channelId, block, blockSecs));
 
   // max_per_show caps how many episodes one series may contribute to a block

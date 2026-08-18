@@ -38,7 +38,7 @@ const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
 const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock,
-        chooseMovies, moviePool, movieLimit } =
+        chooseMovies, moviePool, movieLimit, pickMovieRun } =
   await import('../src/services/scheduling.js');
 const { sagaSubjectName } = await import('../src/services/movieSaga.js');
 const { cloneScannedResources } = await import('../src/services/ingestion.js');
@@ -972,6 +972,95 @@ test('a franchise name already used by another show type gets a qualified subjec
     sagaSubjectName('Curious George', (n) => n === 'Curious George' || n === 'Curious George (Movies)'),
     'Curious George (Movies 2)'
   );
+});
+
+// A movie channel with a numbered franchise (serial) plus standalone films, the
+// shape the catalogue has after the saga split.
+function makeSagaChannel(name) {
+  const ch = db.prepare(
+    'INSERT INTO ChannelType (name, api_ip, api_port) VALUES (?, ?, 1) RETURNING id'
+  ).get(name, '127.0.0.1').id;
+  const stMovies = stId('movies');
+  const addFilm = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+                              VALUES (?, ?, ?, 0, 1, ?, ?, ?, ?)`);
+  // Franchise: four 1h parts.
+  for (const p of [1, 2, 3, 4]) {
+    addFilm.run(`Saga_Part_${p}`, `/tmp/${name}-saga${p}.mov`, 3600, ch, 'Saga', p, stMovies);
+  }
+  // Standalone films, chapter 0 — the flat "Movies" folder.
+  [5400, 3600, 3540, 2700].forEach((d, i) =>
+    addFilm.run(`Solo${i}`, `/tmp/${name}-solo${i}.mov`, d, ch, 'Movies', 0, stMovies));
+  const addFiller = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+                                VALUES (?, ?, ?, 1, 1, ?)`);
+  [600, 300, 120, 60, 55, 52].forEach((d, i) => addFiller.run(`sf${d}`, `/tmp/${name}-sf${i}.mov`, d, ch));
+  db.prepare(`INSERT INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+              VALUES (?, 'Saga', ?, 1, 1, 0), (?, 'Movies', ?, 0, 1, 1)`).run(ch, stMovies, ch, stMovies);
+  return ch;
+}
+
+function sagaTemplate(ch, subjects, movie_limit = 2) {
+  const id = db.prepare(`INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, content_type, is_movie_block, movie_limit)
+                         VALUES (?, 'Movie Night', 'Mon', 'Mon', '20:00', '23:00', 'movie', 1, ?) RETURNING id`)
+    .get(ch, movie_limit).id;
+  subjects.forEach((sub, i) =>
+    db.prepare('INSERT INTO BlockTemplateSeries (template_id, subject, play_order) VALUES (?, ?, ?)').run(id, sub, i));
+  return db.prepare('SELECT * FROM BlockTemplate WHERE id = ?').get(id);
+}
+
+test('a movie block plays an assigned franchise in part order, not by best fit', () => {
+  const ch = makeSagaChannel('Saga Order');
+  const tpl = sagaTemplate(ch, ['Saga']);
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+  // Nothing has aired, so the franchise is due at part 1 — a fit-first search would
+  // instead have taken whichever part happened to fill the slot best.
+  const run = pickMovieRun(tpl, block, 3 * 3600, 20 * 3600, ch);
+  assert.equal(run[0].subject, 'Saga');
+  assert.equal(run[0].chapter, 1, 'the franchise starts at part 1');
+
+  // Advance the cursor: the block must follow the series to part 3.
+  db.prepare("UPDATE ChannelSeries SET cursor_chapter = 3 WHERE channel_id = ? AND subject = 'Saga'").run(ch);
+  const later = pickMovieRun(tpl, block, 3 * 3600, 20 * 3600, ch);
+  assert.equal(later[0].chapter, 3, 'the block follows the series cursor');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('a movie block with no series assigned fills from every movie on the channel', () => {
+  const ch = makeSagaChannel('Saga Open');
+  const tpl = sagaTemplate(ch, []);            // nothing assigned at all
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+
+  assert.equal(moviePool(tpl, block, 3 * 3600, ch).length, 0, 'the block names no series');
+  const run = pickMovieRun(tpl, block, 3 * 3600, 20 * 3600, ch);
+  assert.equal(run.length, 2, 'it still fills with movies rather than coming back empty');
+  assert.ok(run.every((r) => r.duration > 0));
+
+  // A franchise swept in by the open pool may only appear at the part it is due,
+  // so an unrestricted movie night never airs part 3 before part 1.
+  const openRuns = [];
+  for (let i = 0; i < 6; i++) {
+    openRuns.push(...pickMovieRun(tpl, { ...block, target_date: `2026-12-0${i + 1}` }, 3 * 3600, 20 * 3600, ch));
+  }
+  const sagaParts = openRuns.filter((r) => r.subject === 'Saga').map((r) => r.chapter);
+  assert.ok(sagaParts.every((c) => c === 1), `only the due part aired (saw ${sagaParts.join(',')})`);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('a franchise plus the standalone folder fills the slot and keeps the order', () => {
+  const ch = makeSagaChannel('Saga Mixed');
+  const tpl = sagaTemplate(ch, ['Saga', 'Movies']);
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+  const { items, total } = buildAlignedBlock(tpl, block, 3 * 3600, 20 * 3600, ch, makeFillerPacker(ch));
+  const mains = items.filter((r) => !r.is_filler);
+
+  assert.equal(mains.length, 2, 'the franchise part plus a standalone film');
+  assert.equal(mains[0].subject, 'Saga');
+  assert.equal(mains[0].chapter, 1, 'the franchise still leads at its due part');
+  assert.equal(mains[1].subject, 'Movies', 'a standalone film closes the slot');
+  assert.ok(fitsTolerance(3 * 3600 - total), 'the block still fits');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
 
 test('a wide gap is spread over distinct fillers instead of repeating one clip', () => {
