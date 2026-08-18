@@ -232,6 +232,12 @@ export function moviePool(template, block, blockSecs, channelId) {
  * its order as well as its durations. The search is a depth-first walk over runs
  * (longest titles first, so strong fits surface early), bounded by a node cap and
  * short-circuited on an exact fill. Returns the run with the smallest leftover.
+ *
+ * Two titles from the same franchise may share a block, but only in ascending part
+ * order — a double bill of "Toy Story 1" then "Toy Story 2" is fine, the reverse
+ * is not. (Franchises exist as their own subjects since movie sagas are split out;
+ * see services/movieSaga.js.) Standalone films carry chapter 0, i.e. no ordinal, so
+ * the constraint does not apply between them.
  */
 export function chooseMovies(pool, startSecs, blockSecs, limit) {
   if (!pool.length || limit <= 0) return [];
@@ -249,6 +255,12 @@ export function chooseMovies(pool, startSecs, blockSecs, limit) {
     for (const r of cands) {
       if (nodes++ > NODE_CAP) return;
       if (chosen.includes(r)) continue;
+      // Same franchise already in the block? Only continue it forwards. Chapter 0
+      // means "no ordinal" (every standalone film in the flat Movies folder), so
+      // it carries no order to respect and two of them may share a block freely.
+      if (r.subject != null && Number(r.chapter) > 0 && chosen.some(
+        (c) => c.subject === r.subject && Number(c.chapter) > 0 && Number(c.chapter) >= Number(r.chapter)
+      )) continue;
       const end = Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
       if (end - startSecs > blockSecs) continue; // would run past the slot
       chosen.push(r);

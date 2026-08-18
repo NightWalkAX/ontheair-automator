@@ -12,6 +12,7 @@ import { join, extname, basename, dirname } from 'node:path';
 import { db, withTx } from '../db.js';
 import { loadConfig, localizePath, delocalizePath } from '../config.js';
 import { parseEpisode, encodeChapter } from './episodeParse.js';
+import { groupSagas, sagaSubjectName } from './movieSaga.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +22,12 @@ const VIDEO_EXTS = new Set([
 
 // Show-type codes whose series default to sequential chapter progression.
 const SERIAL_DEFAULT_CODES = new Set(['lessons', 'tv_shows']);
+
+// Show-type codes whose flat folders get franchise (saga) detection: movies
+// arrive as standalone files with the sequel number in the filename rather than
+// in a folder, so the only way to surface "Toy Story" as its own series is to
+// read the whole folder at once. See services/movieSaga.js.
+const SAGA_CODES = new Set(['movies']);
 
 // A clip is auto-classified as a filler when it lives inside a folder named
 // "Filler"/"Fillers", at any duration. (Explicitly assigning a root to the
@@ -73,6 +80,65 @@ function detectSubject(filePath, rootPath) {
 function detectEpisode(fileName) {
   const { season, episode } = parseEpisode(basename(fileName, extname(fileName)));
   return { season, chapter: encodeChapter(season, episode) };
+}
+
+/**
+ * Re-file a scanned set of movie rows into per-franchise series.
+ *
+ * Runs WITHIN each detected subject (normally the one flat "Movies" folder, but a
+ * root that already has franchise subfolders keeps them scoped), and mutates the
+ * rows in place: a saga member takes the franchise as its subject and its part as
+ * its chapter, so the engine can play the franchise in order and the catalog
+ * shows it as its own folder. A standalone film keeps its folder subject and gets
+ * chapter 0 — the generic "last integer in the name" fallback would otherwise
+ * leave junk ordinals like 2019 for "Aladdin_2019" or 102 for "102_Dalmatians".
+ *
+ * Returns { subjects, sagaSubjects } — every subject the rows now use, and which
+ * of those are franchises (registered as serial, so they play in part order).
+ */
+function applySagaGrouping(rows) {
+  const subjects = new Set();
+  const sagaSubjects = new Set();
+  const bySubject = new Map();
+  for (const r of rows) {
+    if (r.is_filler || !r.subject) continue;
+    if (!bySubject.has(r.subject)) bySubject.set(r.subject, []);
+    bySubject.get(r.subject).push(r);
+  }
+  // A franchise name already used by another show type on this channel would
+  // merge the films into that series (and collide their chapters), so it gets a
+  // qualified name instead. Scanned-but-unwritten rows count as taken too.
+  const channelId = rows[0]?.channel_id;
+  const showTypeId = rows[0]?.show_type_id;
+  const taken = db.prepare(
+    'SELECT 1 AS x FROM Resource WHERE channel_id = ? AND subject = ? AND show_type_id IS NOT ? LIMIT 1'
+  );
+  const isTaken = (name) =>
+    name !== undefined &&
+    (!!taken.get(channelId, name, showTypeId ?? null) || sagaSubjects.has(name));
+
+  for (const [subject, group] of bySubject) {
+    const { sagas } = groupSagas(group.map((r) => ({ id: r.file_path, name: r.name })));
+    const partOf = new Map(); // file_path -> { base, part }
+    for (const [rawBase, members] of sagas) {
+      const base = rawBase === subject ? rawBase : sagaSubjectName(rawBase, isTaken);
+      sagaSubjects.add(base);
+      for (const m of members) partOf.set(m.id, { base, part: m.part });
+    }
+    for (const r of group) {
+      const hit = partOf.get(r.file_path);
+      if (hit) {
+        r.subject = hit.base;
+        r.season = null;
+        r.chapter = hit.part;
+      } else {
+        r.chapter = 0; // standalone film — no meaningful ordinal
+      }
+      subjects.add(r.subject);
+    }
+    if (!sagas.size) subjects.add(subject);
+  }
+  return { subjects, sagaSubjects };
 }
 
 /** Probe a single file's duration (seconds, rounded) via ffprobe. */
@@ -138,8 +204,11 @@ function upsert(row) {
  * can order/toggle them. Existing rows are never clobbered (INSERT OR IGNORE),
  * so admin ordering/flags survive re-scans. Filler content (null subject) is
  * skipped — fillers are a channel-wide pool, not a series.
+ *
+ * `serialSubjects` marks individual subjects serial even when the show type's
+ * default is standalone — used for detected movie franchises.
  */
-function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
+function registerSeries(channelId, subjects, showTypeId, isSerialDefault, serialSubjects = null) {
   if (!subjects.size) return;
   const nextOrder = db.prepare(
     'SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM ChannelSeries WHERE channel_id = ?'
@@ -150,7 +219,10 @@ function registerSeries(channelId, subjects, showTypeId, isSerialDefault) {
     VALUES (?, ?, ?, ?, 1, ?)
   `);
   for (const subject of subjects) {
-    insert.run(channelId, subject, showTypeId ?? null, isSerialDefault ? 1 : 0, nextOrder.get(channelId).n);
+    // A detected franchise is serial regardless of its show type's default: the
+    // whole point of splitting it out is to play its parts in order.
+    const serial = isSerialDefault || serialSubjects?.has(subject) ? 1 : 0;
+    insert.run(channelId, subject, showTypeId ?? null, serial, nextOrder.get(channelId).n);
   }
 }
 
@@ -238,10 +310,13 @@ export async function scanMediaRoot(mediaRoot) {
   // file_path in canonical (OTAV Mac) form — that string is what gets pushed
   // as the clip url, so it must be valid on the playout Mac, not here.
   const files = await collectVideoFiles(localizePath(mediaRoot.path));
-  let ingested = 0;
   const errors = [];
-  const subjects = new Set();
+  let subjects = new Set();
 
+  // Probe first, upsert after. Franchise detection needs to weigh a title against
+  // every OTHER title in the folder (a lone "Big_Hero_6" is not a sequel, two
+  // "Angry_Birds_N" are), so the rows are staged before any of them is written.
+  const rows = [];
   for (const localFile of files) {
     const file = delocalizePath(localFile);
     try {
@@ -257,8 +332,7 @@ export async function scanMediaRoot(mediaRoot) {
       const info = await stat(localFile);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
       const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file);
-      if (subject) subjects.add(subject);
-      upsert({
+      rows.push({
         name: basename(file, extname(file)),
         file_path: file,
         duration,
@@ -271,13 +345,25 @@ export async function scanMediaRoot(mediaRoot) {
         show_type_id: mediaRoot.show_type_id,
         added_at: info.mtime.toISOString(),
       });
-      ingested++;
     } catch (err) {
       errors.push({ file, error: String(err.message || err) });
     }
   }
 
-  registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault);
+  let sagaSubjects = null;
+  if (SAGA_CODES.has(showType?.code)) {
+    ({ subjects, sagaSubjects } = applySagaGrouping(rows));
+  } else {
+    for (const r of rows) if (r.subject) subjects.add(r.subject);
+  }
+
+  let ingested = 0;
+  for (const row of rows) {
+    upsert(row);
+    ingested++;
+  }
+
+  registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault, sagaSubjects);
   return { scanned: files.length, ingested, errors };
 }
 
