@@ -8,7 +8,7 @@
 
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
-import { nextChapter, randomWithCooldown, latestEpisode } from './playHistory.js';
+import { nextChapter, randomWithCooldown, cooldownEligible, latestEpisode } from './playHistory.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -159,6 +159,108 @@ function singleIterator(resource) {
   };
 }
 
+/** Sequence iterator: yields a pre-chosen list of resources in order. */
+function sequenceIterator(list) {
+  let i = 0;
+  return { peek: () => list[i] ?? null, consume: () => { i++; } };
+}
+
+// --- Movie blocks -----------------------------------------------------------
+// A block flagged `is_movie_block` does NOT cycle its series one pick at a time
+// (which yielded a single feature per slot, leaving hours to be papered over with
+// fillers). Instead it treats every movie the block's series expose as one pool
+// and searches that pool for the combination of up to `movie_limit` titles that
+// fills the slot best, so the leftover the fillers have to cover is as small as
+// the catalog allows.
+
+/** Max movies a movie block may hold: template override, else config default. */
+export function movieLimit(template) {
+  const n = Number(template?.movie_limit);
+  if (n > 0) return Math.floor(n);
+  const cfg = Number(loadConfig().movies?.maxPerBlock);
+  return cfg > 0 ? Math.floor(cfg) : 2;
+}
+
+/** Is this template a movie block? */
+export function isMovieBlock(template) {
+  return Number(template?.is_movie_block) === 1;
+}
+
+/**
+ * The eligible movie pool for a block: every non-filler, approved resource of
+ * the block's series, capped at the slot length, minus
+ *   - titles still inside their cooldown window (PlayHistory), and
+ *   - titles already scheduled within 6 days either side of this block's date,
+ *     which is what keeps a week from airing the same film twice.
+ * Falls back a level at a time rather than returning nothing, so a small or
+ * fully-cooled catalog still produces a block.
+ */
+export function moviePool(template, block, blockSecs, channelId) {
+  const subjects = templateSeries(template, channelId).map((s) => s.subject);
+  if (!subjects.length) return [];
+  const marks = subjects.map(() => '?').join(',');
+  const all = db.prepare(`
+    SELECT * FROM Resource
+    WHERE channel_id = ? AND is_filler = 0 AND approved = 1 AND duration <= ?
+      AND subject IN (${marks})
+  `).all(channelId, blockSecs, ...subjects);
+  if (!all.length) return [];
+
+  // Already scheduled in the surrounding week (any block but this one).
+  const nearby = new Set(db.prepare(`
+    SELECT DISTINCT si.resource_id AS id
+    FROM ScheduleItem si
+    JOIN ScheduledBlock sb ON sb.id = si.block_id
+    WHERE sb.id != ?
+      AND sb.target_date BETWEEN date(?, '-6 days') AND date(?, '+6 days')
+  `).all(block.id, block.target_date, block.target_date).map((r) => r.id));
+
+  const cooled = cooldownEligible(channelId, all, block.target_date);
+  const unaired = all.filter((r) => !nearby.has(r.id));
+  const fresh = cooled.filter((r) => !nearby.has(r.id));
+  if (fresh.length) return fresh;
+  if (cooled.length) return cooled;    // the whole catalogue already aired this week
+  if (unaired.length) return unaired;  // everything is still cooling down
+  return all;                          // both, on a catalogue this small
+}
+
+/**
+ * Pick the best-fitting ordered run of up to `limit` movies from `pool`.
+ *
+ * Scoring mirrors how buildAlignedBlock will actually lay them out: every item
+ * starts on the next quarter-hour mark, so the span a run consumes depends on
+ * its order as well as its durations. The search is a depth-first walk over runs
+ * (longest titles first, so strong fits surface early), bounded by a node cap and
+ * short-circuited on an exact fill. Returns the run with the smallest leftover.
+ */
+export function chooseMovies(pool, startSecs, blockSecs, limit) {
+  if (!pool.length || limit <= 0) return [];
+  const cands = pool.slice().sort((a, b) => b.duration - a.duration || a.id - b.id);
+  const NODE_CAP = 200_000;
+  let nodes = 0;
+  let best = { items: [], leftover: blockSecs };
+
+  const walk = (chosen, pos) => {
+    if (chosen.length) {
+      const leftover = blockSecs - (pos - startSecs);
+      if (leftover < best.leftover) best = { items: chosen.slice(), leftover };
+      if (best.leftover === 0 || chosen.length >= limit) return;
+    }
+    for (const r of cands) {
+      if (nodes++ > NODE_CAP) return;
+      if (chosen.includes(r)) continue;
+      const end = Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
+      if (end - startSecs > blockSecs) continue; // would run past the slot
+      chosen.push(r);
+      walk(chosen, end);
+      chosen.pop();
+      if (best.leftover === 0) return;
+    }
+  };
+  walk([], startSecs);
+  return best.items;
+}
+
 function iteratorForSeries(series, channelId, block, blockSecs) {
   switch (series.rule) {
     case 'serial':
@@ -191,7 +293,10 @@ export function pickMainContent(template, block, blockSecs) {
   const series = templateSeries(template, channelId);
   if (!series.length) return [];
 
-  const iters = series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
+  const iters = isMovieBlock(template)
+    ? [sequenceIterator(chooseMovies(
+        moviePool(template, block, blockSecs, channelId), 0, blockSecs, movieLimit(template)))]
+    : series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
   const items = [];
   const usedIds = new Set();
   let total = 0;
@@ -223,12 +328,18 @@ export function pickMainContent(template, block, blockSecs) {
  * once, groups it by duration (each group LRU-ordered so repeats spread across
  * distinct clips), and returns a `pack(target)` closure plus a `hasFillers` flag.
  *
- * `pack(target)` runs an unbounded knapsack over integer-second durations —
- * fillers MAY repeat, which lets a small/coarse pool fill a gap to the second —
- * and returns { items, total } for the LARGEST reachable total <= target,
- * preferring fewer/longer fillers. The LRU rotation cursor is SHARED across
- * successive pack() calls, so filling several gaps in one block spreads repeats
- * over the whole pool instead of hammering one clip per gap.
+ * `pack(target)` fills in two passes:
+ *   1. BULK — while the gap is wider than a small reserve, draw distinct
+ *      clips in global LRU rotation. Every clip airs once before any airs twice,
+ *      so a multi-hour gap no longer becomes one long filler on repeat.
+ *   2. EXACT — an unbounded knapsack over integer-second durations on what is
+ *      left (fillers MAY repeat here, which is what lets a coarse pool land a gap
+ *      to the second), returning the LARGEST reachable total <= target and
+ *      preferring fewer/longer fillers.
+ * A gap no wider than that reserve skips pass 1 entirely, so the tightest
+ * alignment gaps behave exactly as they did before. Both rotation cursors are
+ * SHARED across successive pack() calls, so filling several gaps in one block
+ * keeps spreading over the whole pool.
  *
  * `pack(target, { overrun: true })` relaxes the ceiling: if no reachable total
  * lands within maxUnderrun of the target, it takes the SMALLEST total above the
@@ -251,9 +362,36 @@ export function makeFillerPacker(channelId) {
     arr.sort((a, b) => String(a.last_used_at || '').localeCompare(String(b.last_used_at || '')));
   }
   const allDurations = [...byDur.keys()].filter((d) => d > 0).sort((a, b) => a - b);
+  const maxDuration = allDurations.length ? allDurations[allDurations.length - 1] : 0;
+  const minDuration = allDurations.length ? allDurations[0] : 0;
+  // What the bulk pass holds back for the exact pass. A few of the pool's
+  // shortest clips is plenty — every target from roughly 2x the shortest clip up
+  // is exactly composable — and holding back less means more of a wide gap is
+  // spent on distinct clips instead of on the exact pass, which is free to repeat.
+  const reserve = Math.min(maxDuration, 4 * minDuration);
   const cursor = new Map(); // duration -> LRU rotation offset, shared across pack() calls
 
-  function pack(target, { overrun = false } = {}) {
+  // Global LRU rotation over the WHOLE pool, shared across pack() calls in a
+  // block. The bulk pass draws from here in order, so every clip airs once before
+  // any airs twice — the fix for blocks that used to repeat one long filler a
+  // dozen times because the exact pass kept reaching for the same (single-clip)
+  // duration.
+  const rotation = fillers
+    .filter((f) => f.duration > 0)
+    .sort((a, b) => String(a.last_used_at || '').localeCompare(String(b.last_used_at || '')));
+  let rot = 0;
+  function nextInRotation(maxDur) {
+    for (let k = 0; k < rotation.length; k++) {
+      const r = rotation[(rot + k) % rotation.length];
+      if (r.duration <= maxDur) {
+        rot = (rot + k + 1) % rotation.length;
+        return r;
+      }
+    }
+    return null;
+  }
+
+  function packExact(target, { overrun = false } = {}) {
     if (target <= 0 || !fillers.length) return { items: [], total: 0 };
     const tol = fitTolerance();
     // Composition search window: exactly `target` normally, a little past it when
@@ -289,6 +427,24 @@ export function makeFillerPacker(channelId) {
       return arr[i];
     }).reverse();
     return { items, total: best };
+  }
+
+  function pack(target, opts = {}) {
+    if (target <= 0 || !fillers.length) return { items: [], total: 0 };
+    // Bulk pass: spend a wide gap on distinct clips in LRU rotation, holding
+    // `reserve` seconds back so packExact can still land the tail on the second.
+    // A gap no wider than the reserve skips this pass entirely and is handled by
+    // the exact pass alone, exactly as before.
+    const items = [];
+    let total = 0;
+    while (target - total > reserve) {
+      const r = nextInRotation(target - total - reserve);
+      if (!r) break;
+      items.push(r);
+      total += r.duration;
+    }
+    const tail = packExact(target - total, opts);
+    return { items: [...items, ...tail.items], total: total + tail.total };
   }
 
   return { pack, hasFillers: fillers.length > 0 };
@@ -334,13 +490,21 @@ function timeOfDaySeconds(hhmm) {
  * Returns { items, total } — the ordered resource sequence and its duration.
  */
 export function buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer) {
-  const series = templateSeries(template, channelId);
-  const iters = series.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
+  // A movie block pools every title its series expose and places the best-fitting
+  // run of up to movie_limit of them, instead of cycling one pick per series.
+  const movie = isMovieBlock(template);
+  const iters = movie
+    ? [sequenceIterator(chooseMovies(
+        moviePool(template, block, blockSecs, channelId), startSecs, blockSecs, movieLimit(template)))]
+    : templateSeries(template, channelId).map((s) => iteratorForSeries(s, channelId, block, blockSecs));
 
   // max_per_show caps how many episodes one series may contribute to a block
   // (NULL/0 = unlimited). Tracked per iterator so a series drops out of the
-  // cycle once it hits its cap, leaving room for the others (or fillers).
-  const maxPerShow = Number(template.max_per_show) > 0 ? Number(template.max_per_show) : Infinity;
+  // cycle once it hits its cap, leaving room for the others (or fillers). A movie
+  // block is already capped by movie_limit, so the per-show cap doesn't apply.
+  const maxPerShow = movie || !(Number(template.max_per_show) > 0)
+    ? Infinity
+    : Number(template.max_per_show);
 
   const items = [];
   const usedIds = new Set();

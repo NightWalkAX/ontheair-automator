@@ -92,9 +92,12 @@ export function nextChapter(channelId, subject, beforeDate) {
  *
  * `candidates` is narrowed by the caller (e.g. by subject or show type) so this
  * works for both movie blocks and weekday TV-as-filler blocks.
+ *
+ * cooldownEligible exposes just the filter — movie blocks need the whole
+ * eligible set to search for a best-fitting combination, not a single pick.
  */
-export function randomWithCooldown(channelId, candidates, asOfDate) {
-  if (!candidates.length) return null;
+export function cooldownEligible(channelId, candidates, asOfDate) {
+  if (!candidates.length) return [];
   const cooldownDays = Math.floor(candidates.length / 2);
 
   const lastPlayed = db.prepare(`
@@ -103,17 +106,21 @@ export function randomWithCooldown(channelId, candidates, asOfDate) {
   `);
 
   const asOf = new Date(asOfDate + 'T00:00:00');
-  const eligible = candidates.filter((r) => {
+  return candidates.filter((r) => {
     const row = lastPlayed.get(channelId, r.id);
     if (!row?.last) return true; // never played
     const daysSince = (asOf - new Date(row.last)) / 86_400_000;
     return daysSince > cooldownDays;
   });
+}
 
+export function randomWithCooldown(channelId, candidates, asOfDate) {
+  if (!candidates.length) return null;
+  const eligible = cooldownEligible(channelId, candidates, asOfDate);
   const pool = eligible.length ? eligible : candidates; // fall back if all cooled
   // Deterministic-ish pick without Math.random (unavailable in some contexts):
   // rotate by day-of-month so repeated same-day runs are stable.
-  const idx = asOf.getDate() % pool.length;
+  const idx = new Date(asOfDate + 'T00:00:00').getDate() % pool.length;
   return pool[idx];
 }
 

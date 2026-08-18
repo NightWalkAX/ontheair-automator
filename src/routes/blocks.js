@@ -21,6 +21,8 @@ function validateBlock(blockId) {
            bt.name AS template_name,
            bt.id AS template_id,
            bt.max_per_show AS max_per_show,
+           bt.is_movie_block AS is_movie_block,
+           bt.movie_limit AS movie_limit,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
@@ -168,11 +170,14 @@ router.post('/templates', (req, res) => {
   const primary = slots[0];
   const firstWeekday = weekdays.split(',')[0];
   const maxPerShow = Number(b.max_per_show) > 0 ? Number(b.max_per_show) : null;
+  const isMovieBlock = b.is_movie_block ? 1 : 0;
+  const movieLimit = Number(b.movie_limit) > 0 ? Math.floor(Number(b.movie_limit)) : null;
   const info = db.prepare(`
-    INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type, max_per_show)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, target_subject_id, target_subject, content_type, max_per_show, is_movie_block, movie_limit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(primaryChannel, b.name, firstWeekday, weekdays, primary.start_time, primary.end_time,
-         b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie', maxPerShow);
+         b.target_subject_id ?? null, b.target_subject || null, b.content_type || 'movie', maxPerShow,
+         isMovieBlock, movieLimit);
   const id = info.lastInsertRowid;
   setSlots(id, slots);
   setChannels(id, channels, primaryChannel);
@@ -192,15 +197,21 @@ router.put('/templates/:id', (req, res) => {
   const maxPerShow = b.max_per_show === undefined
     ? cur.max_per_show
     : (Number(b.max_per_show) > 0 ? Number(b.max_per_show) : null);
+  const isMovieBlock = b.is_movie_block === undefined
+    ? cur.is_movie_block
+    : (b.is_movie_block ? 1 : 0);
+  const movieLimit = b.movie_limit === undefined
+    ? cur.movie_limit
+    : (Number(b.movie_limit) > 0 ? Math.floor(Number(b.movie_limit)) : null);
   db.prepare(`
-    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, weekdays=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?, max_per_show=?
+    UPDATE BlockTemplate SET channel_id=?, name=?, weekday=?, weekdays=?, start_time=?, end_time=?, target_subject_id=?, target_subject=?, content_type=?, max_per_show=?, is_movie_block=?, movie_limit=?
     WHERE id=?
   `).run(
     b.channel_id ?? cur.channel_id, b.name ?? cur.name,
     (weekdays || '').split(',')[0] || cur.weekday, weekdays,
     primary.start_time, primary.end_time,
     b.target_subject_id ?? cur.target_subject_id, b.target_subject ?? cur.target_subject,
-    b.content_type ?? cur.content_type, maxPerShow, id
+    b.content_type ?? cur.content_type, maxPerShow, isMovieBlock, movieLimit, id
   );
   if (slots) setSlots(id, slots);
   if (Array.isArray(b.channels)) setChannels(id, b.channels, b.channel_id ?? cur.channel_id);
@@ -287,6 +298,25 @@ router.put('/:id/max-per-show', (req, res) => {
   const max = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
   db.prepare('UPDATE BlockTemplate SET max_per_show = ? WHERE id = ?').run(max, block.template_id);
   // Rebuild from scratch (drop auto + manual items so the cap fully re-applies).
+  db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(id);
+  populateBlock(block);
+  res.json(validateBlock(id));
+});
+
+// PUT /api/blocks/:id/movie-block { enabled, limit } — flag this block's template
+// as a movie block (and optionally cap how many movies it holds), then wipe+rebuild
+// this draft block so the change is visible immediately. Like the cap above, the
+// flag lives on the template, so it governs every future generation too.
+router.put('/:id/movie-block', (req, res) => {
+  const id = Number(req.params.id);
+  const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(id);
+  if (!block) return res.status(404).json({ error: 'not found' });
+  const enabled = req.body?.enabled ? 1 : 0;
+  const raw = Number(req.body?.limit);
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+  db.prepare('UPDATE BlockTemplate SET is_movie_block = ?, movie_limit = ? WHERE id = ?')
+    .run(enabled, limit, block.template_id);
+  // Rebuild from scratch (drop auto + manual items so the new rule fully applies).
   db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(id);
   populateBlock(block);
   res.json(validateBlock(id));

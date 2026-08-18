@@ -288,6 +288,13 @@
             <input id="tplmMaxPerShow" type="number" min="0" step="1" placeholder="0 = unlimited" style="max-width:180px" />
             <small class="muted">Caps how many times each show repeats to fill a block. Blank/0 = fill with as many as fit.</small>
           </label>
+          <div class="field">
+            <span class="form-title">Movie block</span>
+            <label class="chk"><input id="tplmIsMovieBlock" type="checkbox" /> fill this slot with movies</label>
+            <small class="muted">Instead of one pick per show, the block pools every title from the shows on the right and airs the combination that fills the slot best — so far less of it is fillers. Titles already scheduled that week are skipped.</small>
+            <input id="tplmMovieLimit" type="number" min="0" step="1" placeholder="blank = 2 movies" style="max-width:180px" />
+            <small class="muted">Max movies in the block.</small>
+          </div>
         </div>
 
         <div class="stack">
