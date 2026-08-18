@@ -536,6 +536,24 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .report-list li.r-bad { border-left: 3px solid var(--bad); }
 .report-list li .r-status.ok { color: var(--ok); font-weight: 700; }
 .report-list li .r-status.bad { color: var(--bad); font-weight: 700; }
+/* ---- Push progress (live "Push to Air" run) -------------------------------- */
+.push-progress { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.pp-status { font-size: 13.5px; font-weight: 600; color: var(--ink); min-height: 19px; }
+.pp-bar {
+  height: 10px; border-radius: 999px; background: var(--panel-2);
+  border: 1px solid var(--line); overflow: hidden;
+}
+.pp-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+.pp-counts { font-size: 12.5px; }
+.pp-log {
+  list-style: none; margin: 0; padding: 8px 10px; max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2);
+  font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.pp-log li { padding: 2px 0; color: var(--ink-soft); }
+.pp-log li.ok { color: var(--ok); }
+.pp-log li.bad { color: var(--bad); }
+
 .dialog-msg { font-size: 14px; color: var(--ink-soft); margin: 4px 0 4px; line-height: 1.6; }
 
 /* ---- Channel strip (per-channel scheduler/generator tabs) ------------------ */

@@ -19,5 +19,8 @@
     "maxUnderrunSeconds": 5,
     "maxOverrunSeconds": 5
   },
-  "pathMap": {}
+  "pathMap": {},
+  "otav": {
+    "pushTimeoutSeconds": 900
+  }
 }
