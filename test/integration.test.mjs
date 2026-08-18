@@ -1433,3 +1433,55 @@ test('fix order: positions 1..N re-deal the chapters the season already holds', 
   assert.deepEqual(after.map((r) => r.chapter).sort((a, b) => a - b), chaptersBefore,
     'the chapter values are permuted, not renumbered — the rest of the channel is untouched');
 });
+
+test('a push reports live progress and can be cancelled instead of spinning forever', async () => {
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20' AND status='exported'").run();
+  const job = 'push-progress-test';
+
+  const push = await j('POST', `/api/otav/push?date=2026-07-20&job=${job}`);
+  assert.equal(push.status, 200);
+
+  // The stream replays the whole run, so the UI can attach at any moment.
+  const stream = await fetch(`${base}/api/otav/push/events?job=${job}`);
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get('content-type'), /text\/event-stream/);
+  const events = (await stream.text()).split('\n\n')
+    .filter((chunk) => chunk.startsWith('data: '))
+    .map((chunk) => JSON.parse(chunk.slice(6)));
+
+  const byType = (t) => events.filter((e) => e.type === t);
+  const plan = byType('plan')[0];
+  assert.ok(plan, 'the run announces its size before touching OTAV');
+  assert.equal(plan.clips, push.data.channels.reduce((n, c) => n + c.pushed, 0),
+    'the planned clip count is what actually went out');
+  assert.equal(byType('clip').length, plan.clips, 'one progress event per clip');
+  assert.deepEqual(byType('clip').at(-1).done, byType('clip').at(-1).total, 'the last clip closes its day');
+  assert.ok(byType('day-done').every((e) => e.ok), 'every day reported its outcome');
+  const done = byType('done')[0];
+  assert.ok(done && done.ok, 'the stream ends with the run outcome');
+  assert.ok(events.every((e, i) => i === 0 || e.seq > events[i - 1].seq), 'events are ordered');
+
+  // Cancelling something that is not running is a no-op, not an error.
+  const late = await j('POST', `/api/otav/push/cancel?job=${job}`);
+  assert.equal(late.data.ok, false);
+  assert.equal((await j('GET', `/api/otav/push/status?job=${job}`)).data.job.finished, true);
+});
+
+test('a cancelled run stops mid-flight and reports how far it got', async () => {
+  const { startJob, cancelJob } = await import('../src/services/pushProgress.js');
+  const { pushApprovedBlocks } = await import('../src/services/otavClient.js');
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20' AND status='exported'").run();
+
+  const job = startJob('push-cancel-test');
+  cancelJob(job.id);                       // cancelled before the first clip
+  const r = await pushApprovedBlocks('2026-07-20', { progress: job });
+  assert.equal(r.aborted?.reason, 'cancelled');
+  assert.ok(r.channels.every((c) => !c.ok), 'nothing is reported as pushed');
+  assert.match(r.channels[0].error, /cancelled/);
+});
+
+test('the run deadline stops a push instead of letting it loop', async () => {
+  const { startJob } = await import('../src/services/pushProgress.js');
+  const job = startJob('push-deadline-test', { deadlineMs: -1 });
+  assert.throws(() => job.guard(), /deadline/);
+});

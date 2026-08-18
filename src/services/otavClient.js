@@ -33,6 +33,7 @@ import {
   createScheduleBatch, flushScheduleBatch, inspectPaths, prepareDaySchedule,
 } from './otavSchedule.js';
 import { EPISODE_NO_CTE, withLabel } from './labels.js';
+import { NULL_PROGRESS } from './pushProgress.js';
 
 /**
  * Node's fetch throws a bare "fetch failed" TypeError and hides the real
@@ -519,19 +520,30 @@ function dayBlocks(targetDate) {
  * Queueing costs nothing here: pushes are operator-triggered and rare.
  */
 let pushQueue = Promise.resolve();
+let pushInFlight = 0;
 function serialized(fn) {
+  pushInFlight++;
   const run = pushQueue.then(fn);
   pushQueue = run.then(() => {}, () => {});
+  run.then(() => {}, () => {}).finally(() => { pushInFlight--; });
   return run;
 }
+
+/**
+ * True while a push is running or waiting its turn in the queue. The route uses
+ * it to refuse a second click outright: queueing behind a 10-minute week push
+ * looks exactly like a hung request to whoever clicked.
+ */
+export function isPushRunning() { return pushInFlight > 0; }
 
 /**
  * Fill one channel's day playlist with that day's clips and mark the blocks
  * exported. `plan` carries the day's blocks, their clips and the prepared
  * schedule entry; the caller owns error reporting.
  */
-async function fillDayPlaylist(client, channel, plan) {
+async function fillDayPlaylist(client, channel, plan, progress = NULL_PROGRESS) {
   const { result, dayItems, prepared } = plan;
+  const chan = channel.channel_name || channel.name;
   const playlistName = result.playlist;
   const markExported = db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?");
 
@@ -562,6 +574,11 @@ async function fillDayPlaylist(client, channel, plan) {
     result.warning = `no per-day playlist available (${err.message}); pushed into fixed playlist ${ref}`;
     await client.clearIfNeeded(ref, await client.getPlaylist(ref).catch(() => null));
   }
+  progress.emit({
+    type: 'playlist', channel: chan, date: plan.targetDate,
+    playlist: playlistName, source: result.source,
+    message: `playlist "${playlistName}" ready (${result.source})`,
+  });
 
   // Watermark: a follow-up edit per clip, and never fatal — a day that airs
   // without its logo still beats a day that doesn't air. The first failure
@@ -573,10 +590,19 @@ async function fillDayPlaylist(client, channel, plan) {
   const noteLogo = (msg) => { if (!result.logo_warning) result.logo_warning = msg; };
   if (logo) result.logo = logo.filename;
 
+  const clipTotal = dayItems.reduce((n, b) => n + b.items.length, 0);
   for (const b of dayItems) {
     for (const item of b.items) {
+      // Between clips is the safe point to honour a cancel or the run deadline:
+      // the playlist is consistent and the report shows exactly how far we got.
+      progress.guard();
       const added = await client.addFileClip(ref, item.file_path, item.label || item.name);
       result.pushed++;
+      progress.emit({
+        type: 'clip', channel: chan, date: plan.targetDate,
+        playlist: playlistName, done: result.pushed, total: clipTotal,
+        name: item.label || item.name,
+      });
       if (!logo || logoBroken) continue;
       const clipRef = added?.unique_id;
       if (!clipRef) {
@@ -615,8 +641,9 @@ async function fillDayPlaylist(client, channel, plan) {
  *
  * Returns [{ targetDate, result }] — one report row per day, failures included.
  */
-async function pushChannelDays(channel, days) {
+async function pushChannelDays(channel, days, progress = NULL_PROGRESS) {
   const client = new OtavClient(channel);
+  const chan = channel.channel_name || channel.name;
   const plans = [];
   for (const [targetDate, blocks] of days) {
     // Read the day's clips up front: the schedule event needs their total run
@@ -638,6 +665,12 @@ async function pushChannelDays(channel, days) {
   const rows = () => plans.map((p) => ({ targetDate: p.targetDate, result: p.result }));
 
   // Auth is per instance, not per day.
+  progress.emit({
+    type: 'channel-start', channel: chan, days: plans.length,
+    clips: plans.reduce((n, p) => n + p.dayItems.reduce((m, b) => m + b.items.length, 0), 0),
+    message: `${chan}: connecting to ${client.base}`,
+  });
+  progress.guard();   // a cancel here must unwind the run, not read as an auth failure
   try {
     await client.authorize();
   } catch (err) {
@@ -677,22 +710,57 @@ async function pushChannelDays(channel, days) {
     }
   }
   const written = flushScheduleBatch(batch);
+  if (written.length) {
+    progress.emit({
+      type: 'schedule', channel: chan, files: written.length,
+      message: `${chan}: schedule written (${written.length} file${written.length === 1 ? '' : 's'})`,
+    });
+  }
   // One resync per channel, before any playlist is resolved: OTAV re-reads the
   // schedule (picking up the new .xpls files) and settles its open playlists
   // BEFORE we take refs, instead of shuffling them under a fill in progress.
   // Nothing changed on disk -> nothing to reload, so don't ask for one.
   if (written.length || plans.some((p) => p.prepared?.playlistCreated)) {
+    progress.emit({ type: 'resync', channel: chan, message: `${chan}: resynchronizing scheduler` });
     await client.resynchronize().catch(() => {}); // best-effort
   }
 
   for (const plan of plans) {
     try {
+      progress.guard();
+      progress.emit({
+        type: 'day-start', channel: chan, date: plan.targetDate,
+        clips: plan.dayItems.reduce((n, b) => n + b.items.length, 0),
+        message: `${chan} ${plan.targetDate}: pushing`,
+      });
       if (plan.prepareError) throw plan.prepareError;
-      await fillDayPlaylist(client, channel, plan);
+      await fillDayPlaylist(client, channel, plan, progress);
       plan.result.ok = true;
+      progress.emit({
+        type: 'day-done', channel: chan, date: plan.targetDate, ok: true,
+        pushed: plan.result.pushed,
+        message: `${chan} ${plan.targetDate}: ${plan.result.pushed} clips pushed`,
+      });
     } catch (err) {
       plan.result.ok = false;
       plan.result.error = String(err.message || err);
+      progress.emit({
+        type: 'day-done', channel: chan, date: plan.targetDate, ok: false,
+        pushed: plan.result.pushed, error: plan.result.error,
+        message: `${chan} ${plan.targetDate}: ${plan.result.error}`,
+      });
+      // A cancel or a blown deadline is about the RUN, not this day: stop here
+      // instead of marching the remaining days into the same wall.
+      if (err.cancelled || err.timedOut) {
+        for (const rest of plans) {
+          if (rest.result.ok === undefined) {
+            rest.result.ok = false;
+            rest.result.error = `not pushed — ${plan.result.error}`;
+          }
+        }
+        err.rows = rows();   // the caller still reports how far the run got
+        throw err;
+      }
       if (/not editable/i.test(plan.result.error)) {
         plan.result.error += '. OTAV refuses edits on that playlist — stop the scheduler '
           + '(GET /scheduler/stop), or open the playlist in OTAV and unlock it, then push again.';
@@ -707,7 +775,7 @@ async function pushChannelDays(channel, days) {
  * it owns — completes before the next instance is touched). Returns one entry
  * per date that had something to push.
  */
-async function pushDays(dates) {
+async function pushDays(dates, progress = NULL_PROGRESS) {
   const perChannel = new Map(); // channel_id -> { channel, days: Map(date -> blocks) }
   const nonEmpty = new Set();
   for (const targetDate of dates) {
@@ -720,16 +788,59 @@ async function pushDays(dates) {
     }
   }
 
+  const totalClips = [...perChannel.values()].reduce((n, entry) => n
+    + [...entry.days.values()].reduce((m, blocks) => m
+      + blocks.reduce((k, b) => k + blockItems(b.block_id).length, 0), 0), 0);
+  progress.emit({
+    type: 'plan',
+    channels: perChannel.size,
+    days: nonEmpty.size,
+    clips: totalClips,
+    message: `${totalClips} clips across ${perChannel.size} channel(s) and ${nonEmpty.size} day(s)`,
+  });
+
   const rows = [];
+  let aborted = null;
   for (const entry of perChannel.values()) {
-    rows.push(...await pushChannelDays(entry.channel, entry.days));
+    try {
+      rows.push(...await pushChannelDays(entry.channel, entry.days, progress));
+    } catch (err) {
+      // Only a cancel or the run deadline unwinds this far; everything else is
+      // already captured per day. Keep the partial report and stop the run.
+      if (!err.cancelled && !err.timedOut) throw err;
+      rows.push(...(err.rows || []));
+      aborted = { reason: err.cancelled ? 'cancelled' : 'timeout', error: String(err.message || err) };
+      break;
+    }
+  }
+  if (aborted) {
+    // Channels never reached: say so explicitly rather than silently dropping
+    // them from the report.
+    for (const entry of perChannel.values()) {
+      for (const [targetDate, blocks] of entry.days) {
+        if (rows.some((r) => r.targetDate === targetDate && r.result.channel === entry.channel.channel_name)) continue;
+        rows.push({
+          targetDate,
+          result: {
+            channel: entry.channel.channel_name,
+            playlist: dayPlaylistName(entry.channel, targetDate),
+            pushed: 0,
+            blocks: blocks.length,
+            ok: false,
+            error: `not pushed — run ${aborted.reason}`,
+          },
+        });
+      }
+    }
   }
   // Report stays date-major (channels within a day in channel order), which is
   // what the push report renders, even though the run is channel-major.
-  return dates.filter((d) => nonEmpty.has(d)).map((targetDate) => ({
+  const days = dates.filter((d) => nonEmpty.has(d)).map((targetDate) => ({
     targetDate,
     channels: rows.filter((r) => r.targetDate === targetDate).map((r) => r.result),
   }));
+  days.aborted = aborted;
+  return days;
 }
 
 /**
@@ -747,10 +858,10 @@ async function pushDays(dates) {
  * Returns a per-channel report; failures are captured per channel rather than
  * aborting the whole run (one dead OTAV shouldn't block the other 5).
  */
-export function pushApprovedBlocks(targetDate) {
+export function pushApprovedBlocks(targetDate, { progress = NULL_PROGRESS } = {}) {
   return serialized(async () => {
-    const days = await pushDays([targetDate]);
-    return { targetDate, channels: days[0]?.channels ?? [] };
+    const days = await pushDays([targetDate], progress);
+    return { targetDate, channels: days[0]?.channels ?? [], aborted: days.aborted || null };
   });
 }
 
@@ -764,19 +875,20 @@ export function pushApprovedBlocks(targetDate) {
  * failures: an empty Wednesday is normal for a Mon/Tue/Thu template. Days pushed
  * before are pushed again, so a week push refreshes what already aired out.
  */
-export function pushApprovedRange(fromDate, toDate) {
+export function pushApprovedRange(fromDate, toDate, { progress = NULL_PROGRESS } = {}) {
   return serialized(async () => {
     const dates = [];
     for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
          d.setUTCDate(d.getUTCDate() + 1)) {
       dates.push(d.toISOString().slice(0, 10));
     }
-    const days = await pushDays(dates);
+    const days = await pushDays(dates, progress);
     const pushed = new Set(days.map((d) => d.targetDate));
     return {
       from: fromDate,
       to: toDate,
       days,
+      aborted: days.aborted || null,
       skipped: dates.filter((d) => !pushed.has(d)),
       // Flat per-channel-per-day view, for reports that just want a list.
       channels: days.flatMap((d) => d.channels.map((c) => ({ ...c, date: d.targetDate }))),

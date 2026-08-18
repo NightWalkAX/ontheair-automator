@@ -261,6 +261,102 @@ $('#btnApproveWeek').addEventListener('click', (e) => withBusy(e.currentTarget, 
         blocked ? 'info' : 'ok', 'Week approval');
   await loadSchedule();
 }));
+// ---- Push progress ---------------------------------------------------------
+// A week push is thousands of sequential REST calls against 6 OTAV instances
+// and can run for minutes. The operator gets the real step count, the clip
+// currently going out, the elapsed time and a Cancel button, so a slow push is
+// never indistinguishable from a wedged one.
+function pushProgressDialog(title, { onCancel }) {
+  $('#dialogTitle').textContent = title;
+  const content = $('#dialogContent');
+  content.innerHTML = '';
+
+  const box = el('div', { className: 'push-progress' });
+  const status = el('div', { className: 'pp-status', textContent: 'Starting…' });
+  const bar = el('div', { className: 'pp-bar' });
+  const fill = el('div', { className: 'pp-fill' });
+  bar.append(fill);
+  const counts = el('div', { className: 'pp-counts muted', textContent: 'waiting for the run plan…' });
+  const log = el('ol', { className: 'pp-log' });
+  box.append(status, bar, counts, log);
+  content.append(box);
+
+  const actions = $('#dialogActions');
+  actions.innerHTML = '';
+  const cancel = el('button', { className: 'danger', textContent: 'Cancel push' });
+  cancel.onclick = async () => {
+    cancel.disabled = true;
+    cancel.textContent = 'Cancelling…';
+    await onCancel();
+  };
+  actions.append(cancel);
+  $('#dialog').classList.remove('hidden');
+
+  const started = Date.now();
+  let total = 0;         // clips in the whole run
+  let done = 0;          // clips confirmed in OTAV
+  let plan = null;
+  let lastLine = null;
+
+  const elapsed = () => {
+    const s = Math.round((Date.now() - started) / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  };
+  const paint = () => {
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    fill.style.width = `${pct}%`;
+    counts.textContent = plan
+      ? `${done}/${total} clips · ${plan.channels} channel(s) · ${plan.days} day(s) · ${elapsed()} elapsed`
+      : `${elapsed()} elapsed`;
+  };
+  const tick = setInterval(paint, 1000);
+
+  const addLine = (text, kind = '') => {
+    const li = el('li', { className: kind, textContent: text });
+    log.append(li);
+    while (log.children.length > 200) log.firstChild.remove();
+    log.scrollTop = log.scrollHeight;
+  };
+
+  return {
+    update(ev) {
+      if (ev.type === 'plan') { plan = ev; total = ev.clips; addLine(ev.message); }
+      else if (ev.type === 'clip') {
+        done++;
+        status.textContent = `${ev.channel} ${ev.date} · clip ${ev.done}/${ev.total} — ${ev.name}`;
+        // One line per day, rewritten in place: 3,000 clip lines help nobody.
+        if (!lastLine || lastLine.key !== `${ev.channel}|${ev.date}`) {
+          lastLine = { key: `${ev.channel}|${ev.date}`, li: el('li', {}) };
+          log.append(lastLine.li);
+          log.scrollTop = log.scrollHeight;
+        }
+        lastLine.li.textContent = `${ev.channel} ${ev.date} → ${ev.playlist}: ${ev.done}/${ev.total} clips`;
+      } else if (ev.type === 'day-done') {
+        lastLine = null;
+        addLine(ev.message, ev.ok ? 'ok' : 'bad');
+      } else if (ev.type === 'done') {
+        status.textContent = ev.ok ? 'Push finished' : `Push failed: ${ev.error || 'see report'}`;
+      } else if (ev.message) {
+        status.textContent = ev.message;
+        addLine(ev.message, ev.type === 'cancelling' ? 'bad' : '');
+      }
+      paint();
+    },
+    // The run blew up: keep what the log already showed and let the operator
+    // read it, instead of yanking the dialog away behind an error toast.
+    fail(message) {
+      clearInterval(tick);
+      status.textContent = `Push failed: ${message}`;
+      addLine(message, 'bad');
+      actions.innerHTML = '';
+      const close = el('button', { className: 'primary', textContent: 'Close' });
+      close.onclick = closeDialog;
+      actions.append(close);
+    },
+    close() { clearInterval(tick); },
+  };
+}
+
 // A template repeating on several weekdays yields one block per date, and each
 // date is its own playlist — so pushing a single day airs only that day.
 async function pushToAir(btn, { scope }) {
@@ -272,8 +368,27 @@ async function pushToAir(btn, { scope }) {
     `This pushes all approved blocks for ${what} to the live OTAV instances. Continue?`,
     { confirmLabel: 'Push to Air', danger: true });
   if (!ok) return;
+
+  const job = `push-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await withBusy(btn, async () => {
-    const r = await api.send('POST', `/api/otav/push?${query}`);
+    const ui = pushProgressDialog('Pushing to air', {
+      onCancel: () => api.send('POST', `/api/otav/push/cancel?job=${job}`).catch(() => {}),
+    });
+    // The stream replays whatever the run already recorded, so opening it
+    // alongside the POST cannot drop the first steps.
+    const es = new EventSource(`/api/otav/push/events?job=${job}`);
+    es.onmessage = (m) => { try { ui.update(JSON.parse(m.data)); } catch { /* ignore */ } };
+    es.onerror = () => {};
+    let r;
+    try {
+      r = await api.send('POST', `/api/otav/push?${query}&job=${job}`);
+    } catch (e) {
+      ui.fail(e.message || String(e));
+      throw e;
+    } finally {
+      es.close();
+      ui.close();
+    }
     reportDialog('Push report', r.channels.map((c) => ({
       name: c.date ? `${c.date} · ${c.channel}` : c.channel,
       ok: c.ok,
@@ -287,12 +402,19 @@ async function pushToAir(btn, { scope }) {
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
     const skipped = (r.skipped || []).length;
-    toast(failed ? `${failed} push(es) failed`
-          : `${r.channels.length} pushed${skipped ? `, ${skipped} day(s) had nothing approved` : ''}`,
-          failed ? 'bad' : 'ok', 'Push complete');
+    if (r.aborted) {
+      toast(r.aborted.reason === 'cancelled'
+        ? 'Push cancelled — the days already listed as pushed did go out'
+        : `Push stopped on its deadline: ${r.aborted.error}`, 'bad', 'Push stopped');
+    } else {
+      toast(failed ? `${failed} push(es) failed`
+            : `${r.channels.length} pushed${skipped ? `, ${skipped} day(s) had nothing approved` : ''}`,
+            failed ? 'bad' : 'ok', 'Push complete');
+    }
     await loadSchedule();
   });
 }
+
 $('#btnPush').addEventListener('click', (e) => pushToAir(e.currentTarget, { scope: 'day' }));
 $('#btnPushWeek').addEventListener('click', (e) => pushToAir(e.currentTarget, { scope: 'week' }));
 
