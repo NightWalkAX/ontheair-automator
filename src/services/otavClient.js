@@ -444,7 +444,7 @@ function blockItems(blockId) {
   return db.prepare(`
     WITH ${EPISODE_NO_CTE}
     SELECT si.play_order, r.file_path, r.name, r.duration,
-           r.subject, r.season, r.is_filler, en.episode_no,
+           r.subject, r.season, r.chapter, r.is_filler, en.episode_no,
            ov.display_name AS display_name, st.code AS show_type_code
     FROM ScheduleItem si
     JOIN Resource r ON r.id = si.resource_id

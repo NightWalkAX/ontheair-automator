@@ -1063,6 +1063,35 @@ test('a franchise plus the standalone folder fills the slot and keeps the order'
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
 
+test('a franchise part is labelled by saga and part wherever a clip is listed', async () => {
+  const ch = makeSagaChannel('Saga Labels');
+  const tpl = sagaTemplate(ch, ['Saga', 'Movies']);
+  const slot = db.prepare(`INSERT INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order)
+                           VALUES (?, '20:00', '23:00', 0) RETURNING id`).get(tpl.id).id;
+  const blockId = db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                              VALUES (?, ?, ?, '2026-12-21', 'draft') RETURNING id`).get(tpl.id, slot, ch).id;
+  await j('POST', `/api/blocks/${blockId}/regenerate`);
+
+  const items = (await j('GET', `/api/blocks/${blockId}`)).data.items.filter((i) => !i.is_filler);
+  const part = items.find((i) => i.subject === 'Saga');
+  assert.equal(part.episode_code, 'Part 1');
+  assert.equal(part.label, 'Saga · Part 1', 'the saga and its order are visible on the item');
+
+  // The standalone film beside it is still named by its own title.
+  const solo = items.find((i) => i.subject === 'Movies');
+  assert.equal(solo.episode_code, '');
+  assert.equal(solo.label, solo.name);
+
+  // The library listing that feeds the per-item dropdown agrees, so the dropdown
+  // shows the whole saga as Part 1..4 rather than raw filenames.
+  const lib = (await j('GET', `/api/resources?channel_id=${ch}`)).data
+    .filter((r) => r.subject === 'Saga')
+    .sort((a, b) => a.chapter - b.chapter);
+  assert.deepEqual(lib.map((r) => r.episode_code), ['Part 1', 'Part 2', 'Part 3', 'Part 4']);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
 test('a wide gap is spread over distinct fillers instead of repeating one clip', () => {
   // The real pool's shape: one clip far longer than the rest, plus dozens of short
   // ones, ~11800s all told. The old exact-fit search reached for the longest
