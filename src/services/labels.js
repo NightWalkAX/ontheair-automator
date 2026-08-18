@@ -28,12 +28,19 @@ export const EPISODE_NO_CTE = `
 const pad2 = (n) => String(n).padStart(2, '0');
 
 /**
- * "S01E02", or "E02" for a show filed without seasons. Empty for anything that
- * isn't an episode: fillers, unfiled clips, and movies (a film isn't episode 3
- * of anything, even when several are filed under the same show).
+ * "S01E02", or "E02" for a show filed without seasons. Movies are ordered by
+ * FRANCHISE PART instead — "Part 2" — since a saga's parts are the one case where
+ * a film really is the Nth of something. Empty for anything with no ordinal at
+ * all: fillers, unfiled clips, and standalone films.
+ *
+ * `chapter` is what separates the two kinds of movie: a franchise part carries its
+ * part number there, a standalone film carries 0. episode_no cannot make that call
+ * on its own, because it numbers position within a subject and the flat "Movies"
+ * folder holds a hundred-plus unrelated films that would come out as Part 1..138.
  */
-export function episodeCode({ season, episode_no, is_filler, show_type_code } = {}) {
-  if (!episode_no || is_filler || show_type_code === 'movies') return '';
+export function episodeCode({ season, episode_no, is_filler, show_type_code, chapter } = {}) {
+  if (!episode_no || is_filler) return '';
+  if (show_type_code === 'movies') return Number(chapter) > 0 ? `Part ${episode_no}` : '';
   return season != null ? `S${pad2(season)}E${pad2(episode_no)}` : `E${pad2(episode_no)}`;
 }
 
@@ -45,10 +52,14 @@ export function episodeCode({ season, episode_no, is_filler, show_type_code } = 
 export function clipLabel(row = {}) {
   const title = row.display_name || row.name || '';
   if (row.is_filler || !row.subject) return title;
-  // A movie is one of a kind: "Curious George · E03" would hide which film it
-  // is, so movies keep their title even though they're filed under a show.
-  if (row.show_type_code === 'movies') return title;
   const code = episodeCode(row);
+  if (row.show_type_code === 'movies') {
+    // A franchise part is named by its saga and part — "Toy Story · Part 3" — so an
+    // operator can see the saga and its order at a glance wherever a clip is
+    // listed. A standalone film has neither, and is one of a kind, so it keeps its
+    // own title: "Movies · Part 37" would hide which film it is.
+    return code ? `${row.subject} · ${code}` : title;
+  }
   return code ? `${row.subject} · ${code}` : `${row.subject} · ${title}`;
 }
 

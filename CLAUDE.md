@@ -35,7 +35,7 @@ Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable exte
 
 ## Core data model (SQLite)
 
-`ChannelType` (incl. `api_ip`/`api_port` per OTAV instance) → `BlockTemplate` (weekly recurring slot) → `ScheduledBlock` (a template instantiated for one date, status `draft`/`approved`/`exported`) → `ScheduleItem` (ordered `Resource` references within a block). `Resource` rows carry `file_path`, `duration`, `subject`/`chapter` (for series ordering), `is_filler`, `audience_rating`. `PlayHistory` tracks what has aired per channel, driving both sequential-series progression and movie cooldown math.
+`ChannelType` (incl. `api_ip`/`api_port` per OTAV instance) → `BlockTemplate` (weekly recurring slot) → `ScheduledBlock` (a template instantiated for one date, status `draft`/`approved`/`exported`) → `ScheduleItem` (ordered `Resource` references within a block). `Resource` rows carry `file_path`, `duration`, `subject`/`chapter` (for series ordering), `is_filler`, `audience_rating`. Display naming lives in `src/services/labels.js`: TV/lessons are named `Show · S01E02`, a movie franchise part `Saga · Part N` (its `chapter` holds the part), and a standalone film keeps its own title (`chapter` 0 — it is not part N of anything). Never surface the raw `chapter` to an operator. `PlayHistory` tracks what has aired per channel, driving both sequential-series progression and movie cooldown math.
 
 ## Scheduling logic rules (must be preserved in implementation)
 
