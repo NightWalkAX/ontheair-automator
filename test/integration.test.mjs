@@ -40,6 +40,7 @@ const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
 const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock,
         chooseMovies, moviePool, movieLimit } =
   await import('../src/services/scheduling.js');
+const { sagaSubjectName } = await import('../src/services/movieSaga.js');
 const { cloneScannedResources } = await import('../src/services/ingestion.js');
 const { latestEpisode } = await import('../src/services/playHistory.js');
 const { startFakeOtav } = await import('./fake-otav.mjs');
@@ -52,6 +53,7 @@ let server, base, fakeOtav, mediaDir;
 const LESSON_SERIES = ['Math', 'History', 'Biology'];
 const LESSON_CH = [1, 2, 3, 4, 5, 6];
 const FILLER_DURS = [30, 45, 60, 90, 120, 15, 20, 10, 5];
+const STANDALONE_MOVIES = ['Zootopia', 'Ratatouille', 'Coraline', 'Wall_E'];
 
 async function j(method, path, body) {
   const res = await fetch(base + path, {
@@ -76,9 +78,17 @@ before(async () => {
     }
   }
   mkdirSync(join(mediaDir, 'movies'), { recursive: true });
+  // Standalone titles: nothing in these names can read as a sequel ordinal, so
+  // saga detection must leave all four filed under the folder subject.
   for (const [i, d] of [5400, 6000, 5700, 4800].entries()) {
-    writeFileSync(join(mediaDir, 'movies', `Movie${i}_${d}.mov`), 'x');
+    writeFileSync(join(mediaDir, 'movies', `${STANDALONE_MOVIES[i]}_${d}.mov`), 'x');
   }
+  // A genuine franchise (numbered parts) plus a lookalike that must NOT join it:
+  // "Robo_Dog_7" is a single title ending in a number, not a sequel.
+  for (const [i, d] of [3600, 3660, 3540].entries()) {
+    writeFileSync(join(mediaDir, 'movies', `Space_Cadets_${i + 1}_${d}.mov`), 'x');
+  }
+  writeFileSync(join(mediaDir, 'movies', 'Robo_Dog_7_3000.mov'), 'x');
   mkdirSync(join(mediaDir, 'fillers'), { recursive: true });
   FILLER_DURS.forEach((d, i) => writeFileSync(join(mediaDir, 'fillers', `f${i}_${d}.mov`), 'x'));
 
@@ -139,7 +149,7 @@ test('channel + ingestion detects series/chapters and auto-flags fillers', async
     assert.equal(scan.status, 200);
     ingested += scan.data.ingested;
   }
-  assert.equal(ingested, LESSON_SERIES.length * LESSON_CH.length + 4 + FILLER_DURS.length);
+  assert.equal(ingested, LESSON_SERIES.length * LESSON_CH.length + 4 + 4 + FILLER_DURS.length);
 
   // New scans arrive unapproved (the review gate). The operator approves after
   // organizing — simulate that here so downstream generation has content.
@@ -147,7 +157,7 @@ test('channel + ingestion detects series/chapters and auto-flags fillers', async
 
   const all = (await j('GET', `/api/resources?channel_id=${chId}`)).data;
   // Duration through the fake probe.
-  const m0 = all.find((r) => basename(r.file_path) === 'Movie0_5400.mov');
+  const m0 = all.find((r) => basename(r.file_path) === 'Zootopia_5400.mov');
   assert.equal(m0.duration, 5400);
   // Series detection: subject = folder, chapter = SxxEyy marker.
   const math3 = all.find((r) => basename(r.file_path) === 'Math_S01E03_600.mov');
@@ -162,11 +172,29 @@ test('channel + ingestion detects series/chapters and auto-flags fillers', async
   // Series auto-registration in the channel registry.
   const reg = (await j('GET', `/api/channels/${chId}/series`)).data;
   const subjects = reg.map((s) => s.subject).sort();
-  assert.deepEqual(subjects, ['Biology', 'History', 'Math', 'movies']);
+  assert.deepEqual(subjects, ['Biology', 'History', 'Math', 'Space Cadets', 'movies'],
+    'the franchise is registered as its own series alongside the standalone movies folder');
   const math = reg.find((s) => s.subject === 'Math');
   assert.equal(math.is_serial, 1, 'lessons default to serial');
   assert.equal(math.chapter_count, 6);
   assert.equal(reg.find((s) => s.subject === 'movies').is_serial, 0, 'movies default to standalone');
+
+  // Saga detection: the numbered trilogy became its own series, in order, while
+  // the standalone films and the number-ending lookalike stayed in the folder.
+  const saga = db.prepare(
+    "SELECT name, chapter FROM Resource WHERE channel_id=? AND subject='Space Cadets' ORDER BY chapter"
+  ).all(chId);
+  assert.deepEqual(saga.map((r) => r.chapter), [1, 2, 3], 'saga parts became chapters 1..3');
+  assert.deepEqual(saga.map((r) => r.name), ['Space_Cadets_1_3600', 'Space_Cadets_2_3660', 'Space_Cadets_3_3540']);
+  assert.equal(reg.find((s) => s.subject === 'Space Cadets').is_serial, 1, 'a saga plays in order');
+
+  const flat = db.prepare(
+    "SELECT name, chapter FROM Resource WHERE channel_id=? AND subject='movies' ORDER BY name"
+  ).all(chId);
+  assert.deepEqual(flat.map((r) => r.name).sort(),
+    ['Coraline_5700', 'Ratatouille_6000', 'Robo_Dog_7_3000', 'Wall_E_4800', 'Zootopia_5400'],
+    'standalone films — including one ending in a number — stay in the movies folder');
+  assert.ok(flat.every((r) => r.chapter === 0), 'a standalone film carries no ordinal');
 });
 
 test('series registry: order the series and inspect chapters', async () => {
@@ -907,6 +935,45 @@ test('chooseMovies scores runs the way the builder lays them out', () => {
   assert.deepEqual(chooseMovies([], 0, 3600, 2), [], 'an empty pool yields nothing');
 });
 
+test('a movie block airs a franchise double bill only in ascending part order', () => {
+  // Two parts of one franchise, deliberately sized so BOTH orders fit the slot —
+  // only the ascending one may be chosen.
+  const pool = [
+    { id: 1, duration: 3600, subject: 'Toy Story', chapter: 1 },
+    { id: 2, duration: 3600, subject: 'Toy Story', chapter: 2 },
+  ];
+  const run = chooseMovies(pool, 20 * 3600, 2 * 3600, 2);
+  assert.deepEqual(run.map((r) => r.chapter), [1, 2], 'part 1 airs before part 2');
+
+  // With only the later part available, the earlier one cannot be appended after it.
+  const backwards = chooseMovies(
+    [{ id: 2, duration: 3600, subject: 'Toy Story', chapter: 2 },
+     { id: 1, duration: 3600, subject: 'Toy Story', chapter: 1 }],
+    20 * 3600, 2 * 3600, 2
+  );
+  assert.deepEqual(backwards.map((r) => r.chapter), [1, 2], 'the run is re-ordered, not reversed');
+
+  // Standalone films (chapter 0) share a subject but carry no order, so a double
+  // feature of two of them is still allowed.
+  const flat = chooseMovies(
+    [{ id: 3, duration: 3600, subject: 'Movies', chapter: 0 },
+     { id: 4, duration: 3600, subject: 'Movies', chapter: 0 }],
+    20 * 3600, 2 * 3600, 2
+  );
+  assert.equal(flat.length, 2, 'two standalone films may share a block');
+});
+
+test('a franchise name already used by another show type gets a qualified subject', () => {
+  // The operator's catalogue has "Curious George" as both a TV series and a film
+  // franchise; merging them would collide chapters 1..6 inside the TV series.
+  assert.equal(sagaSubjectName('Toy Story', () => false), 'Toy Story');
+  assert.equal(sagaSubjectName('Curious George', (n) => n === 'Curious George'), 'Curious George (Movies)');
+  assert.equal(
+    sagaSubjectName('Curious George', (n) => n === 'Curious George' || n === 'Curious George (Movies)'),
+    'Curious George (Movies 2)'
+  );
+});
+
 test('a wide gap is spread over distinct fillers instead of repeating one clip', () => {
   // The real pool's shape: one clip far longer than the rest, plus dozens of short
   // ones, ~11800s all told. The old exact-fit search reached for the longest
@@ -1307,7 +1374,7 @@ test('seasonal detection: seasons parsed into a folder level + exposed with rel_
 test('catalog editor: assign-to-show, set-season, and reset round-trip', async () => {
   const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
   const movieIds = db.prepare("SELECT id FROM Resource WHERE channel_id=? AND subject='movies'").all(c1).map((r) => r.id);
-  assert.equal(movieIds.length, 4, 'four standalone movies to file under a show');
+  assert.equal(movieIds.length, 5, 'the standalone movies to file under a show');
 
   // Drag-a-folder-onto-a-show: subject set, season/order re-derived (season-less
   // movie names stay season-less).
