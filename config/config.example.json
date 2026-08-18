@@ -19,6 +19,9 @@
     "maxUnderrunSeconds": 5,
     "maxOverrunSeconds": 5
   },
+  "movies": {
+    "maxPerBlock": 2
+  },
   "pathMap": {},
   "otav": {
     "pushTimeoutSeconds": 900

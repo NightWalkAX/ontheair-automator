@@ -37,7 +37,8 @@ const { router: media } = await import('../src/routes/media.js');
 const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
-const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock } =
+const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock,
+        chooseMovies, moviePool, movieLimit } =
   await import('../src/services/scheduling.js');
 const { cloneScannedResources } = await import('../src/services/ingestion.js');
 const { latestEpisode } = await import('../src/services/playHistory.js');
@@ -792,6 +793,173 @@ test('a trailing gap shorter than the shortest filler is closed by taking a fill
 
   assert.ok(fitsTolerance(3600 - total), `block closed to ${total}/3600s, within tolerance`);
   assert.ok(items.some((r) => r.is_filler), 'fillers were placed');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+// ---- Movie blocks ----------------------------------------------------------
+// A channel whose only main content is movies, plus a deliberately coarse filler
+// pool (one long clip and a few short ones) — the shape that used to turn a long
+// slot into one feature followed by the same 40-minute filler on repeat.
+function makeMovieChannel(name, movieDurs) {
+  const ch = db.prepare(
+    'INSERT INTO ChannelType (name, api_ip, api_port) VALUES (?, ?, 1) RETURNING id'
+  ).get(name, '127.0.0.1').id;
+  const stMovies = stId('movies');
+  const addMovie = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, show_type_id)
+                               VALUES (?, ?, ?, 0, 1, ?, 'Films', ?)`);
+  movieDurs.forEach((d, i) => addMovie.run(`Film${i}_${d}`, `/tmp/${name}-film${i}.mov`, d, ch, stMovies));
+  const addFiller = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+                                VALUES (?, ?, ?, 1, 1, ?)`);
+  [2400, 300, 120, 60, 55, 52].forEach((d, i) => addFiller.run(`fl${d}`, `/tmp/${name}-fl${i}.mov`, d, ch));
+  db.prepare(`INSERT INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+              VALUES (?, 'Films', ?, 0, 1, 0)`).run(ch, stMovies);
+  return ch;
+}
+
+// A stand-in template row. BlockTemplateSeries is keyed on template_id, so the
+// row has to exist for templateSeries() to see the subject.
+function makeMovieTemplate(ch, { is_movie_block = 1, movie_limit = null } = {}) {
+  const id = db.prepare(`INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time, content_type, is_movie_block, movie_limit)
+                         VALUES (?, 'Night Films', 'Mon', 'Mon', '20:00', '23:59', 'movie', ?, ?) RETURNING id`)
+    .get(ch, is_movie_block, movie_limit).id;
+  db.prepare("INSERT INTO BlockTemplateSeries (template_id, subject, play_order) VALUES (?, 'Films', 0)").run(id);
+  return db.prepare('SELECT * FROM BlockTemplate WHERE id = ?').get(id);
+}
+
+test('a movie block fills a long slot with two features instead of one plus hours of filler', () => {
+  const ch = makeMovieChannel('Movie Block', [7080, 7140, 6600, 5400, 4800, 3600]);
+  const BLOCK = 4 * 3600;               // 20:00–00:00
+  const START = 20 * 3600;
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+
+  // Baseline: the same channel and slot WITHOUT the flag gets one feature, and
+  // everything left over has to be papered over with fillers.
+  const plain = makeMovieTemplate(ch, { is_movie_block: 0 });
+  const one = buildAlignedBlock(plain, block, BLOCK, START, ch, makeFillerPacker(ch));
+  assert.equal(one.items.filter((r) => !r.is_filler).length, 1, 'without the flag: a single movie');
+  const oneFillerSecs = one.items.filter((r) => r.is_filler).reduce((n, r) => n + r.duration, 0);
+  assert.ok(oneFillerSecs > BLOCK / 3, 'without the flag: fillers cover a third of the slot or more');
+
+  const tpl = makeMovieTemplate(ch, { movie_limit: 2 });
+  const { items, total } = buildAlignedBlock(tpl, block, BLOCK, START, ch, makeFillerPacker(ch));
+  const mains = items.filter((r) => !r.is_filler);
+  const fillerSecs = items.filter((r) => r.is_filler).reduce((n, r) => n + r.duration, 0);
+
+  assert.equal(mains.length, 2, 'the movie block placed two features');
+  assert.ok(fitsTolerance(BLOCK - total), `block closed to ${total}/${BLOCK}s, within tolerance`);
+  assert.ok(fillerSecs * 20 < BLOCK, `fillers cover ${fillerSecs}s — a sliver of the slot, not a third of it`);
+  assert.ok(fillerSecs < oneFillerSecs / 5, 'far less filler than the one-feature build it replaces');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('movie_limit caps how many features a movie block holds, config supplies the default', () => {
+  const ch = makeMovieChannel('Movie Cap', [3600, 3540, 3480, 3420]);
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+
+  const one = makeMovieTemplate(ch, { movie_limit: 1 });
+  const capped = buildAlignedBlock(one, block, 4 * 3600, 20 * 3600, ch, makeFillerPacker(ch));
+  assert.equal(capped.items.filter((r) => !r.is_filler).length, 1, 'movie_limit 1 places one feature');
+
+  // No override on the template → the config default (movies.maxPerBlock, 2).
+  const dflt = makeMovieTemplate(ch, { movie_limit: null });
+  assert.equal(movieLimit(dflt), 2, 'a blank movie_limit falls back to the config default');
+  const two = buildAlignedBlock(dflt, block, 4 * 3600, 20 * 3600, ch, makeFillerPacker(ch));
+  assert.equal(two.items.filter((r) => !r.is_filler).length, 2, 'the default allows two features');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('a movie block never repeats a title, and skips titles already scheduled that week', () => {
+  const ch = makeMovieChannel('Movie Repeat', [7080, 7140, 6600, 5400]);
+  const tpl = makeMovieTemplate(ch, { movie_limit: 2 });
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+  const { items } = buildAlignedBlock(tpl, block, 4 * 3600, 20 * 3600, ch, makeFillerPacker(ch));
+  const mains = items.filter((r) => !r.is_filler);
+  assert.equal(new Set(mains.map((r) => r.id)).size, mains.length, 'no title airs twice in one block');
+
+  // Park one of those titles in a real block two days earlier: the pool must drop
+  // it, which is what stops a week airing the same film more than once.
+  const other = db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                            VALUES (?, NULL, ?, '2026-12-05', 'draft') RETURNING id`).get(tpl.id, ch).id;
+  db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, 0, 0)')
+    .run(other, mains[0].id);
+
+  const pool = moviePool(tpl, block, 4 * 3600, ch);
+  assert.ok(!pool.some((r) => r.id === mains[0].id), 'a title scheduled elsewhere this week is off the pool');
+  assert.ok(pool.length, 'the rest of the catalogue is still available');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('chooseMovies scores runs the way the builder lays them out', () => {
+  // Two 1h films in a 2h slot starting on the hour: both fit back to back, and
+  // the second lands on the quarter mark right after the first.
+  const pool = [
+    { id: 1, duration: 3600 }, { id: 2, duration: 3600 }, { id: 3, duration: 5400 },
+  ];
+  const run = chooseMovies(pool, 20 * 3600, 2 * 3600, 2);
+  assert.equal(run.length, 2);
+  assert.equal(run.reduce((n, r) => n + r.duration, 0), 2 * 3600, 'the exact-fill run wins');
+  // A cap of one falls back to the single best fit.
+  assert.deepEqual(chooseMovies(pool, 20 * 3600, 2 * 3600, 1).map((r) => r.id), [3]);
+  assert.deepEqual(chooseMovies([], 0, 3600, 2), [], 'an empty pool yields nothing');
+});
+
+test('a wide gap is spread over distinct fillers instead of repeating one clip', () => {
+  // The real pool's shape: one clip far longer than the rest, plus dozens of short
+  // ones, ~11800s all told. The old exact-fit search reached for the longest
+  // duration over and over, so a 2.5h gap became the same clip a dozen times.
+  const ch = db.prepare(
+    "INSERT INTO ChannelType (name, api_ip, api_port) VALUES ('Filler Spread', '127.0.0.1', 1) RETURNING id"
+  ).get().id;
+  const add = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+                          VALUES (?, ?, ?, 1, 1, ?)`);
+  add.run('long', '/tmp/spread-long.mov', 685, ch);
+  for (let i = 0; i < 80; i++) add.run(`s${i}`, `/tmp/spread-s${i}.mov`, 100 + i, ch);
+
+  const GAP = 9000; // comfortably inside one lap of the ~11800s pool
+  const { pack } = makeFillerPacker(ch);
+  const { items, total } = pack(GAP, { overrun: true });
+  assert.ok(fitsTolerance(GAP - total), `gap closed to ${total}/${GAP}s, within tolerance`);
+  const counts = new Map();
+  for (const r of items) counts.set(r.id, (counts.get(r.id) || 0) + 1);
+  const worst = Math.max(...counts.values());
+  // The exact pass at the end still repeats a duration when only one clip carries
+  // it — that is the price of landing the gap on the second — so a couple of
+  // repeats are expected. What must not happen is one clip carrying the gap.
+  assert.ok(worst <= 4, `no clip airs more than a handful of times (worst was ${worst})`);
+  assert.ok(counts.size >= 50, `the gap drew on ${counts.size} distinct clips`);
+  const hog = Math.max(...[...counts].map(([id, n]) => n * items.find((r) => r.id === id).duration));
+  assert.ok(hog * 10 < total, `no single clip covers more than a tenth of the gap (worst was ${hog}/${total}s)`);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('PUT /blocks/:id/movie-block flags the template and refills the block', async () => {
+  const ch = makeMovieChannel('Movie Route', [7080, 7140, 6600, 5400]);
+  const tpl = makeMovieTemplate(ch, { is_movie_block: 0 });
+  const slot = db.prepare(`INSERT INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order)
+                           VALUES (?, '20:00', '00:00', 0) RETURNING id`).get(tpl.id).id;
+  const blockId = db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                              VALUES (?, ?, ?, '2026-12-14', 'draft') RETURNING id`).get(tpl.id, slot, ch).id;
+
+  const off = await j('POST', `/api/blocks/${blockId}/regenerate`);
+  assert.equal(off.data.mainCount, 1, 'unflagged: a single feature');
+
+  const on = await j('PUT', `/api/blocks/${blockId}/movie-block`, { enabled: true, limit: 2 });
+  assert.equal(on.status, 200);
+  assert.equal(on.data.block.is_movie_block, 1, 'the flag persisted on the template');
+  assert.equal(on.data.block.movie_limit, 2);
+  assert.equal(on.data.items.filter((i) => !i.is_filler).length, 2, 'the block was refilled with two features');
+  assert.ok(on.data.fits, 'the refilled block still fits its slot');
+
+  // Turning it back off restores the per-series cycle.
+  const back = await j('PUT', `/api/blocks/${blockId}/movie-block`, { enabled: false, limit: 0 });
+  assert.equal(back.data.block.is_movie_block, 0);
+  assert.equal(back.data.block.movie_limit, null);
+  assert.equal(back.data.items.filter((i) => !i.is_filler).length, 1);
 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });

@@ -267,6 +267,12 @@ export function initSchema() {
   addColumnIfMissing('BlockTemplate', 'content_type', "TEXT NOT NULL DEFAULT 'movie'");
   addColumnIfMissing('BlockTemplate', 'weekdays', 'TEXT'); // CSV, e.g. 'Mon,Tue,Wed'
   addColumnIfMissing('BlockTemplate', 'max_per_show', 'INTEGER'); // cap episodes/show/block; NULL = unlimited
+  // Movie blocks. When set, the block ignores the per-series cycle and instead
+  // fills itself with the best-fitting combination of up to `movie_limit` movies
+  // (NULL = config movies.maxPerBlock, default 2), so a long slot holds two
+  // features instead of one feature plus hours of fillers.
+  addColumnIfMissing('BlockTemplate', 'is_movie_block', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('BlockTemplate', 'movie_limit', 'INTEGER');
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs

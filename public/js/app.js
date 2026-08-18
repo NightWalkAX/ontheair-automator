@@ -523,6 +523,26 @@ function renderBlockControls() {
   capRow.append(capInp, capBtn);
   box.append(capRow);
 
+  // Movie-block toggle (writes to the template, rebuilds this block). A movie
+  // block pools every title its shows expose and airs the best-fitting run of up
+  // to `limit` of them, which is what keeps the slot from becoming mostly filler.
+  const mvRow = el('div', { className: 'bc-row' });
+  const mvChk = el('input', { type: 'checkbox', checked: !!currentBlock.block.is_movie_block });
+  mvRow.append(el('label', { className: 'chk' }, mvChk, document.createTextNode(' Movie block')));
+  const mvInp = el('input', { className: 'cat-ord', type: 'number', min: '0', step: '1',
+    value: currentBlock.block.movie_limit || '', placeholder: 'max movies (blank = 2)', style: 'max-width:170px' });
+  const mvBtn = el('button', { className: 'mini ghost', textContent: 'Apply & refill' });
+  mvBtn.onclick = () => withBusy(mvBtn, async () => {
+    const v = await api.send('PUT', `/api/blocks/${currentBlock.block.id}/movie-block`,
+      { enabled: mvChk.checked, limit: Number(mvInp.value) || 0 });
+    currentBlock = v; currentItems = v.items.map((i) => ({ ...i }));
+    renderBlockControls(); renderItems();
+    toast(mvChk.checked ? 'Movie block applied — block refilled' : 'Movie block turned off — block refilled', 'ok');
+    loadSchedule();
+  });
+  mvRow.append(mvInp, mvBtn);
+  box.append(mvRow);
+
   // Show-order strip: drag the show chips to set the cycle order, then refill.
   const shows = [...counts.keys()];
   if (shows.length > 1) {
@@ -2397,6 +2417,10 @@ async function openTemplate(t) {
   $('#tplmName').oninput = markTplDirty;
   $('#tplmMaxPerShow').value = t && t.max_per_show ? t.max_per_show : '';
   $('#tplmMaxPerShow').oninput = markTplDirty;
+  $('#tplmIsMovieBlock').checked = !!(t && t.is_movie_block);
+  $('#tplmIsMovieBlock').onchange = markTplDirty;
+  $('#tplmMovieLimit').value = t && t.movie_limit ? t.movie_limit : '';
+  $('#tplmMovieLimit').oninput = markTplDirty;
   $('#btnDeleteTpl').style.display = t ? '' : 'none';
 
   const days = new Set((t?.weekdays || t?.weekday || '').split(',').map((x) => x.trim()).filter(Boolean));
@@ -2620,7 +2644,11 @@ $('#btnSaveTpl').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
   if (problems.length) return;
 
   const maxPerShow = Number($('#tplmMaxPerShow').value) > 0 ? Number($('#tplmMaxPerShow').value) : 0;
-  const body = { channels, channel_id: channels[0], name, weekdays, slots: validSlots, series, max_per_show: maxPerShow };
+  const movieLimit = Number($('#tplmMovieLimit').value) > 0 ? Number($('#tplmMovieLimit').value) : 0;
+  const body = { channels, channel_id: channels[0], name, weekdays, slots: validSlots, series,
+    max_per_show: maxPerShow,
+    is_movie_block: $('#tplmIsMovieBlock').checked ? 1 : 0,
+    movie_limit: movieLimit };
   if (tplEditing) await api.send('PUT', `/api/blocks/templates/${tplEditing}`, body);
   else await api.send('POST', '/api/blocks/templates', body);
   tplDirty = false;
