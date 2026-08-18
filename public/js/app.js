@@ -608,19 +608,29 @@ function renderItems() {
       textContent: `${label}${it.is_manual_override ? ' *' : ''}`,
       title: it.name,
     }));
-    // Per-item episode corrector for serial items: pick another chapter of the
+    // Per-item episode corrector for ORDERED items: pick another chapter of the
     // same show. The backend swaps the item, sets the series cursor, and
     // regenerates later still-draft blocks this week so ordering follows.
-    if (!currentMirror && it.subject && it.id != null) {
+    //
+    // Only for items that actually carry an ordinal. A standalone film has
+    // chapter 0, and every film in the flat Movies folder shares it — offering
+    // "which chapter" there is meaningless, and it used to render 138 options all
+    // valued 0 and all flagged selected, so the box displayed whichever sorted
+    // last rather than the film on this row. Chapters are also deduped by value,
+    // since a real catalogue can carry chapter collisions.
+    if (!currentMirror && it.subject && it.id != null && Number(it.chapter) > 0) {
+      const seen = new Set();
       const chapters = allResources
-        .filter((r) => r.subject === it.subject && !r.is_filler)
-        .sort((a, b) => a.chapter - b.chapter);
+        .filter((r) => r.subject === it.subject && !r.is_filler && Number(r.chapter) > 0)
+        .sort((a, b) => a.chapter - b.chapter)
+        .filter((r) => (seen.has(r.chapter) ? false : seen.add(r.chapter)));
       if (chapters.length > 1) {
         const epSel = el('select', { className: 'ep-sel', title: `Episode of “${it.subject}”` });
         for (const c of chapters) {
           epSel.append(el('option', {
             value: c.chapter,
-            textContent: c.episode_code || c.name,
+            // Movies have no episode code, so name the part by its title.
+            textContent: c.episode_code || c.display_name || c.name,
             selected: c.chapter === it.chapter,
           }));
         }

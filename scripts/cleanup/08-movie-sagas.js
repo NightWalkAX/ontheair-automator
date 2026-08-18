@@ -20,9 +20,14 @@
 //   2. registers each franchise in ChannelSeries as SERIAL (so it plays in order),
 //   3. clears the junk ordinal off standalone films (the generic "last integer in
 //      the name" fallback leaves 2019 on "Aladdin_2019", 102 on "102_Dalmatians"),
-//   4. with --link-templates, adds every new franchise to the templates that
-//      currently name the flat folder, so existing movie blocks keep drawing on
-//      the whole library instead of only the standalone films.
+//
+// It deliberately does NOT touch the templates. A movie block with no series named
+// already draws on every movie the channel has (each franchise held at the part it
+// is due), so a movie night keeps the whole library without naming anything. Adding
+// the franchises to it would do the opposite: a named franchise is played in ORDER
+// ahead of fit, so a block naming all 52 would just air the first two every night
+// and pad the rest with fillers — 23% filler instead of 4% on the real catalogue.
+// Name a franchise on a block only when you want that franchise's marathon.
 //
 // Nothing is deleted and nothing is quarantined: a title this cannot place simply
 // stays where it is, and single-member near-misses are listed in the report so the
@@ -31,15 +36,18 @@
 // Dry run by default; pass --apply to write. Honours SCHEDULER_DB.
 //
 // Usage:
-//   node scripts/cleanup/08-movie-sagas.js                          # dry run + report
-//   node scripts/cleanup/08-movie-sagas.js --apply                  # commit
-//   node scripts/cleanup/08-movie-sagas.js --apply --link-templates  # + repoint movie blocks
-
+//   node scripts/cleanup/08-movie-sagas.js                         # dry run + report
+//   node scripts/cleanup/08-movie-sagas.js --apply                 # commit
+//   node scripts/cleanup/08-movie-sagas.js --apply --unlink-sagas   # + undo a previous
+//                                                                  #   --link-templates run
 import { q, one, planner, flag, ensureSeries, renumber } from './lib.js';
 import { groupSagas, titleCandidates, sagaSubjectName } from '../../src/services/movieSaga.js';
 
 const plan = planner('08-movie-sagas');
-const LINK_TEMPLATES = flag('--link-templates');
+// An earlier revision of this script had a --link-templates flag that added every
+// franchise to the movie templates. That turned out to work against the movie-block
+// fill (see the note above), so this undoes it.
+const UNLINK_SAGAS = flag('--unlink-sagas');
 
 const MOVIES_SHOW_TYPE = one("SELECT id FROM ShowType WHERE code = 'movies'")?.id ?? 1;
 
@@ -152,49 +160,41 @@ for (const channel of channels) {
       plan.note(`  ? ${nearMiss.length} title(s) look numbered but have no sibling: ${nearMiss.join('; ')}`);
     }
 
-    // Repoint the templates that name this flat folder so their blocks still see
-    // the whole library. Without this, a movie night drawing on "Movies" would
-    // only get the standalone films once the franchises move out.
-    if (LINK_TEMPLATES && filedAs.length) {
-      const templates = q(
-        `SELECT bt.id, bt.name FROM BlockTemplateSeries bts
-         JOIN BlockTemplate bt ON bt.id = bts.template_id
-         WHERE bts.subject = ?
-           AND (bt.channel_id = ? OR EXISTS (
-                 SELECT 1 FROM BlockTemplateChannel btc
-                  WHERE btc.template_id = bt.id AND btc.channel_id = ?))`,
-        subject,
-        channel.id,
-        channel.id
-      );
-      for (const t of templates) {
-        const nextOrder = one(
-          'SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM BlockTemplateSeries WHERE template_id = ?',
-          t.id
-        ).n;
-        let i = 0;
-        for (const base of filedAs) {
-          plan.op(
-            `INSERT OR IGNORE INTO BlockTemplateSeries (template_id, subject, play_order)
-             VALUES (?, ?, ?)`,
-            [t.id, base, nextOrder + i++],
-            null
-          );
-        }
-        plan.note(`  + template "${t.name}" (#${t.id}): added ${i} franchise(s) alongside "${subject}"`);
-      }
-    }
   }
 }
 
-plan.note(`TOTAL: ${totalSagas} franchise(s), ${totalMoved} title(s) moved`);
-if (!LINK_TEMPLATES) {
-  plan.note('note: pass --link-templates to also add the franchises to the movie templates that name the flat folder');
-} else {
-  plan.note(
-    'note: a template holding dozens of series fills greedily — one pick per series — unless it is ' +
-    'flagged a MOVIE BLOCK (BlockTemplate.is_movie_block), which caps it at movie_limit best-fitting ' +
-    'features. Tick "Movie block" on the movie templates after running this.'
-  );
+// Undo a previous --link-templates run. Standalone, not tied to what this run
+// moved, so it also works on a catalogue that was already split: drop from every
+// movie-block template the rows naming a FRANCHISE (a movies-show-type subject with
+// ordered parts), leaving unordered folders like "Movies" alone. Those blocks then
+// draw the whole library by fit again instead of marching the first two franchises.
+if (UNLINK_SAGAS) {
+  const linked = q(`
+    SELECT bts.id, bts.subject, bt.name
+      FROM BlockTemplateSeries bts
+      JOIN BlockTemplate bt ON bt.id = bts.template_id
+     WHERE bt.is_movie_block = 1
+       AND EXISTS (
+             SELECT 1 FROM Resource r
+              JOIN ShowType st ON st.id = r.show_type_id
+             WHERE r.subject = bts.subject AND st.code = 'movies'
+               AND r.is_filler = 0 AND r.chapter > 0)
+  `);
+  const byTemplate = new Map();
+  for (const r of linked) {
+    plan.op('DELETE FROM BlockTemplateSeries WHERE id = ?', [r.id], null);
+    byTemplate.set(r.name, (byTemplate.get(r.name) || 0) + 1);
+  }
+  for (const [name, n] of byTemplate) {
+    plan.note(`- template "${name}": removed ${n} franchise row(s); it draws the whole library by fit again`);
+  }
+  if (!linked.length) plan.note('- no franchise rows on any movie-block template — nothing to unlink');
 }
+
+plan.note(`TOTAL: ${totalSagas} franchise(s), ${totalMoved} title(s) moved`);
+plan.note(
+  'next: tick "Movie block" on the movie templates and leave their series list EMPTY — ' +
+  'a movie block with no series named draws on every movie, holding each franchise at the part ' +
+  'it is due. Name a franchise on a block only for that franchise\'s marathon.'
+);
 plan.commit();
