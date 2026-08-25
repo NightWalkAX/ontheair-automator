@@ -27,6 +27,12 @@ router.post('/push', async (req, res) => {
   const from = String(q.from || '').slice(0, 10);
   const to = String(q.to || '').slice(0, 10);
   const jobId = String(q.job || '');
+  // ?channels=1,3 (or a JSON array in the body) restricts the run to those OTAV
+  // instances — the operator picks them in the push dialog. Absent = all.
+  const channelIds = [...new Set((Array.isArray(q.channels) ? q.channels
+    : String(q.channels ?? '').split(','))
+    .map((v) => Number(String(v).trim()))
+    .filter((n) => Number.isInteger(n) && n > 0))];
 
   // Second click while one is running: refuse instead of queueing behind a
   // 10-minute run, which the browser can only show as another dead spinner.
@@ -37,7 +43,7 @@ router.post('/push', async (req, res) => {
   const deadlineMs = Math.max(60, Number(loadConfig().otav?.pushTimeoutSeconds) || 900) * 1000;
   const job = JOB_ID.test(jobId) ? startJob(jobId, { deadlineMs, label: week || date || `${from}..${to}` }) : null;
   const progress = job || undefined;
-  const opts = progress ? { progress } : {};
+  const opts = { ...(progress ? { progress } : {}), ...(channelIds.length ? { channelIds } : {}) };
   const send = (payload) => {
     if (job) finishJob(job.id, { ok: payload.ok !== false, summary: payload, error: payload.error || null });
     return payload;

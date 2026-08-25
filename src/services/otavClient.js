@@ -212,6 +212,33 @@ class OtavClient {
   }
 
   /**
+   * Find an OPEN playlist by the name an operator would recognise.
+   *
+   * OTAV exposes no lookup by name (GET /playlists/{name} answers 404 "No
+   * playlist matches the given unique ID or index"), so the only way to honour a
+   * name is to enumerate the open playlists by index and compare. Comparison is
+   * normalised: the scheduler reports a playlist's file name ("Discover
+   * 2026-08-25.xpls") while the schedule event that created it carries our tag
+   * ("Discover 2026-08-25 [ontheair-automator]"), and either can be what OTAV
+   * shows for the same day.
+   */
+  async findOpenByName(name) {
+    const norm = (s) => String(s || '')
+      .replace(/\.xpls$/i, '')
+      .replace(/\s*\[ontheair-automator\]\s*$/i, '')
+      .trim()
+      .toLowerCase();
+    const want = norm(name);
+    const open = await this.openPlaylists().catch(() => []);
+    const hit = open.find((pl) => norm(pl.name) === want)
+      || open.find((pl) => norm(String(pl.path || '').split('/').pop()) === want);
+    if (hit) return hit;
+    // Some servers DO resolve a bare name (and the test double does); try it as a
+    // fallback so this path still works where the enumeration came back empty.
+    return this.getPlaylist(name).catch(() => null);
+  }
+
+  /**
    * The safest ref for a playlist we know by file path: its unique_id, falling
    * back to its index. A scheduler-opened playlist reports a name that still
    * carries the .xpls extension, so the day name is not a reliable handle — and
@@ -266,11 +293,17 @@ class OtavClient {
       }
     }
 
-    // 1. Open playlist with that display name.
+    // 1. Already open under that name. OTAV addresses playlists ONLY by unique_id
+    //    or index — GET /playlists/{name} always 404s ("No playlist matches the
+    //    given unique ID or index") — so a name lookup has to go through the
+    //    open-playlist enumeration and match there. Names are compared without
+    //    the .xpls extension and without our event tag, because a scheduler-opened
+    //    playlist reports the file name while the schedule event carries the tag.
     try {
-      const existing = await this.getPlaylist(name);
+      const existing = await this.findOpenByName(name);
+      if (!existing) throw Object.assign(new Error('not open'), { status: 404 });
       OtavClient.assertEditable(existing);
-      const ref = existing?.unique_id || name;
+      const ref = existing.unique_id ?? existing.index;
       const cleared = await this.clearIfNeeded(ref, existing);
       if (cleared.note) notes.push(cleared.note);
       return { ref, source: 'open', created: false, notes };
@@ -775,11 +808,15 @@ async function pushChannelDays(channel, days, progress = NULL_PROGRESS) {
  * it owns — completes before the next instance is touched). Returns one entry
  * per date that had something to push.
  */
-async function pushDays(dates, progress = NULL_PROGRESS) {
+async function pushDays(dates, progress = NULL_PROGRESS, channelIds = null) {
   const perChannel = new Map(); // channel_id -> { channel, days: Map(date -> blocks) }
   const nonEmpty = new Set();
+  // An empty/absent selection means "every channel that has something approved";
+  // a selection restricts the run to those instances and leaves the rest alone.
+  const wanted = channelIds && channelIds.length ? new Set(channelIds.map(Number)) : null;
   for (const targetDate of dates) {
     for (const b of dayBlocks(targetDate)) {
+      if (wanted && !wanted.has(b.channel_id)) continue;
       nonEmpty.add(targetDate);
       let entry = perChannel.get(b.channel_id);
       if (!entry) perChannel.set(b.channel_id, (entry = { channel: b, days: new Map() }));
@@ -858,9 +895,9 @@ async function pushDays(dates, progress = NULL_PROGRESS) {
  * Returns a per-channel report; failures are captured per channel rather than
  * aborting the whole run (one dead OTAV shouldn't block the other 5).
  */
-export function pushApprovedBlocks(targetDate, { progress = NULL_PROGRESS } = {}) {
+export function pushApprovedBlocks(targetDate, { progress = NULL_PROGRESS, channelIds = null } = {}) {
   return serialized(async () => {
-    const days = await pushDays([targetDate], progress);
+    const days = await pushDays([targetDate], progress, channelIds);
     return { targetDate, channels: days[0]?.channels ?? [], aborted: days.aborted || null };
   });
 }
@@ -875,14 +912,14 @@ export function pushApprovedBlocks(targetDate, { progress = NULL_PROGRESS } = {}
  * failures: an empty Wednesday is normal for a Mon/Tue/Thu template. Days pushed
  * before are pushed again, so a week push refreshes what already aired out.
  */
-export function pushApprovedRange(fromDate, toDate, { progress = NULL_PROGRESS } = {}) {
+export function pushApprovedRange(fromDate, toDate, { progress = NULL_PROGRESS, channelIds = null } = {}) {
   return serialized(async () => {
     const dates = [];
     for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
          d.setUTCDate(d.getUTCDate() + 1)) {
       dates.push(d.toISOString().slice(0, 10));
     }
-    const days = await pushDays(dates, progress);
+    const days = await pushDays(dates, progress, channelIds);
     const pushed = new Set(days.map((d) => d.targetDate));
     return {
       from: fromDate,
