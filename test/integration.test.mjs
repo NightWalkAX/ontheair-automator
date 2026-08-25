@@ -1820,6 +1820,29 @@ test('a push reports live progress and can be cancelled instead of spinning fore
   assert.equal((await j('GET', `/api/otav/push/status?job=${job}`)).data.job.finished, true);
 });
 
+test('a push only touches the channels the operator selected', async () => {
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20' AND status='exported'").run();
+  const all = await j('POST', '/api/otav/push?date=2026-07-20');
+  const chosen = all.data.channels[0];
+  const chosenId = db.prepare('SELECT id FROM ChannelType WHERE name = ?').get(chosen.channel).id;
+
+  db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE target_date='2026-07-20' AND status='exported'").run();
+  const one = await j('POST', `/api/otav/push?date=2026-07-20&channels=${chosenId}`);
+  assert.equal(one.status, 200);
+  assert.deepEqual(one.data.channels.map((c) => c.channel), [chosen.channel],
+    'only the selected instance is in the report');
+
+  // A selection that owns nothing on that date pushes nothing at all, rather
+  // than falling back to "all channels".
+  const pushedNames = new Set(all.data.channels.map((c) => c.channel));
+  const other = db.prepare('SELECT id, name FROM ChannelType ORDER BY id').all()
+    .find((c) => !pushedNames.has(c.name));
+  if (other) {
+    const none = await j('POST', `/api/otav/push?date=2026-07-20&channels=${other.id}`);
+    assert.deepEqual(none.data.channels, [], 'an unselected channel is left untouched');
+  }
+});
+
 test('a cancelled run stops mid-flight and reports how far it got', async () => {
   const { startJob, cancelJob } = await import('../src/services/pushProgress.js');
   const { pushApprovedBlocks } = await import('../src/services/otavClient.js');

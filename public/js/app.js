@@ -357,17 +357,87 @@ function pushProgressDialog(title, { onCancel }) {
   };
 }
 
+// Which channels the last push targeted — the dialog reopens on that choice, so
+// pushing the same subset day after day doesn't mean re-ticking it every time.
+let lastPushChannels = null;
+
+// Push confirmation + channel picker. Resolves to an array of channel ids, or
+// null when the operator cancels. An empty selection is not a valid push, so
+// the confirm button stays disabled until at least one instance is ticked.
+async function pushChannelDialog(message, channels) {
+  return new Promise((resolve) => {
+    $('#dialogTitle').textContent = 'Push to Air';
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    content.append(el('p', { className: 'dialog-msg', textContent: message }));
+
+    const remembered = lastPushChannels && lastPushChannels.filter((id) => channels.some((c) => c.id === id));
+    const preset = remembered && remembered.length ? remembered
+      : (currentScheduleChannel != null ? [currentScheduleChannel] : channels.map((c) => c.id));
+    const list = el('div', { className: 'push-channels' });
+    const boxes = channels.map((c) => {
+      const input = el('input', { type: 'checkbox', value: String(c.id) });
+      input.checked = preset.includes(c.id);
+      const row = el('label', { className: 'chk push-channel' }, input,
+        el('span', { textContent: c.name }));
+      list.append(row);
+      return input;
+    });
+    const bulk = el('div', { className: 'push-channel-bulk' });
+    const all = el('button', { className: 'ghost', type: 'button', textContent: 'All' });
+    const none = el('button', { className: 'ghost', type: 'button', textContent: 'None' });
+    bulk.append(all, none);
+    content.append(bulk, list);
+
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: 'danger', textContent: 'Push to Air' });
+    const selected = () => boxes.filter((b) => b.checked).map((b) => Number(b.value));
+    const sync = () => { ok.disabled = selected().length === 0; };
+    for (const b of boxes) b.addEventListener('change', sync);
+    all.onclick = () => { for (const b of boxes) b.checked = true; sync(); };
+    none.onclick = () => { for (const b of boxes) b.checked = false; sync(); };
+    cancel.onclick = () => { closeDialog(); resolve(null); };
+    ok.onclick = () => {
+      const ids = selected();
+      if (!ids.length) return;
+      lastPushChannels = ids;
+      closeDialog();
+      resolve(ids);
+    };
+    actions.append(cancel, ok);
+    sync();
+    $('#dialog').classList.remove('hidden');
+    ok.focus();
+  });
+}
+
 // A template repeating on several weekdays yields one block per date, and each
 // date is its own playlist — so pushing a single day airs only that day.
 async function pushToAir(btn, { scope }) {
   const day = $('#pushDate').value;
   const week = $('#weekStart').value;
-  const query = scope === 'week' ? `week=${week}` : `date=${day}`;
   const what = scope === 'week' ? `the week starting ${week} (7 days)` : day;
-  const ok = await confirmDialog('Push to Air',
-    `This pushes all approved blocks for ${what} to the live OTAV instances. Continue?`,
-    { confirmLabel: 'Push to Air', danger: true });
-  if (!ok) return;
+
+  // Pushing rebuilds the day's playlist on every instance it touches, so the
+  // operator chooses which instances this run is allowed to touch.
+  let channels = scheduleChannels;
+  if (!channels.length) {
+    try { channels = scheduleChannels = await api.get('/api/channels'); } catch { channels = []; }
+  }
+  let query = scope === 'week' ? `week=${week}` : `date=${day}`;
+  if (channels.length) {
+    const picked = await pushChannelDialog(
+      `This pushes all approved blocks for ${what} to the channels you select below.`, channels);
+    if (!picked) return;
+    if (picked.length < channels.length) query += `&channels=${picked.join(',')}`;
+  } else {
+    const ok = await confirmDialog('Push to Air',
+      `This pushes all approved blocks for ${what} to the live OTAV instances. Continue?`,
+      { confirmLabel: 'Push to Air', danger: true });
+    if (!ok) return;
+  }
 
   const job = `push-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await withBusy(btn, async () => {

@@ -755,3 +755,13 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   .badge-ok   { color: #86efac; }
   .badge-warn { color: #fcd34d; }
 }
+
+/* ---- Push channel picker --------------------------------------------------- */
+.push-channel-bulk { display: flex; gap: 6px; margin: 8px 0 6px; }
+.push-channel-bulk button { padding: 3px 10px; font-size: 12px; }
+.push-channels { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow: auto; }
+.push-channel {
+  white-space: normal; gap: 8px; font-size: 13.5px; padding: 7px 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.push-channel:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
