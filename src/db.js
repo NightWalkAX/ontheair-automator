@@ -236,6 +236,42 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_channelseries_order ON ChannelSeries(channel_id, play_order);
     CREATE INDEX IF NOT EXISTS idx_bts_template ON BlockTemplateSeries(template_id, play_order);
     CREATE INDEX IF NOT EXISTS idx_btslot_template ON BlockTemplateSlot(template_id, slot_order);
+    -- Media normalisation queue (see services/transcode.js). One row per
+    -- distinct physical file, keyed by its canonical path — the same file
+    -- catalogued under several channels is converted once. Durable on purpose:
+    -- the run takes hours to days, so the queue has to survive a restart and
+    -- tell the operator exactly which clips are already on spec.
+    CREATE TABLE IF NOT EXISTS TranscodeItem (
+      id           INTEGER PRIMARY KEY,
+      file_path    TEXT NOT NULL UNIQUE,   -- canonical (Mac) path, follows a replace
+      resource_id  INTEGER,                -- any one catalogue row for this file
+      channel_id   INTEGER,
+      -- ok | pending | running | converted | blocked | replaced | failed | skipped | missing
+      status       TEXT NOT NULL DEFAULT 'pending',
+      reasons      TEXT,                   -- JSON array of spec-failure codes
+      width        INTEGER,
+      height       INTEGER,
+      fps          REAL,
+      vcodec       TEXT,
+      pix_fmt      TEXT,
+      acodec       TEXT,
+      sample_rate  INTEGER,
+      achannels    INTEGER,
+      src_duration REAL,
+      size_bytes   INTEGER,
+      out_path     TEXT,                   -- local work file, until it is moved in
+      out_duration REAL,
+      out_size_bytes INTEGER,
+      backup_path  TEXT,                   -- where the original was archived
+      progress     REAL NOT NULL DEFAULT 0,
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      error        TEXT,
+      probed_at    TEXT,
+      started_at   TEXT,
+      finished_at  TEXT,
+      replaced_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_transcode_status ON TranscodeItem(status, channel_id);
   `);
 
   // Lightweight migrations for DBs created before a column was added. Each is

@@ -25,5 +25,39 @@
   "pathMap": {},
   "otav": {
     "pushTimeoutSeconds": 900
+  },
+  "ffmpegPath": "ffmpeg",
+  "transcode": {
+    "workDir": "/Volumes/Public/_transcode/work",
+    "archiveDir": "/Volumes/Public/_transcode/originals",
+    "concurrency": 1,
+    "autoReplace": true,
+    "copySourceFirst": false,
+    "order": "shortest",
+    "perFileTimeoutMinutes": 240,
+    "target": {
+      "width": 1920,
+      "height": 1080,
+      "fps": "30000/1001",
+      "pixFmt": "yuv420p",
+      "vcodec": "libx264",
+      "preset": "medium",
+      "crf": 18,
+      "acodec": "pcm_s16le",
+      "sampleRate": 48000,
+      "audioChannels": 2,
+      "container": ".mov",
+      "enforceContainer": false,
+      "acceptVideo": [
+        "h264"
+      ],
+      "acceptAudio": [
+        "pcm_s16le",
+        "pcm_s16be",
+        "pcm_s24le"
+      ],
+      "fpsToleranceHz": 0.01,
+      "verifyToleranceSeconds": 1.5
+    }
   }
 }

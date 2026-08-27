@@ -765,3 +765,56 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
   border: 1px solid var(--line); border-radius: 8px;
 }
 .push-channel:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+
+/* ---- Air Spec (ffmpeg normalisation tab) ----------------------------------- */
+.spec-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 14px; margin: 0 0 14px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel-2); font-size: 12.5px; color: var(--ink-soft);
+}
+.spec-chip {
+  padding: 3px 10px; border-radius: 999px; background: var(--panel);
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.spec-chip b { color: var(--muted); font-weight: 600; margin-right: 2px; }
+.spec-note { flex-basis: 100%; font-size: 12px; }
+
+.tx-live { display: flex; flex-direction: column; gap: 8px; }
+.tx-live-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
+.tx-current {
+  font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.tx-counters { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
+.tx-counter {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 6px 12px; font-size: 12.5px; border-radius: 999px;
+  background: var(--panel); color: var(--ink-soft);
+  border: 1px solid var(--line); box-shadow: none;
+}
+.tx-counter b { font-size: 14px; color: var(--ink); }
+.tx-counter:hover { filter: none; border-color: var(--accent); }
+.tx-counter.active { border-color: var(--accent); background: var(--accent-soft); }
+.tx-counter.tx-failed b, .tx-counter.tx-missing b { color: var(--bad); }
+.tx-counter.tx-replaced b, .tx-counter.tx-ok b { color: var(--ok); }
+.tx-counter.tx-blocked b, .tx-counter.tx-converted b { color: var(--warn); }
+
+.tx-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 700; white-space: nowrap;
+  background: var(--panel-2); color: var(--ink-soft); border: 1px solid var(--line);
+}
+.tx-badge.tx-ok, .tx-badge.tx-replaced { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.tx-badge.tx-failed, .tx-badge.tx-missing { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.tx-badge.tx-blocked, .tx-badge.tx-converted { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.tx-badge.tx-running { background: var(--accent-soft); color: var(--accent-ink); border-color: transparent; }
+
+.tx-row-running { background: var(--accent-soft); }
+.tx-path, .tx-err {
+  font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tx-err { color: var(--bad); max-width: 340px; }
+#txTable td { vertical-align: top; }

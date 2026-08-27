@@ -49,6 +49,40 @@ Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable exte
 - **TV episodes:** weekday 18:00 slots act as movie fillers (cooldown applies); Sunday slots explicitly pick the latest-added episode.
 - **Filler fitting:** stack `is_filler = true` resources before/between/after main content until the block reaches as close to exact duration as possible. `makeFillerPacker(channelId).pack()` fills a gap in two passes: a BULK pass that draws distinct clips in global LRU rotation while the gap is wider than a small reserve (so a wide gap airs many different clips rather than one clip on repeat), then an EXACT unbounded-knapsack pass on the remainder, which may repeat and is what lands the gap on the second. Diversity is best-effort and the fit is the guarantee: for the closing fill (`{ overrun: true }`) the bulk pass hands clips back one at a time until the exact pass can land inside tolerance, degrading in the worst case to the exact-only search — a coarse pool asked for 1800s can otherwise strand 13s where 600+600+600 is exact. Exact is the target; the block may end up to `filler.maxUnderrunSeconds` (default 5s) short, and when the filler pool is too coarse to land inside that window the fill goes up to `filler.maxOverrunSeconds` (default 5s) PAST the block end instead of leaving a bigger hole. Tolerance is one shared helper — `fitTolerance()` / `fitsTolerance(diff)` in `src/services/scheduling.js`, mirrored client-side in `renderValidation()`. Any manual edit that violates this tolerance must block approval in the UI until fixed.
 
+## Media normalisation ("Air Spec" tab)
+
+`src/services/transcode.js` + `src/routes/transcode.js` + the `Air Spec` tab bring the whole
+catalogue to one house format so OTAV plays it with consistent timing and no audio drift.
+Target (config `transcode.target`): **1920x1080, 29.97fps (`30000/1001`), h264 High yuv420p,
+PCM s16le 48kHz stereo, `.mov`** — PCM because a compressed track's encoder delay is the usual
+source of lip-sync drift, and `-video_track_timescale 30000` because a 600-timescale mov turns
+29.97 into "29.97-ish" over a two-hour feature. Closed short GOPs, no B-frames, so OTAV cues
+cleanly. `yadif=deint=1` only touches frames flagged interlaced.
+
+The routine is deliberately slow (full re-encode at broadcast quality over the SMB share,
+`concurrency` 1 by default — hours per channel, days for the library), so it is built to be
+started and left alone:
+
+- **Two phases.** `POST /api/transcode/scan` ffprobes every catalogued file and records what is
+  off spec in `TranscodeItem` (one row per distinct physical path, statuses
+  `ok|pending|running|converted|blocked|replaced|failed|skipped|missing`). `POST
+  /api/transcode/start` works that queue. An on-spec file is NEVER re-encoded, and a re-scan
+  never pushes finished work back into the queue.
+- **Copy → convert → verify → archive → swap, per clip.** Output goes to `transcode.workDir`,
+  is probed and checked against the spec (and against the source duration,
+  `verifyToleranceSeconds`) BEFORE anything moves; then the original is moved into
+  `transcode.archiveDir` (full path mirrored, never deleted) and the new file takes its place.
+  Replacement is per clip as it verifies (`autoReplace`), so stopping mid-run leaves a partly
+  normalised catalogue, never a half-written file at a path OTAV might read.
+- **The path can change.** Output is `.mov`, so a converted `.avi` gets a new `file_path`;
+  every `Resource` row for that physical file is re-pointed and its duration updated. A clip
+  that appears in a block already `exported` for today or later is **blocked** instead of
+  swapped (the playlist on the playout Mac still names the old file) — re-push those days, or
+  force it deliberately.
+- **State survives everything.** The queue is in SQLite; `resetStaleRunning()` on startup
+  re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
+  panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.
+
 ## OnTheAir Video REST API (integration target)
 
 Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>/...` (per `ChannelType` row) — this project talks to 6 of them independently, not one shared instance.
