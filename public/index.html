@@ -17,6 +17,7 @@
       <button data-tab="schedule" class="active">Schedule Review</button>
       <button data-tab="media">Media &amp; Roots</button>
       <button data-tab="catalog">Catalog Editor</button>
+      <button data-tab="transcode">Air Spec</button>
       <button data-tab="setup">Channels &amp; Templates</button>
     </nav>
     <div class="header-right">
@@ -138,6 +139,63 @@
       <div id="catCrumb" class="cat-crumb"></div>
       <div class="toolbar cat-bulk" id="catBulkBar"></div>
       <div id="catBrowser" class="cat-browser"></div>
+    </div>
+  </section>
+
+  <!-- ===== Air Spec (ffmpeg normalisation) ===== -->
+  <section id="tab-transcode" class="tab">
+    <div class="section-head">
+      <h2>Air Spec <span class="muted" style="font-size:13px;font-weight:500">· normalise the library with ffmpeg</span></h2>
+      <p>Brings every clip to one house format so OnTheAir Video plays the whole catalogue with the same timing and no audio drift. Each clip is <strong>converted to a work file, verified, then swapped in</strong> — the original is moved to the archive folder, never deleted. <strong>This routine is slow on purpose:</strong> it re-encodes at broadcast quality over the share, one clip at a time. Expect hours for a channel and days for the whole library. Start it, walk away, and come back to this tab — the queue lives in the database, so it survives a reload and picks up where it stopped after a restart.</p>
+    </div>
+
+    <div class="spec-banner" id="specBanner">
+      <span class="skeleton" style="display:inline-block;width:280px;height:12px"></span>
+    </div>
+
+    <div class="toolbar">
+      <label class="field"><span>Channel</span>
+        <select id="txChannel"></select>
+      </label>
+      <label class="field"><span>Clips this run</span>
+        <input type="number" id="txLimit" min="1" placeholder="all queued" style="width:120px" />
+      </label>
+      <button id="btnTxScan" class="ghost">🔍 Probe library (ffprobe)</button>
+      <button id="btnTxStart">▶︎ Start converting</button>
+      <button id="btnTxStop" class="ghost">■ Stop after this clip</button>
+      <button id="btnTxAbort" class="danger">✕ Abort now</button>
+      <span class="spacer"></span>
+      <label class="chk" title="Off: converted clips wait for you to swap them in by hand"><input type="checkbox" id="txAutoReplace" checked /> replace each clip as it verifies</label>
+      <label class="chk"><input type="checkbox" id="txFillers" checked /> include fillers when probing</label>
+    </div>
+
+    <div class="panel tx-live">
+      <div class="tx-live-head">
+        <span id="txPhase" class="mount-pill off">idle</span>
+        <span id="txElapsed" class="muted"></span>
+        <span class="spacer"></span>
+        <span id="txQueueCounts" class="muted"></span>
+      </div>
+      <div class="pp-bar"><div id="txQueueFill" class="pp-fill"></div></div>
+      <div id="txCurrent" class="tx-current muted">Nothing running.</div>
+      <div class="pp-bar"><div id="txClipFill" class="pp-fill"></div></div>
+      <ol id="txLog" class="pp-log"></ol>
+    </div>
+
+    <div id="txCounters" class="tx-counters"></div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">🎞 Clips <span id="txFilterLabel" class="muted" style="font-size:13px;font-weight:500"></span></h3>
+        <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0">
+          <button id="btnTxReplacePending" class="mini ghost" title="Swap in every clip that has been converted and is waiting">↔ Replace all waiting</button>
+          <button id="btnTxReload" class="mini ghost">↻ Reload</button>
+        </div>
+      </div>
+      <table id="txTable">
+        <thead><tr><th>Clip</th><th>Now</th><th>Off spec because</th><th>Length</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
   </section>
 

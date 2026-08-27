@@ -135,6 +135,7 @@ $$('nav button').forEach((b) =>
     if (b.dataset.tab === 'media') loadMediaTab();
     if (b.dataset.tab === 'catalog') loadCatalogTab();
     if (b.dataset.tab === 'setup') loadSetupTab();
+    if (b.dataset.tab === 'transcode') loadTranscodeTab();
   })
 );
 
@@ -2822,6 +2823,367 @@ $('#channelForm').addEventListener('submit', async (e) => {
     await loadSetupTab();
   });
 });
+
+// ---- Air Spec (ffmpeg normalisation) ---------------------------------------
+// The run is a background routine measured in hours, so this panel is built to
+// be LEFT OPEN and to survive being closed: everything on screen is re-derived
+// from GET /api/transcode/status, and the live extras (per-clip percentage, log
+// lines) arrive on one SSE stream that is opened once and kept.
+
+const TX_STATUS_LABELS = {
+  ok: 'on spec', pending: 'queued', running: 'converting', converted: 'waiting to replace',
+  blocked: 'blocked', replaced: 'replaced', failed: 'failed', skipped: 'skipped',
+  missing: 'unreadable',
+};
+const TX_COUNTER_ORDER = ['pending', 'running', 'converted', 'blocked', 'replaced', 'failed', 'ok', 'skipped', 'missing'];
+
+let txConfig = null;
+let txState = null;
+let txFilter = null;      // status filter for the clip table
+let txStream = null;      // EventSource
+let txTicker = null;      // 1s repaint of the elapsed clock
+let txReloadTimer = null; // debounced item-table reload
+let txStartedAt = null;
+
+const txPct = (v) => `${Math.round((v || 0) * 100)}%`;
+
+function txDur(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return '';
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`;
+}
+const txElapsedText = (fromMs) => (fromMs ? txDur((Date.now() - fromMs) / 1000) : '');
+
+function txLogLine(message, kind = '') {
+  const log = $('#txLog');
+  if (!log) return;
+  log.append(el('li', { className: kind === 'warn' ? '' : kind, textContent: message }));
+  while (log.children.length > 200) log.firstChild.remove();
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderSpecBanner() {
+  const box = $('#specBanner');
+  if (!box || !txConfig) return;
+  const t = txConfig.target;
+  box.innerHTML = '';
+  const chip = (label, value) => {
+    const s = el('span', { className: 'spec-chip' });
+    s.append(el('b', { textContent: label }), document.createTextNode(` ${value}`));
+    return s;
+  };
+  box.append(
+    chip('Video', `${t.width}×${t.height} · ${t.fps} fps · ${t.vcodec} ${t.pixFmt}`),
+    chip('Audio', `${t.acodec} · ${t.sampleRate} Hz · ${t.audioChannels} ch`),
+    chip('Container', t.container),
+    chip('Originals →', txConfig.archiveDir),
+  );
+  box.append(el('span', {
+    className: 'muted spec-note',
+    textContent: `${txConfig.concurrency} clip at a time · ${txConfig.order} first`
+      + ` · edit config/config.json → "transcode" to change the spec`,
+  }));
+}
+
+function renderTxCounters() {
+  const host = $('#txCounters');
+  if (!host) return;
+  const counts = txState?.counts || {};
+  host.innerHTML = '';
+  if (!counts.total) {
+    host.append(el('span', {
+      className: 'muted',
+      textContent: 'Nothing probed yet — run “Probe library” to find out which clips are off spec.',
+    }));
+    return;
+  }
+  for (const status of TX_COUNTER_ORDER) {
+    const n = counts[status];
+    if (!n) continue;
+    const b = el('button', {
+      className: `tx-counter tx-${status}${txFilter === status ? ' active' : ''}`,
+      title: `Show only clips that are ${TX_STATUS_LABELS[status]}`,
+    });
+    b.append(el('b', { textContent: String(n) }), el('span', { textContent: TX_STATUS_LABELS[status] }));
+    b.onclick = () => {
+      txFilter = txFilter === status ? null : status;
+      renderTxCounters();
+      loadTxItems();
+    };
+    host.append(b);
+  }
+}
+
+function renderTxState() {
+  if (!txState) return;
+  const phase = txState.phase;
+  const pill = $('#txPhase');
+  pill.textContent = phase === 'convert'
+    ? (txState.stopRequested ? 'converting · stopping' : 'converting')
+    : phase === 'scan' ? 'probing' : 'idle';
+  pill.className = `mount-pill ${phase === 'idle' ? 'off' : 'on'}`;
+
+  const queuePct = txState.total ? txState.done / txState.total : 0;
+  $('#txQueueFill').style.width = txPct(queuePct);
+  $('#txQueueCounts').textContent = txState.total
+    ? `${txState.done}/${txState.total} clips this run`
+    : (txState.counts?.pending ? `${txState.counts.pending} clip(s) queued` : '');
+  $('#txElapsed').textContent = txStartedAt ? `${txElapsedText(txStartedAt)} elapsed` : '';
+
+  const cur = txState.running?.[0];
+  if (cur) {
+    const bits = [cur.name];
+    if (cur.pct != null) bits.push(txPct(cur.pct));
+    if (cur.speed) bits.push(`${cur.speed.toFixed(2)}× realtime`);
+    if (cur.etaSeconds != null) bits.push(`~${txDur(cur.etaSeconds)} left`);
+    if (cur.startedAtMs) bits.push(`${txElapsedText(cur.startedAtMs)} on this clip`);
+    $('#txCurrent').textContent = bits.filter(Boolean).join(' · ');
+    $('#txClipFill').style.width = txPct(cur.pct);
+  } else {
+    $('#txCurrent').textContent = phase === 'scan' ? 'Probing files with ffprobe…' : 'Nothing running.';
+    if (phase !== 'convert') $('#txClipFill').style.width = '0%';
+  }
+
+  const busy = phase !== 'idle';
+  $('#btnTxScan').disabled = busy;
+  $('#btnTxStart').disabled = busy;
+  $('#btnTxStop').disabled = !busy || txState.stopRequested;
+  $('#btnTxAbort').disabled = !busy;
+  renderTxCounters();
+}
+
+// The server reports how long the clip in flight has been going as a snapshot;
+// turning it into a wall-clock start lets the 1s ticker keep counting instead of
+// showing a frozen number between status fetches.
+function txStampRunning(state) {
+  for (const r of state.running || []) r.startedAtMs = Date.now() - (r.elapsedMs || 0);
+  return state;
+}
+
+async function refreshTxStatus() {
+  txState = txStampRunning(await api.get('/api/transcode/status'));
+  if (txState.startedAt) txStartedAt = txState.startedAt;
+  else if (txState.phase === 'idle') txStartedAt = null;
+  renderTxState();
+}
+
+function scheduleTxItemReload() {
+  clearTimeout(txReloadTimer);
+  txReloadTimer = setTimeout(() => loadTxItems().catch(() => {}), 1500);
+}
+
+function openTxStream() {
+  if (txStream) return;
+  const es = new EventSource('/api/transcode/events');
+  txStream = es;
+  es.onmessage = (m) => {
+    let ev;
+    try { ev = JSON.parse(m.data); } catch { return; }
+    if (ev.type === 'state') {
+      txState = txStampRunning({ ...(txState || {}), ...ev });
+      txStartedAt = ev.startedAt || (ev.phase === 'idle' ? null : txStartedAt);
+      renderTxState();
+      scheduleTxItemReload();
+    } else if (ev.type === 'progress') {
+      if (txState) { txState.done = ev.done; txState.total = ev.total; renderTxState(); }
+    } else if (ev.type === 'progress-item') {
+      if (txState?.running?.length) {
+        Object.assign(txState.running[0], { pct: ev.pct, speed: ev.speed, etaSeconds: ev.etaSeconds });
+        renderTxState();
+      }
+    } else if (ev.type === 'item') {
+      if (ev.message) txLogLine(`${ev.message}: ${ev.file_path.split('/').pop()}`,
+        ev.status === 'failed' ? 'bad' : ev.status === 'replaced' ? 'ok' : '');
+      refreshTxStatus().catch(() => {});
+      scheduleTxItemReload();
+    } else if (ev.type === 'phase') {
+      txLogLine(ev.message);
+      refreshTxStatus().catch(() => {});
+    } else if (ev.type === 'log') {
+      txLogLine(ev.message, ev.kind === 'warn' ? 'bad' : ev.kind);
+    }
+  };
+  // The browser reconnects on its own; a dropped stream must not look like a
+  // dead run, so the status poll below keeps the panel honest either way.
+  es.onerror = () => {};
+}
+
+function txRowActions(item) {
+  const wrap = el('div', { className: 'row-actions' });
+  const act = (label, title, fn, cls = 'mini ghost') => {
+    const b = el('button', { className: cls, textContent: label, title });
+    b.onclick = () => withBusy(b, fn);
+    wrap.append(b);
+  };
+  if (item.status === 'converted' || item.status === 'blocked') {
+    act('↔ Replace', 'Archive the original and put the converted file in its place', async () => {
+      const force = item.status === 'blocked';
+      if (force) {
+        const ok = await confirmDialog('Replace anyway',
+          'OTAV already has playlists that point at this file’s old name. Replacing it now means those '
+          + 'days have to be pushed again before they air. Continue?',
+          { confirmLabel: 'Replace anyway', danger: true });
+        if (!ok) return;
+      }
+      await api.send('POST', `/api/transcode/items/${item.id}/replace${force ? '?force=1' : ''}`);
+      toast('Replaced — original archived', 'ok');
+      await Promise.all([refreshTxStatus(), loadTxItems()]);
+    }, item.status === 'blocked' ? 'mini danger' : 'mini');
+  }
+  if (item.status === 'failed' || item.status === 'skipped' || item.status === 'blocked') {
+    act('↻ Retry', 'Put this clip back in the queue', async () => {
+      await api.send('POST', `/api/transcode/items/${item.id}/retry`);
+      await Promise.all([refreshTxStatus(), loadTxItems()]);
+    });
+  }
+  if (['pending', 'failed', 'missing'].includes(item.status)) {
+    act('✕ Skip', 'Leave this clip exactly as it is', async () => {
+      await api.send('POST', `/api/transcode/items/${item.id}/skip`);
+      await Promise.all([refreshTxStatus(), loadTxItems()]);
+    });
+  }
+  return wrap;
+}
+
+async function loadTxItems() {
+  const tbody = $('#txTable tbody');
+  if (!tbody) return;
+  const channel = $('#txChannel').value;
+  const q = new URLSearchParams({ limit: '400' });
+  if (txFilter) q.set('status', txFilter);
+  if (channel) q.set('channel', channel);
+  const r = await api.get(`/api/transcode/items?${q}`);
+  $('#txFilterLabel').textContent = txFilter
+    ? `· ${TX_STATUS_LABELS[txFilter]} only` : '· queue first, then the rest';
+  tbody.innerHTML = '';
+  if (!r.items.length) {
+    tbody.append(el('tr', {}, el('td', { colSpan: 6, className: 'muted', textContent: 'Nothing to show.' })));
+    return;
+  }
+  const labels = txState?.reasonLabels || {};
+  for (const it of r.items) {
+    const tr = el('tr', { className: `tx-row tx-row-${it.status}` });
+    const nameCell = el('td', {});
+    nameCell.append(el('div', { textContent: it.name || it.file_path.split('/').pop() }));
+    nameCell.append(el('div', { className: 'muted tx-path', textContent: it.file_path }));
+    tr.append(nameCell);
+    tr.append(el('td', {
+      className: 'muted',
+      textContent: it.width
+        ? `${it.width}×${it.height} · ${(it.fps || 0).toFixed(3)} fps · ${it.vcodec || '?'}`
+          + ` / ${it.acodec || 'no audio'}${it.sample_rate ? ` ${Math.round(it.sample_rate / 1000)}k` : ''}`
+        : '—',
+    }));
+    let reasons = [];
+    try { reasons = JSON.parse(it.reasons || '[]'); } catch { reasons = []; }
+    tr.append(el('td', {
+      className: 'muted',
+      textContent: reasons.length ? reasons.map((x) => labels[x] || x).join(', ') : '—',
+    }));
+    tr.append(el('td', { textContent: it.src_duration ? fmt(it.src_duration) : '—' }));
+    const status = el('td', {});
+    status.append(el('span', {
+      className: `tx-badge tx-${it.status}`,
+      textContent: it.status === 'running'
+        ? `converting ${txPct(it.progress)}` : TX_STATUS_LABELS[it.status] || it.status,
+    }));
+    if (it.error) status.append(el('div', { className: 'muted tx-err', textContent: it.error }));
+    tr.append(status);
+    tr.append(el('td', {}, txRowActions(it)));
+    tbody.append(tr);
+  }
+}
+
+async function loadTranscodeTab() {
+  if (!txConfig) {
+    txConfig = await api.get('/api/transcode/config');
+    renderSpecBanner();
+    $('#txAutoReplace').checked = txConfig.autoReplace;
+  }
+  const sel = $('#txChannel');
+  if (!sel.options.length) {
+    const chans = scheduleChannels.length ? scheduleChannels : await api.get('/api/channels');
+    scheduleChannels = chans;
+    sel.append(el('option', { value: '', textContent: 'All channels' }));
+    for (const c of chans) sel.append(el('option', { value: String(c.id), textContent: c.name }));
+    sel.onchange = () => loadTxItems().catch(() => {});
+  }
+  openTxStream();
+  if (!txTicker) txTicker = setInterval(() => { if (txState) renderTxState(); }, 1000);
+  await refreshTxStatus();
+  await loadTxItems();
+}
+
+$('#btnTxScan').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const channel = $('#txChannel').value;
+  const q = new URLSearchParams({ fillers: $('#txFillers').checked ? '1' : '0' });
+  if (channel) q.set('channel', channel);
+  const r = await api.send('POST', `/api/transcode/scan?${q}`);
+  toast(`Probing ${r.total} file(s) — the queue fills in as it goes`, 'ok', 'Scan started');
+  await refreshTxStatus();
+}));
+
+$('#btnTxStart').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const pending = txState?.counts?.pending || 0;
+  const limit = Number($('#txLimit').value) || null;
+  const n = limit ? Math.min(limit, pending) : pending;
+  const replace = $('#txAutoReplace').checked;
+  const ok = await confirmDialog('Start converting',
+    `${n} clip(s) will be re-encoded to ${txConfig.target.width}×${txConfig.target.height} @ `
+    + `${txConfig.target.fps} with ${txConfig.target.acodec} audio, `
+    + `${txConfig.concurrency} at a time. This takes hours — it re-encodes full features over the share. `
+    + (replace
+      ? 'Each clip is verified, its original archived, and the new file put in its place as it finishes.'
+      : 'Converted clips will WAIT in the archive folder until you replace them by hand.')
+    + ' You can stop it at any point; whatever was already replaced stays replaced.',
+    { confirmLabel: 'Start the run', danger: true });
+  if (!ok) return;
+  const q = new URLSearchParams({ replace: replace ? '1' : '0' });
+  const channel = $('#txChannel').value;
+  if (channel) q.set('channel', channel);
+  if (limit) q.set('limit', String(limit));
+  const r = await api.send('POST', `/api/transcode/start?${q}`);
+  toast(`Converting ${r.total} clip(s) — leave this running`, 'ok', 'Run started');
+  await refreshTxStatus();
+}));
+
+$('#btnTxStop').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  await api.send('POST', '/api/transcode/stop');
+  toast('Will stop once the clip in flight finishes', 'ok');
+  await refreshTxStatus();
+}));
+
+$('#btnTxAbort').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const ok = await confirmDialog('Abort now',
+    'ffmpeg is killed immediately and the half-written work file is thrown away. Clips already '
+    + 'replaced stay replaced; the clip in flight goes back in the queue. Originals are never touched.',
+    { confirmLabel: 'Abort now', danger: true });
+  if (!ok) return;
+  await api.send('POST', '/api/transcode/stop?now=1');
+  toast('Aborted', 'ok');
+  await refreshTxStatus();
+}));
+
+$('#btnTxReplacePending').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const waiting = (txState?.counts?.converted || 0) + (txState?.counts?.blocked || 0);
+  if (!waiting) return toast('Nothing is waiting to be replaced', 'info');
+  const ok = await confirmDialog('Replace all waiting',
+    `${waiting} converted clip(s) will be swapped in: each original is archived and the new file takes `
+    + 'its place. Clips whose days are already exported to OTAV stay blocked — replace those one by one.',
+    { confirmLabel: 'Replace them', danger: true });
+  if (!ok) return;
+  const r = await api.send('POST', '/api/transcode/replace-pending');
+  toast(`${r.replaced} replaced${r.failed.length ? `, ${r.failed.length} could not be` : ''}`,
+    r.failed.length ? 'bad' : 'ok');
+  await Promise.all([refreshTxStatus(), loadTxItems()]);
+  return undefined;
+}));
+
+$('#btnTxReload').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  await Promise.all([refreshTxStatus(), loadTxItems()]);
+}));
 
 // ---- Boot ------------------------------------------------------------------
 loadSchedule();

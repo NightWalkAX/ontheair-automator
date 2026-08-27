@@ -20,10 +20,15 @@ import { router as catalog } from './src/routes/catalog.js';
 import { router as media } from './src/routes/media.js';
 import { router as blocks } from './src/routes/blocks.js';
 import { router as otav } from './src/routes/otav.js';
+import { router as transcode } from './src/routes/transcode.js';
+import { resetStaleRunning } from './src/services/transcode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 initSchema();
+// A conversion killed mid-clip left a 'running' row and an incomplete work
+// file; the original was never touched, so the clip just goes back in the queue.
+resetStaleRunning();
 
 const app = express();
 app.use(express.json());
@@ -36,6 +41,7 @@ app.use('/api/catalog', catalog);
 app.use('/api/media', media);
 app.use('/api/blocks', blocks);
 app.use('/api/otav', otav);
+app.use('/api/transcode', transcode);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 

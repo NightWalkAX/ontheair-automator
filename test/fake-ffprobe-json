@@ -1,0 +1,13 @@
+#!/usr/bin/env node
+// Fake `ffprobe -of json` for the Air Spec tests. A media file's format is
+// declared by a sidecar "<file>.json" holding a real ffprobe-shaped payload;
+// a file with no sidecar is "unreadable" (exit 1), which is what the real
+// ffprobe does with a truncated or non-media file.
+import { readFileSync } from 'node:fs';
+const file = process.argv[process.argv.length - 1];
+try {
+  process.stdout.write(readFileSync(`${file}.json`, 'utf8'));
+} catch {
+  process.stderr.write('fake-ffprobe: no sidecar, treating as unreadable\n');
+  process.exit(1);
+}

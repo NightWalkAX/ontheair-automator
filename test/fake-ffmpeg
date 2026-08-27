@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+// Fake ffmpeg for the Air Spec tests. Writes the output file plus an on-spec
+// sidecar (so the verification probe passes), keeping the input's duration, and
+// emits a couple of `-progress pipe:1` frames so the progress parser is
+// exercised. A file named *_fail.* makes it exit non-zero, standing in for a
+// source ffmpeg cannot transcode.
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename } from 'node:path';
+
+const argv = process.argv.slice(2);
+const input = argv[argv.indexOf('-i') + 1];
+const out = argv[argv.length - 1];
+
+let duration = 60;
+try {
+  duration = Number(JSON.parse(readFileSync(`${input}.json`, 'utf8')).format.duration) || 60;
+} catch { /* keep the default */ }
+
+if (/_fail\./.test(basename(input))) {
+  process.stderr.write('fake-ffmpeg: refusing this source on purpose\n');
+  process.exit(1);
+}
+
+process.stdout.write(`out_time_us=${Math.round(duration * 250_000)}\nspeed=2.0x\nfps=60\nprogress=continue\n`);
+process.stdout.write(`out_time_us=${Math.round(duration * 1_000_000)}\nspeed=2.0x\nfps=60\nprogress=end\n`);
+
+writeFileSync(out, Buffer.alloc(2048, 7));
+writeFileSync(`${out}.json`, JSON.stringify({
+  streams: [
+    { codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080,
+      avg_frame_rate: '30000/1001', pix_fmt: 'yuv420p' },
+    { codec_type: 'audio', codec_name: 'pcm_s16le', sample_rate: '48000', channels: 2 },
+  ],
+  format: { duration: String(duration), size: '2048' },
+}));
