@@ -390,9 +390,13 @@ async function pushChannelDialog(message, channels) {
     content.innerHTML = '';
     content.append(el('p', { className: 'dialog-msg', textContent: message }));
 
+    // First push of a session goes out to EVERY instance unless the operator
+    // says otherwise. This used to fall back to the schedule grid's channel
+    // when one was picked — which was fine while the grid defaulted to "all
+    // channels", but the grid now always has one selected, and inheriting it
+    // would silently narrow every first push to a single instance.
     const remembered = lastPushChannels && lastPushChannels.filter((id) => channels.some((c) => c.id === id));
-    const preset = remembered && remembered.length ? remembered
-      : (currentScheduleChannel != null ? [currentScheduleChannel] : channels.map((c) => c.id));
+    const preset = remembered && remembered.length ? remembered : channels.map((c) => c.id);
     const list = el('div', { className: 'push-channels' });
     const boxes = channels.map((c) => {
       const input = el('input', { type: 'checkbox', value: String(c.id) });
@@ -2851,9 +2855,9 @@ $('#channelForm').addEventListener('submit', async (e) => {
 const TX_STATUS_LABELS = {
   ok: 'on spec', pending: 'queued', running: 'converting', converted: 'waiting to replace',
   blocked: 'blocked', replaced: 'replaced', failed: 'failed', skipped: 'skipped',
-  missing: 'unreadable',
+  missing: 'unreadable', stale: 'probe again',
 };
-const TX_COUNTER_ORDER = ['pending', 'running', 'converted', 'blocked', 'replaced', 'failed', 'ok', 'skipped', 'missing'];
+const TX_COUNTER_ORDER = ['pending', 'running', 'converted', 'blocked', 'stale', 'replaced', 'failed', 'ok', 'skipped', 'missing'];
 
 let txConfig = null;
 let txState = null;
@@ -2957,6 +2961,114 @@ function renderExportedDaysSwitch() {
 
   wrap.append(box, text);
   return wrap;
+}
+
+// ---- House spec editor -----------------------------------------------------
+// The form is filled FROM the saved spec and always re-filled from what the
+// server actually stored after a save, so what is on screen is never a guess
+// about what a clip will be converted to.
+
+const SPEC_SELECTS = ['fps', 'container', 'vcodec', 'pixFmt', 'preset', 'acodec', 'sampleRate', 'audioChannels'];
+
+/** Put a value in a select, adding an option for it when the list lacks one. */
+function selectValue(sel, value) {
+  const v = String(value);
+  if (!sel) return;
+  if (![...sel.options].some((o) => o.value === v)) {
+    sel.append(el('option', { value: v, textContent: `${v} · from config.json` }));
+  }
+  sel.value = v;
+}
+
+function fillSpecForm() {
+  const form = $('#specForm');
+  if (!form || !txConfig) return;
+  const t = txConfig.target;
+  for (const name of SPEC_SELECTS) selectValue(form.elements[name], t[name]);
+  form.elements.crf.value = t.crf ?? 18;
+  form.elements.enforceContainer.checked = !!t.enforceContainer;
+  form.elements.width.value = t.width;
+  form.elements.height.value = t.height;
+
+  const res = $('#specResolution');
+  const pair = `${t.width}x${t.height}`;
+  const known = [...res.options].some((o) => o.value === pair);
+  res.value = known ? pair : 'custom';
+  syncResolutionFields();
+  $('#specDirty').textContent = '';
+}
+
+/** The width/height boxes only exist for a resolution the list doesn't offer. */
+function syncResolutionFields() {
+  const custom = $('#specResolution').value === 'custom';
+  $('#specWidthField').hidden = !custom;
+  $('#specHeightField').hidden = !custom;
+}
+
+/** The form as the API wants it. */
+function readSpecForm() {
+  const form = $('#specForm');
+  const res = $('#specResolution').value;
+  const [w, h] = res === 'custom'
+    ? [form.elements.width.value, form.elements.height.value]
+    : res.split('x');
+  const body = { width: Number(w), height: Number(h), crf: Number(form.elements.crf.value),
+    enforceContainer: form.elements.enforceContainer.checked };
+  for (const name of SPEC_SELECTS) body[name] = form.elements[name].value;
+  body.sampleRate = Number(body.sampleRate);
+  body.audioChannels = Number(body.audioChannels);
+  return body;
+}
+
+function wireSpecForm() {
+  const form = $('#specForm');
+  if (!form || form.dataset.wired) return;
+  form.dataset.wired = '1';
+
+  $('#specResolution').addEventListener('change', syncResolutionFields);
+  form.addEventListener('input', () => {
+    $('#specDirty').textContent = 'unsaved changes';
+  });
+  $('#btnSpecReset').addEventListener('click', () => { fillSpecForm(); toast('Form reset to the saved spec', 'info'); });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    withBusy($('#btnSpecSave'), async () => {
+      // Say what the save costs before it costs it: a spec change re-judges
+      // every clip, and clips already converted go back in the queue.
+      const c = txState?.counts || {};
+      const atRisk = (c.converted || 0) + (c.blocked || 0) + (c.replaced || 0) + (c.ok || 0);
+      if (atRisk) {
+        const parts = [];
+        if (c.ok) parts.push(`${c.ok} judged on spec`);
+        if (c.converted || c.blocked) parts.push(`${(c.converted || 0) + (c.blocked || 0)} converted and waiting`);
+        if (c.replaced) parts.push(`${c.replaced} already swapped in`);
+        const ok = await confirmDialog('Change the house spec',
+          `${parts.join(', ')}. Those judgements were made against the CURRENT spec: clips waiting to be `
+          + 'swapped in go back in the queue to be re-encoded, and clips already swapped in are set aside '
+          + 'until you probe the library again. Nothing on disk is touched by this save. Continue?',
+          { confirmLabel: 'Save the new spec', danger: true });
+        if (!ok) return;
+      }
+      let r;
+      try {
+        r = await api.send('PUT', '/api/transcode/target', readSpecForm());
+      } catch (err) {
+        toast(err.message, 'bad', 'Spec not saved');
+        return;
+      }
+      txConfig = { ...txConfig, target: r.target };
+      renderSpecBanner();
+      fillSpecForm();
+      if (!r.changed) {
+        toast('That is already the saved spec — nothing was re-judged', 'info');
+      } else {
+        toast(`${r.reclassified} clip(s) re-judged · ${r.requeued} queued`
+          + (r.stale ? ` · ${r.stale} need the library probed again` : ''), 'ok', 'Spec saved');
+      }
+      await Promise.all([refreshTxStatus(), loadTxItems()]);
+    });
+  });
 }
 
 function renderTxCounters() {
@@ -3175,6 +3287,8 @@ async function loadTranscodeTab() {
   if (!txConfig) {
     txConfig = await api.get('/api/transcode/config');
     renderSpecBanner();
+    wireSpecForm();
+    fillSpecForm();
     $('#txAutoReplace').checked = txConfig.autoReplace;
   }
   const sel = $('#txChannel');
