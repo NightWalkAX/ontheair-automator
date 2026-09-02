@@ -154,6 +154,101 @@
       <span class="skeleton" style="display:inline-block;width:280px;height:12px"></span>
     </div>
 
+    <details class="spec-editor" id="specEditor">
+      <summary>⚙︎ Change the house spec</summary>
+      <p class="muted spec-editor-hint">Every clip is measured against this and converted to it. Changing it re-judges the queue: clips that were on spec may no longer be, and anything already converted is queued again. <strong>Clips already swapped in need the library probed again</strong> — their stored shape describes the file that went to the archive, not the one now in its place.</p>
+      <form id="specForm" class="spec-grid">
+        <label class="field"><span>Resolution</span>
+          <select name="resolution" id="specResolution">
+            <option value="1920x1080">1920 × 1080 · 1080p</option>
+            <option value="1280x720">1280 × 720 · 720p</option>
+            <option value="720x480">720 × 480 · NTSC SD</option>
+            <option value="720x576">720 × 576 · PAL SD</option>
+            <option value="3840x2160">3840 × 2160 · UHD</option>
+            <option value="custom">Other…</option>
+          </select>
+        </label>
+        <label class="field spec-custom" id="specWidthField" hidden><span>Width</span>
+          <input type="number" name="width" min="16" max="8192" step="2" />
+        </label>
+        <label class="field spec-custom" id="specHeightField" hidden><span>Height</span>
+          <input type="number" name="height" min="16" max="8192" step="2" />
+        </label>
+        <label class="field"><span>Frame rate</span>
+          <select name="fps">
+            <option value="30000/1001">29.97 · NTSC broadcast</option>
+            <option value="25">25 · PAL broadcast</option>
+            <option value="24000/1001">23.976 · film</option>
+            <option value="24">24 · film (exact)</option>
+            <option value="30">30 · exact</option>
+            <option value="50">50 · PAL progressive</option>
+            <option value="60000/1001">59.94</option>
+            <option value="60">60 · exact</option>
+          </select>
+        </label>
+        <label class="field"><span>Container</span>
+          <select name="container">
+            <option value=".mov">.mov · QuickTime</option>
+            <option value=".mp4">.mp4</option>
+            <option value=".mkv">.mkv</option>
+          </select>
+        </label>
+        <label class="field"><span>Video codec</span>
+          <select name="vcodec">
+            <option value="libx264">H.264 · libx264</option>
+            <option value="libx265">HEVC · libx265</option>
+          </select>
+        </label>
+        <label class="field"><span>Quality (CRF)</span>
+          <input type="number" name="crf" min="0" max="51" step="1" />
+          <small class="muted">Lower is better and bigger. 18 is visually lossless.</small>
+        </label>
+        <label class="field"><span>Pixel format</span>
+          <select name="pixFmt">
+            <option value="yuv420p">yuv420p · 8-bit 4:2:0</option>
+            <option value="yuv422p">yuv422p · 8-bit 4:2:2</option>
+          </select>
+        </label>
+        <label class="field"><span>Encoder speed</span>
+          <select name="preset">
+            <option value="ultrafast">ultrafast</option>
+            <option value="veryfast">veryfast</option>
+            <option value="fast">fast</option>
+            <option value="medium">medium</option>
+            <option value="slow">slow</option>
+            <option value="slower">slower</option>
+          </select>
+          <small class="muted">Time vs size only — changing it does not re-queue anything.</small>
+        </label>
+        <label class="field"><span>Audio codec</span>
+          <select name="acodec">
+            <option value="pcm_s16le">PCM 16-bit · uncompressed</option>
+            <option value="pcm_s24le">PCM 24-bit · uncompressed</option>
+            <option value="aac">AAC · compressed</option>
+          </select>
+          <small class="muted">PCM avoids the encoder delay that drifts lip-sync over a long feature.</small>
+        </label>
+        <label class="field"><span>Sample rate</span>
+          <select name="sampleRate">
+            <option value="48000">48 000 Hz · broadcast</option>
+            <option value="44100">44 100 Hz</option>
+          </select>
+        </label>
+        <label class="field"><span>Channels</span>
+          <select name="audioChannels">
+            <option value="2">2 · stereo</option>
+            <option value="1">1 · mono</option>
+          </select>
+        </label>
+        <label class="chk spec-grid-wide" title="On: a file whose video and audio already match but that sits in another container is re-wrapped too"><input type="checkbox" name="enforceContainer" /> also convert files that match but are in another container</label>
+        <div class="spec-grid-wide spec-actions">
+          <button type="submit" id="btnSpecSave">Save spec</button>
+          <button type="button" class="ghost" id="btnSpecReset">Reset to what is saved</button>
+          <span id="specDirty" class="muted"></span>
+        </div>
+      </form>
+    </details>
+
     <div class="toolbar">
       <label class="field"><span>Channel</span>
         <select id="txChannel"></select>

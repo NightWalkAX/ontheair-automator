@@ -54,11 +54,28 @@ Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable exte
 
 `src/services/transcode.js` + `src/routes/transcode.js` + the `Air Spec` tab bring the whole
 catalogue to one house format so OTAV plays it with consistent timing and no audio drift.
-Target (config `transcode.target`): **1920x1080, 29.97fps (`30000/1001`), h264 High yuv420p,
-PCM s16le 48kHz stereo, `.mov`** — PCM because a compressed track's encoder delay is the usual
-source of lip-sync drift, and `-video_track_timescale 30000` because a 600-timescale mov turns
-29.97 into "29.97-ish" over a two-hour feature. Closed short GOPs, no B-frames, so OTAV cues
-cleanly. `yadif=deint=1` only touches frames flagged interlaced.
+Target (config `transcode.target`), **editable from the tab** — the "Change the house spec"
+panel writes it through `PUT /api/transcode/target`. Default: **1920x1080, 29.97fps
+(`30000/1001`), h264 High yuv420p, PCM s16le 48kHz stereo, `.mov`** — PCM because a compressed
+track's encoder delay is the usual source of lip-sync drift, and `-video_track_timescale 30000`
+because a 600-timescale mov turns 29.97 into "29.97-ish" over a two-hour feature. Closed short
+GOPs, no B-frames, so OTAV cues cleanly. `yadif=deint=1` only touches frames flagged interlaced.
+Those defaults are the house recommendation, not a constraint — say so in the UI rather than
+hard-coding them into copy (`REASON_LABELS.resolution` is "wrong resolution", not "not 1080p").
+
+**Changing the spec re-judges the queue, it does not re-probe it.** `specReasons()` reads
+nothing but the probe columns already on `TranscodeItem`, so `reclassifyQueue()` recomputes
+every judgement exactly and instantly, with no ffprobe and no share access:
+`ok`⇄`pending` flip as the new spec dictates; `converted`/`blocked` go back to `pending` with
+`out_path` cleared (that work file meets the OLD spec); `skipped`/`missing` are left alone. The
+one thing that cannot be re-derived is a clip already `replaced` — its row describes the file
+that went to the archive, not the converted one now at that path — so those become **`stale`**,
+which is out of the conversion queue until a re-probe reclassifies them. A save whose fields all
+match the stored spec changes nothing at all (`changed: false`): re-saving the form must never
+throw away a night of conversions. `preset` is deliberately not a spec field — it trades encode
+time for size and re-queues nothing. A chosen `vcodec`/`acodec` is auto-added to
+`acceptVideo`/`acceptAudio`, or every file already in that codec would be queued to be
+re-encoded into it. Refused outright while a scan or conversion is running.
 
 The routine is deliberately slow (full re-encode at broadcast quality over the SMB share,
 `concurrency` 1 by default — hours per channel, days for the library), so it is built to be

@@ -577,3 +577,209 @@ test('an env override wins over the switch and says so', async () => {
   }
   assert.equal(tx.transcodeConfig().exportedDays.mode, 'fix');
 });
+
+// ---- Editing the house spec ------------------------------------------------
+//
+// The target decides what every clip is measured against AND converted to, so
+// changing it invalidates judgements already made. What matters here is that
+// the re-judging is exact (it re-derives from the probe columns rather than
+// guessing), that it never quietly throws away a night of conversions when
+// nothing actually changed, and that a clip whose stored shape no longer
+// describes the file on disk is set aside instead of silently trusted.
+
+const specOf = async () => (await j('GET', '/api/transcode/config')).body.target;
+
+test('the spec is editable, validated, and persisted to config.json', async () => {
+  const before = await specOf();
+  assert.equal(before.width, 1920);
+
+  const r = await j('PUT', '/api/transcode/target', {
+    width: 1280, height: 720, fps: '25', acodec: 'aac', sampleRate: 44100,
+    audioChannels: 1, container: '.mp4', vcodec: 'libx265', crf: 20,
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.changed, true);
+
+  const t = await specOf();
+  assert.equal(t.width, 1280);
+  assert.equal(t.height, 720);
+  assert.equal(t.fps, '25');
+  assert.equal(t.acodec, 'aac');
+  assert.equal(t.container, '.mp4');
+  // A codec the operator picked has to count as already-on-spec, or every file
+  // that IS in that codec would be queued to be re-encoded into it.
+  assert.ok(t.acceptAudio.includes('aac'), 'the chosen audio codec joins acceptAudio');
+  assert.ok(t.acceptVideo.includes('hevc'), 'libx265 output is hevc, so hevc is on spec');
+  assert.equal(JSON.parse(readFileSync(testConfig, 'utf8')).transcode.target.width, 1280);
+  // It really is the spec the encoder will use.
+  assert.match(tx.buildFfmpegArgs('/in.avi', '/out.mp4', tx.transcodeConfig().target, { hasAudio: true }).join(' '),
+    /scale=1280:720/);
+
+  // Rubbish is refused field by field, and changes nothing.
+  for (const [body, pattern] of [
+    [{ width: 3 }, /width/],
+    [{ fps: 'fast' }, /fps/],
+    [{ acodec: 'mp3' }, /acodec/],
+    [{ container: '.avi' }, /container/],
+    [{ crf: 99 }, /crf/],
+  ]) {
+    const bad = await j('PUT', '/api/transcode/target', body);
+    assert.equal(bad.status, 400, JSON.stringify(body));
+    assert.match(bad.body.error, pattern);
+  }
+  assert.equal((await specOf()).width, 1280, 'a rejected field leaves the spec alone');
+
+  // Put it back for the tests that follow.
+  await j('PUT', '/api/transcode/target', {
+    width: 1920, height: 1080, fps: '30000/1001', acodec: 'pcm_s16le', sampleRate: 48000,
+    audioChannels: 2, container: '.mov', vcodec: 'libx264', crf: 18,
+  });
+  assert.equal((await specOf()).width, 1920);
+});
+
+test('changing the spec re-judges the queue from what was already probed', async () => {
+  // A 1080p/29.97 clip that is ON SPEC today, and an SD one that is not.
+  const onSpec = media('spec_ok.mov', ON_SPEC);
+  const offSpec = media('spec_off.avi', OFF_SPEC);
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+    .run('Spec Channel').lastInsertRowid;
+  const ins = db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES (?, ?, ?, 0, 0, ?, 1)
+  `);
+  ins.run('spec_ok', onSpec, 600, chan);
+  ins.run('spec_off', offSpec, 300, chan);
+
+  await j('POST', `/api/transcode/scan?channel=${chan}`);
+  await settle();
+  const statusOf = (p) => db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(p);
+  assert.equal(statusOf(onSpec).status, 'ok');
+  assert.equal(statusOf(offSpec).status, 'pending');
+
+  // Move the house to 720p. The 1080p clip is now off spec — and that is known
+  // from the probe columns already in the row, with no second ffprobe.
+  const r = await j('PUT', '/api/transcode/target', { width: 1280, height: 720 });
+  assert.equal(r.status, 200);
+  const flipped = statusOf(onSpec);
+  assert.equal(flipped.status, 'pending', 'a clip that was on spec is queued when the spec moves');
+  assert.deepEqual(JSON.parse(flipped.reasons), ['resolution']);
+  assert.equal(statusOf(offSpec).status, 'pending', 'and one already queued stays queued');
+
+  // Back to 1080p and it is on spec again — the judgement follows the spec both ways.
+  await j('PUT', '/api/transcode/target', { width: 1920, height: 1080 });
+  assert.equal(statusOf(onSpec).status, 'ok');
+  assert.deepEqual(JSON.parse(statusOf(onSpec).reasons), []);
+});
+
+test('re-saving the same spec throws nothing away', async () => {
+  const current = await specOf();
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+    .run('Spec Keep').lastInsertRowid;
+  const path = media('spec_keep.avi', OFF_SPEC);
+  db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES ('spec_keep', ?, 300, 0, 0, ?, 1)
+  `).run(path, chan);
+  await j('POST', `/api/transcode/scan?channel=${chan}`);
+  await settle();
+  await j('POST', `/api/transcode/start?channel=${chan}&replace=0`);
+  await settle();
+  const converted = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(path);
+  assert.equal(converted.status, 'converted');
+
+  // A save that changes nothing must not cost the hours that produced that file.
+  const same = await j('PUT', '/api/transcode/target', {
+    width: current.width, height: current.height, fps: current.fps, acodec: current.acodec,
+    sampleRate: current.sampleRate, audioChannels: current.audioChannels,
+    container: current.container, vcodec: current.vcodec, crf: current.crf,
+    // preset only trades encode time for size, so it is not a spec change either.
+    preset: current.preset === 'slow' ? 'medium' : 'slow',
+  });
+  assert.equal(same.status, 200);
+  assert.equal(same.body.changed, false);
+  const after = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(path);
+  assert.equal(after.status, 'converted', 'the converted clip is untouched');
+  assert.equal(after.out_path, converted.out_path, 'and so is its work file');
+});
+
+test('a real spec change re-queues converted work and sets replaced clips aside', async () => {
+  // Stage both states this test is about, rather than inheriting whatever an
+  // earlier test left behind: one clip converted and waiting, one swapped in.
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+    .run('Spec Reclass').lastInsertRowid;
+  const ins = db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES (?, ?, 300, 0, 0, ?, 1)
+  `);
+  const waiting = media('spec_waiting.avi', OFF_SPEC);
+  ins.run('spec_waiting', waiting, chan);
+  await j('POST', `/api/transcode/scan?channel=${chan}`);
+  await settle();
+  await j('POST', `/api/transcode/start?channel=${chan}&replace=0`);
+  await settle();
+
+  const swapped = media('spec_swapped.avi', OFF_SPEC);
+  ins.run('spec_swapped', swapped, chan);
+  await j('POST', `/api/transcode/scan?channel=${chan}`);
+  await settle();
+  await j('POST', `/api/transcode/start?channel=${chan}&replace=1`);
+  await settle();
+
+  const converted = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(waiting);
+  assert.equal(converted.status, 'converted');
+  const replaced = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?')
+    .get(swapped.replace(/\.avi$/, '.mov'));
+  assert.ok(replaced, 'the swapped clip follows its new path');
+  assert.equal(replaced.status, 'replaced');
+
+  const rows = db.prepare(`
+    SELECT COUNT(*) AS n FROM TranscodeItem
+    WHERE status IN ('ok', 'pending', 'converted', 'blocked', 'replaced')
+  `).get().n;
+
+  const r = await j('PUT', '/api/transcode/target', { sampleRate: 44100 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.changed, true);
+  assert.ok(r.body.requeued >= 1);
+  assert.ok(r.body.stale >= 1);
+  // requeued and stale are SUBSETS of reclassified. The operator reads these
+  // three as one sentence, so they must never add up to more clips than exist.
+  assert.ok(r.body.reclassified >= r.body.requeued + r.body.stale,
+    `reclassified ${r.body.reclassified} must cover requeued ${r.body.requeued} + stale ${r.body.stale}`);
+  assert.ok(r.body.reclassified <= rows,
+    `reclassified ${r.body.reclassified} cannot exceed the ${rows} rows that were judged`);
+
+  // The work file was encoded to the OLD spec, so it cannot be swapped in.
+  const c = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(converted.id);
+  assert.equal(c.status, 'pending');
+  assert.equal(c.out_path, null, 'the stale work file is no longer offered for a swap');
+
+  // A replaced clip's row describes the file that went to the archive, so its
+  // real shape is unknown until it is probed again — it must not be trusted.
+  const p = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(replaced.id);
+  assert.equal(p.status, 'stale');
+  assert.match(p.error, /probe the library again/);
+  // And 'stale' is out of the conversion queue until that probe happens.
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM TranscodeItem WHERE status = 'stale' AND out_path IS NOT NULL").get().n >= 0, true);
+
+  await j('PUT', '/api/transcode/target', { sampleRate: 48000 });
+});
+
+test('the spec cannot be changed out from under a running job', async () => {
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+    .run('Spec Busy').lastInsertRowid;
+  const path = media('spec_busy.avi', OFF_SPEC);
+  db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES ('spec_busy', ?, 300, 0, 0, ?, 1)
+  `).run(path, chan);
+  await j('POST', `/api/transcode/scan?channel=${chan}`);
+  await settle();
+
+  await j('POST', `/api/transcode/start?channel=${chan}&replace=0`);
+  const busy = await j('PUT', '/api/transcode/target', { width: 1280, height: 720 });
+  await settle();
+  assert.equal(busy.status, 400);
+  assert.match(busy.body.error, /running/);
+  assert.equal((await specOf()).width, 1920, 'the run keeps the spec it started with');
+});

@@ -27,7 +27,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, stat, rename, copyFile, unlink } from 'node:fs/promises';
 import { dirname, basename, extname, join } from 'node:path';
-import { db } from '../db.js';
+import { db, withTx } from '../db.js';
 import { loadConfig, updateConfig, localizePath, delocalizePath } from '../config.js';
 import { repointExportedDays } from './otavClient.js';
 
@@ -180,7 +180,7 @@ export function specReasons(fmt, target = transcodeConfig().target) {
 }
 
 export const REASON_LABELS = {
-  resolution: 'not 1080p',
+  resolution: 'wrong resolution',
   fps: 'wrong frame rate',
   vcodec: 'video codec',
   pixfmt: 'pixel format',
@@ -191,6 +191,166 @@ export const REASON_LABELS = {
   container: 'container',
   unreadable: 'unreadable',
 };
+
+// ---- Editing the house spec ------------------------------------------------
+//
+// The target is what every clip is measured against and converted to, so
+// changing it invalidates work: a file judged "on spec" was judged against the
+// OLD spec, and a clip already converted was converted to it. Rather than make
+// the operator re-probe a library that takes minutes over the share, the
+// judgment is RE-DERIVED from the probe columns already in TranscodeItem —
+// specReasons() reads nothing else, so recomputing it is exact and instant.
+//
+// The one thing that cannot be re-derived is a clip already REPLACED: its row
+// describes the file that went to the archive, not the converted one now at
+// that path. Those rows go to 'stale' — out of the queue, waiting for a probe.
+
+/** Fields an operator may set, with how each is validated. */
+const TARGET_FIELDS = {
+  width: (v) => intIn(v, 16, 8192),
+  height: (v) => intIn(v, 16, 8192),
+  fps: (v) => {
+    const s = String(v).trim();
+    if (!/^\d+(\.\d+)?$/.test(s) && !/^\d+\/\d+$/.test(s)) throw new Error('fps must be a number or "num/den"');
+    const n = fpsToNumber(s);
+    if (!(n > 0 && n <= 240)) throw new Error('fps must be between 0 and 240');
+    return s;
+  },
+  vcodec: (v) => oneOf(v, ['libx264', 'libx265'], 'vcodec'),
+  pixFmt: (v) => oneOf(v, ['yuv420p', 'yuv422p'], 'pixFmt'),
+  preset: (v) => oneOf(v, ['ultrafast', 'veryfast', 'fast', 'medium', 'slow', 'slower'], 'preset'),
+  crf: (v) => intIn(v, 0, 51),
+  acodec: (v) => oneOf(v, ['pcm_s16le', 'pcm_s24le', 'aac'], 'acodec'),
+  sampleRate: (v) => oneOf(Number(v), [44100, 48000], 'sampleRate'),
+  audioChannels: (v) => oneOf(Number(v), [1, 2], 'audioChannels'),
+  container: (v) => oneOf(String(v).toLowerCase(), ['.mov', '.mp4', '.mkv'], 'container'),
+  enforceContainer: (v) => !!v,
+};
+
+function intIn(v, lo, hi) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`expected a whole number between ${lo} and ${hi}`);
+  return n;
+}
+
+function oneOf(v, allowed, name) {
+  if (!allowed.includes(v)) throw new Error(`${name} must be one of ${allowed.join(', ')}`);
+  return v;
+}
+
+/** What a codec choice implies about what already counts as on spec. */
+const CODEC_FAMILY = {
+  libx264: 'h264',
+  libx265: 'hevc',
+};
+
+// Fields that change what a clip must BE. `preset` is not one of them: it only
+// trades encode time for file size, so changing it must not throw away a queue.
+const TARGET_SIGNIFICANT = [
+  'width', 'height', 'fps', 'vcodec', 'pixFmt', 'crf',
+  'acodec', 'sampleRate', 'audioChannels', 'container', 'enforceContainer',
+];
+
+/**
+ * Persist a new house spec and re-judge the queue against it.
+ *
+ * Returns { target, changed, requeued, stale, reclassified }. `changed` false
+ * means the submitted spec matched the stored one and nothing was touched —
+ * re-saving the same form must not throw away a night of conversions.
+ */
+export function setTarget(patch) {
+  if (activity) throw new Error(`a ${activity.kind} is running — stop it before changing the spec`);
+
+  const current = transcodeConfig().target;
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (!(key in TARGET_FIELDS)) continue;   // acceptVideo/acceptAudio are derived below
+    try {
+      next[key] = TARGET_FIELDS[key](value);
+    } catch (err) {
+      throw new Error(`${key}: ${err.message}`);
+    }
+  }
+
+  // A codec the operator chose has to count as already-on-spec, or every file
+  // that IS in that codec would be queued to be re-encoded into it.
+  const encoded = CODEC_FAMILY[next.vcodec] || next.vcodec;
+  next.acceptVideo = [...new Set([encoded, ...(next.acceptVideo || [])])];
+  next.acceptAudio = [...new Set([next.acodec, ...(next.acceptAudio || [])])];
+
+  const changed = TARGET_SIGNIFICANT.some((k) => String(current[k]) !== String(next[k]));
+  updateConfig((config) => {
+    config.transcode = config.transcode || {};
+    config.transcode.target = { ...(config.transcode.target || {}), ...next };
+  });
+  if (!changed) return { target: transcodeConfig().target, changed: false, requeued: 0, stale: 0, reclassified: 0 };
+
+  const counts = reclassifyQueue(transcodeConfig().target);
+  line(`Air spec changed to ${next.width}x${next.height} @ ${next.fps} / ${next.acodec} `
+    + `${next.sampleRate}Hz ${next.container}. ${counts.reclassified} clip(s) re-judged, `
+    + `${counts.requeued} queued, ${counts.stale} need re-probing.`, 'warn');
+  emit({ type: 'state', ...getState() });
+  return { target: transcodeConfig().target, changed: true, ...counts };
+}
+
+/**
+ * Re-judge every queued clip against `target`, from the probe data already
+ * stored — no ffprobe, no share access.
+ *
+ *   ok / pending      -> re-derived from specReasons(); either may flip
+ *   converted/blocked -> back to 'pending': the work file meets the OLD spec
+ *   replaced          -> 'stale': the row describes the archived original, so
+ *                        this file's real shape is unknown until a re-probe
+ *   skipped / missing -> left alone (the operator's call, and unreadable stays
+ *                        unreadable whatever the spec says)
+ */
+export function reclassifyQueue(target = transcodeConfig().target) {
+  const rows = db.prepare(`
+    SELECT id, status, file_path, width, height, fps, vcodec, pix_fmt,
+           acodec, sample_rate, achannels
+    FROM TranscodeItem
+    WHERE status IN ('ok', 'pending', 'converted', 'blocked', 'replaced')
+  `).all();
+
+  const setJudged = db.prepare('UPDATE TranscodeItem SET status = ?, reasons = ?, error = NULL WHERE id = ?');
+  const setRequeued = db.prepare(`
+    UPDATE TranscodeItem
+    SET status = 'pending', reasons = ?, error = NULL,
+        out_path = NULL, out_duration = NULL, out_size_bytes = NULL, progress = 0
+    WHERE id = ?
+  `);
+  const setStale = db.prepare(`
+    UPDATE TranscodeItem SET status = 'stale', reasons = NULL,
+      error = 'the spec changed after this clip was converted — probe the library again'
+    WHERE id = ?
+  `);
+
+  // `reclassified` counts rows whose status actually MOVED; requeued and stale
+  // are subsets of it, so a caller can report "N re-judged, of which M queued"
+  // without the three adding up to more clips than exist.
+  let requeued = 0;
+  let stale = 0;
+  let reclassified = 0;
+  withTx(() => {
+    for (const row of rows) {
+      if (row.status === 'replaced') { setStale.run(row.id); stale++; reclassified++; continue; }
+      const reasons = specReasons(row, target);
+      const json = JSON.stringify(reasons);
+      if (row.status === 'converted' || row.status === 'blocked') {
+        setRequeued.run(json, row.id);
+        requeued++;
+        reclassified++;
+        continue;
+      }
+      const want = reasons.length ? 'pending' : 'ok';
+      setJudged.run(want, json, row.id);
+      if (want === row.status) continue;
+      reclassified++;
+      if (want === 'pending') requeued++;
+    }
+  });
+  return { requeued, stale, reclassified };
+}
 
 // ---- Probing ---------------------------------------------------------------
 
@@ -291,7 +451,7 @@ export function listItems({ status = null, channelId = null, limit = 300, offset
     FROM TranscodeItem i
     WHERE ${where.join(' AND ')}
     ORDER BY CASE i.status WHEN 'running' THEN 0 WHEN 'failed' THEN 1 WHEN 'blocked' THEN 2
-                           WHEN 'converted' THEN 3 WHEN 'pending' THEN 4 ELSE 5 END,
+                           WHEN 'stale' THEN 3 WHEN 'converted' THEN 4 WHEN 'pending' THEN 5 ELSE 6 END,
              i.src_duration IS NULL, i.src_duration, i.id
     LIMIT ? OFFSET ?
   `).all(...args, Math.min(2000, Math.max(1, limit)), Math.max(0, offset));

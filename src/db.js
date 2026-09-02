@@ -247,6 +247,7 @@ export function initSchema() {
       resource_id  INTEGER,                -- any one catalogue row for this file
       channel_id   INTEGER,
       -- ok | pending | running | converted | blocked | replaced | failed | skipped | missing
+      -- | stale (converted under a spec that has since changed: needs re-probing)
       status       TEXT NOT NULL DEFAULT 'pending',
       reasons      TEXT,                   -- JSON array of spec-failure codes
       width        INTEGER,

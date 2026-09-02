@@ -9,7 +9,7 @@ import { Router } from 'express';
 import {
   startScan, startConvert, requestStop, abortNow, getState, listItems, itemCounts,
   replaceItem, replacePending, requeue, skip, transcodeConfig, REASON_LABELS, subscribe,
-  setExportedDaysMode, exportedDaysPolicy, EXPORTED_DAYS_MODES,
+  setExportedDaysMode, exportedDaysPolicy, EXPORTED_DAYS_MODES, setTarget,
 } from '../services/transcode.js';
 
 export const router = Router();
@@ -39,6 +39,18 @@ router.get('/config', (req, res) => {
     perFileTimeoutMinutes: c.perFileTimeoutMinutes,
     exportedDays: exportedDaysPolicy(),
   });
+});
+
+// PUT /api/transcode/target — change the house spec (resolution, frame rate,
+// codecs, container) and re-judge the queue against it. Persisted to
+// config.json. Refused while a scan or conversion is running: the run in flight
+// is encoding to the spec it started with.
+router.put('/target', (req, res) => {
+  try {
+    res.json({ ok: true, ...setTarget(req.body || {}) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
 });
 
 // PUT /api/transcode/exported-days — switch what happens to a day already
