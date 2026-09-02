@@ -29,6 +29,7 @@ Portable, non-containerized, **macOS-native** app — the whole project folder (
 - **Frontend:** Plain HTML, CSS, and vanilla JavaScript — no framework, no bundler. Served as static files by the backend.
 - **Backend:** Node.js (Express/Fastify) or Python (FastAPI) — serves the static frontend, handles API routes, SQLite access, the cron scheduling engine, and HTTP calls out to OTAV.
 - **Database:** SQLite, single file (`./data/scheduler.sqlite`) inside the project folder so it travels with the app on USB. Enable `PRAGMA foreign_keys = ON`.
+- **Settings:** `config/config.json`, re-read on every `loadConfig()` call (no restart to pick up an edit) and written back by `updateConfig()` for the handful of settings the UI can change. `SCHEDULER_CONFIG` points both at a throwaway copy, the way `SCHEDULER_DB` does for the database — **any test that can write config must set it**, or it edits the operator's own.
 - **Ingestion worker:** runs in the same process (or a child process), uses `ffmpeg`/`ffprobe` (installed via Homebrew on the Mac) against local/mounted media folders to extract duration/metadata. Media root paths should be configurable per `ShowType`, not hardcoded.
 
 Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable external path (read-only media scanning), `./public/` (static frontend assets).
@@ -98,8 +99,14 @@ started and left alone:
      starting within `exportedDays.imminentMinutes` are refused, and today's playlist is never
      rebuilt by re-push (OTAV won't clear a playing playlist, and it would interrupt air).
   `exportedDays.mode = 'block'` restores the old conservative behaviour: the clip waits for the
-  operator to re-push those days, or to force the swap. Retrying a `blocked` clip retries the
-  SWAP, not the encode — the verified work file is kept.
+  operator to re-push those days, or to force the swap. It is switchable from the Air Spec tab
+  (the **Repair days already pushed to OTAV** switch on the spec banner) — `PUT
+  /api/transcode/exported-days` persists it through `updateConfig()` in `src/config.js`, which
+  merges one key into `config/config.json` and renames a temp file over it, so a crash can't
+  truncate the app's only settings file. It's a persisted switch rather than a per-run checkbox
+  because it also governs the Replace button on a single row. `loadConfig()` re-reads per call,
+  so no restart is needed. `TRANSCODE_EXPORTED_MODE` still wins and greys the switch out.
+  Retrying a `blocked` clip retries the SWAP, not the encode — the verified work file is kept.
 - **State survives everything.** The queue is in SQLite; `resetStaleRunning()` on startup
   re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
   panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.

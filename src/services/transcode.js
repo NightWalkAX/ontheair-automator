@@ -28,7 +28,7 @@ import { promisify } from 'node:util';
 import { mkdir, stat, rename, copyFile, unlink } from 'node:fs/promises';
 import { dirname, basename, extname, join } from 'node:path';
 import { db } from '../db.js';
-import { loadConfig, localizePath, delocalizePath } from '../config.js';
+import { loadConfig, updateConfig, localizePath, delocalizePath } from '../config.js';
 import { repointExportedDays } from './otavClient.js';
 
 const execFileAsync = promisify(execFile);
@@ -69,6 +69,8 @@ const DEFAULT_TARGET = {
 //           that isn't there any more.
 //   block — the conservative behaviour: the clip stays queued until the operator
 //           pushes those days again, or forces the swap.
+export const EXPORTED_DAYS_MODES = ['fix', 'block'];
+
 const DEFAULT_EXPORTED_DAYS = {
   mode: 'fix',
   // Rebuild a future day when the runtime moved. Off: those days stay blocked
@@ -107,6 +109,35 @@ export function transcodeConfig() {
       // run) can pick the policy without editing the operator's config.
       ...(process.env.TRANSCODE_EXPORTED_MODE ? { mode: process.env.TRANSCODE_EXPORTED_MODE } : {}),
     },
+  };
+}
+
+/**
+ * Persist the exported-day policy and return it as it now resolves.
+ *
+ * Written to config.json rather than held in memory: it decides what happens to
+ * a day that is already on a playout Mac, so an operator who turned the repair
+ * off means it to stay off across a restart. The env override still wins on the
+ * way back out, and says so, so a test box can't be quietly re-pointed by a
+ * click in the UI.
+ */
+export function setExportedDaysMode(mode) {
+  if (!EXPORTED_DAYS_MODES.includes(mode)) throw new Error(`unknown mode "${mode}"`);
+  updateConfig((config) => {
+    config.transcode = config.transcode || {};
+    config.transcode.exportedDays = { ...DEFAULT_EXPORTED_DAYS, ...(config.transcode.exportedDays || {}), mode };
+  });
+  return exportedDaysPolicy();
+}
+
+/**
+ * The policy as it actually resolves, plus which env var is overriding it (the
+ * UI greys the switch out rather than offering a click that changes nothing).
+ */
+export function exportedDaysPolicy() {
+  return {
+    ...transcodeConfig().exportedDays,
+    overridden: process.env.TRANSCODE_EXPORTED_MODE ? 'TRANSCODE_EXPORTED_MODE' : null,
   };
 }
 
@@ -324,7 +355,7 @@ export function getState() {
       sampleRate: cfg.target.sampleRate, audioChannels: cfg.target.audioChannels,
       container: cfg.target.container,
     },
-    exportedDays: cfg.exportedDays,
+    exportedDays: exportedDaysPolicy(),
     running: [...running.values()].map((r) => ({
       id: r.id, file_path: r.file_path, name: r.name, pct: r.pct, speed: r.speed,
       fps: r.fps, elapsedMs: Date.now() - r.startedAt, etaSeconds: r.etaSeconds,

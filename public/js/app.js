@@ -2880,15 +2880,65 @@ function renderSpecBanner() {
     chip('Container', t.container),
     chip('Originals →', txConfig.archiveDir),
   );
-  const fixes = txConfig.exportedDays?.mode === 'fix';
   box.append(el('span', {
     className: 'muted spec-note',
-    textContent: `${txConfig.concurrency} clip at a time · ${txConfig.order} first · `
-      + (fixes
-        ? 'a day already pushed gets its playlist repaired on OTAV'
-        : 'a day already pushed has to be pushed again by hand')
+    textContent: `${txConfig.concurrency} clip at a time · ${txConfig.order} first`
       + ` · edit config/config.json → "transcode" to change the spec`,
   }));
+  box.append(renderExportedDaysSwitch());
+}
+
+/**
+ * The exported-day repair switch.
+ *
+ * A converted clip changes name, so a day already pushed to OTAV names a file
+ * that is about to move. On, that playlist is repaired (the clip re-pointed in
+ * place, or the day pushed again when the runtime moved); off, the clip waits
+ * for the operator. It lives on the spec banner rather than in the toolbar
+ * because it is NOT a per-run choice like "replace each clip as it verifies" —
+ * it also governs the Replace button on a single row, and it is saved to
+ * config.json.
+ */
+function renderExportedDaysSwitch() {
+  const policy = txConfig?.exportedDays || {};
+  const fixes = policy.mode === 'fix';
+  const wrap = el('label', { className: 'spec-switch' });
+  const box = el('input', { type: 'checkbox', checked: fixes });
+  box.disabled = !!policy.overridden;
+
+  const text = el('span', {});
+  text.append(el('b', { textContent: 'Repair days already pushed to OTAV' }));
+  text.append(el('span', {
+    className: 'hint',
+    textContent: policy.overridden
+      ? `forced to "${policy.mode}" by the ${policy.overridden} environment variable`
+      : (fixes
+        ? 'On: when a converted clip changes name, the playlist on the playout Mac is re-pointed'
+          + ' at the new file — or that day is pushed again if the new runtime changes the block’s'
+          + ' fit. Nothing on air, starting soon, or on today’s playlist is ever rebuilt.'
+        : 'Off: a clip whose day is already pushed stays queued until you push those days again,'
+          + ' or force the swap from its row. Saved to config.json.'),
+  }));
+
+  box.onchange = async () => {
+    const mode = box.checked ? 'fix' : 'block';
+    wrap.classList.add('saving');
+    try {
+      const r = await api.send('PUT', '/api/transcode/exported-days', { mode });
+      txConfig = { ...txConfig, exportedDays: r.exportedDays };
+      toast(mode === 'fix'
+        ? 'Days already pushed will be repaired on OTAV'
+        : 'Days already pushed will wait for a manual re-push', 'ok');
+    } catch (err) {
+      toast(`Could not save: ${err.message}`, 'bad');
+    } finally {
+      wrap.classList.remove('saving');
+      renderSpecBanner();   // redraw from what the server actually stored
+    }
+  };
+
+  wrap.append(box, text);
+  return wrap;
 }
 
 function renderTxCounters() {

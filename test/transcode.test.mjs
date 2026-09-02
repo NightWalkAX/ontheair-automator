@@ -10,7 +10,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,11 @@ const scratch = mkdtempSync(join(tmpdir(), 'otav-tx-'));
 const mediaDir = join(scratch, 'media');
 process.env.TRANSCODE_WORK_DIR = join(scratch, 'work');
 process.env.TRANSCODE_ARCHIVE_DIR = join(scratch, 'originals');
+// updateConfig() WRITES this file (the exported-day switch persists there), so
+// the run works on a throwaway copy and never touches the operator's own.
+const testConfig = join(scratch, 'config.json');
+copyFileSync(join(__dirname, '..', 'config', 'config.json'), testConfig);
+process.env.SCHEDULER_CONFIG = testConfig;
 
 const { db, initSchema } = await import('../src/db.js');
 const { router: transcodeRouter } = await import('../src/routes/transcode.js');
@@ -509,10 +514,11 @@ test('mode "block" keeps the old conservative behaviour', async () => {
     await convertOnly(day.channelId);
     const item = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(day.path);
 
-    const cfg = tx.transcodeConfig();
-    assert.equal(cfg.exportedDays.mode, 'fix', 'repairing is the default');
+    assert.equal(tx.transcodeConfig().exportedDays.mode, 'fix', 'repairing is the default');
 
-    process.env.TRANSCODE_EXPORTED_MODE = 'block';
+    // Turned off the way the UI turns it off, not by an env var: the switch has
+    // to actually reach the swap it governs.
+    assert.equal((await j('PUT', '/api/transcode/exported-days', { mode: 'block' })).status, 200);
     try {
       const r = await j('POST', `/api/transcode/items/${item.id}/replace`);
       assert.equal(r.status, 400);
@@ -520,9 +526,54 @@ test('mode "block" keeps the old conservative behaviour', async () => {
       assert.equal((await clipsOf(fake, day.playlist))[0].url, day.path, 'nothing was edited on OTAV');
       assert.ok(existsSync(day.path));
     } finally {
-      delete process.env.TRANSCODE_EXPORTED_MODE;
+      await j('PUT', '/api/transcode/exported-days', { mode: 'fix' });
     }
   } finally {
     await fake.close();
   }
+});
+
+test('the exported-day switch persists to config.json and leaves the rest of it alone', async () => {
+  const before = JSON.parse(readFileSync(testConfig, 'utf8'));
+
+  const off = await j('PUT', '/api/transcode/exported-days', { mode: 'block' });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.exportedDays.mode, 'block');
+  assert.equal(off.body.exportedDays.overridden, null);
+
+  const written = JSON.parse(readFileSync(testConfig, 'utf8'));
+  assert.equal(written.transcode.exportedDays.mode, 'block');
+  // A settings file that travels on a USB drive: writing one key must not drop
+  // another, nor rewrite the spec the operator tuned.
+  assert.deepEqual(written.filler, before.filler);
+  assert.deepEqual(written.transcode.target, before.transcode.target);
+  assert.equal(written.transcode.workDir, before.transcode.workDir);
+  assert.equal(written.transcode.exportedDays.imminentMinutes,
+    before.transcode.exportedDays.imminentMinutes, 'the other keys of the policy survive');
+  // Re-read from disk, so the very next swap sees it without a restart.
+  assert.equal(tx.transcodeConfig().exportedDays.mode, 'block');
+
+  const on = await j('PUT', '/api/transcode/exported-days', { mode: 'fix' });
+  assert.equal(on.body.exportedDays.mode, 'fix');
+  assert.equal(tx.transcodeConfig().exportedDays.mode, 'fix');
+
+  const bad = await j('PUT', '/api/transcode/exported-days', { mode: 'whatever' });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /fix, block/);
+  assert.equal(tx.transcodeConfig().exportedDays.mode, 'fix', 'a rejected mode changes nothing');
+});
+
+test('an env override wins over the switch and says so', async () => {
+  process.env.TRANSCODE_EXPORTED_MODE = 'block';
+  try {
+    const r = await j('PUT', '/api/transcode/exported-days', { mode: 'fix' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.exportedDays.mode, 'block', 'the env var still decides');
+    assert.equal(r.body.exportedDays.overridden, 'TRANSCODE_EXPORTED_MODE');
+    // The click is still saved, so removing the override lands on what was asked.
+    assert.equal(JSON.parse(readFileSync(testConfig, 'utf8')).transcode.exportedDays.mode, 'fix');
+  } finally {
+    delete process.env.TRANSCODE_EXPORTED_MODE;
+  }
+  assert.equal(tx.transcodeConfig().exportedDays.mode, 'fix');
 });

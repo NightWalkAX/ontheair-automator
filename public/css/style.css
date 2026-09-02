@@ -779,6 +779,16 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 }
 .spec-chip b { color: var(--muted); font-weight: 600; margin-right: 2px; }
 .spec-note { flex-basis: 100%; font-size: 12px; }
+/* The one setting on this banner that is a control rather than a readout: it is
+   written to config.json, so it reads as a switch and not as a per-run tick. */
+.spec-switch {
+  flex-basis: 100%; display: flex; align-items: flex-start; gap: 8px;
+  padding-top: 9px; border-top: 1px solid var(--line); font-size: 12px;
+}
+.spec-switch input { margin: 2px 0 0; flex: none; }
+.spec-switch b { color: var(--ink); font-weight: 600; }
+.spec-switch .hint { display: block; color: var(--muted); }
+.spec-switch.saving { opacity: 0.55; pointer-events: none; }
 
 .tx-live { display: flex; flex-direction: column; gap: 8px; }
 .tx-live-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
