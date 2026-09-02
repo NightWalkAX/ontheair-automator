@@ -68,17 +68,38 @@ started and left alone:
   `ok|pending|running|converted|blocked|replaced|failed|skipped|missing`). `POST
   /api/transcode/start` works that queue. An on-spec file is NEVER re-encoded, and a re-scan
   never pushes finished work back into the queue.
-- **Copy → convert → verify → archive → swap, per clip.** Output goes to `transcode.workDir`,
+- **Copy → convert → verify → swap → archive, per clip.** Output goes to `transcode.workDir`,
   is probed and checked against the spec (and against the source duration,
-  `verifyToleranceSeconds`) BEFORE anything moves; then the original is moved into
-  `transcode.archiveDir` (full path mirrored, never deleted) and the new file takes its place.
+  `verifyToleranceSeconds`) BEFORE anything moves. When the name changes (the usual case) the
+  new file lands FIRST and the original is moved into `transcode.archiveDir` afterwards (full
+  path mirrored, never deleted) — the two names coexist, so no path is ever left with nothing
+  behind it. A same-name swap has no such luxury: the original moves out first and goes straight
+  back if the new file fails to land.
   Replacement is per clip as it verifies (`autoReplace`), so stopping mid-run leaves a partly
   normalised catalogue, never a half-written file at a path OTAV might read.
-- **The path can change.** Output is `.mov`, so a converted `.avi` gets a new `file_path`;
-  every `Resource` row for that physical file is re-pointed and its duration updated. A clip
-  that appears in a block already `exported` for today or later is **blocked** instead of
-  swapped (the playlist on the playout Mac still names the old file) — re-push those days, or
-  force it deliberately.
+- **The path can change, and OTAV is repaired.** Output is `.mov`, so a converted `.avi` gets a
+  new `file_path`; every `Resource` row for that physical file is re-pointed and its duration
+  updated. A clip that appears in a block already `exported` for today or later would leave that
+  playlist on the playout Mac naming the old file, so `repointExportedDays()` in
+  `src/services/otavClient.js` fixes it — `PUT /playlists/{n}/items/{m}` with `{ url }` is an
+  editable property of a FILE clip, so the clip keeps its slot, name and watermark and OTAV
+  re-reads the runtime from the new file. Three rules make that safe:
+  1. **Plan, then commit, then fix.** Every affected day is resolved and checked FIRST; if any
+     one of them can't be handled the clip stays `blocked` having moved nothing. The new file
+     lands and the catalogue is re-pointed next, and only then are the playlists edited — the
+     original is archived LAST, so until every playlist names the new file the old path still
+     resolves and those days still air. A failure mid-fix rolls the patches, the catalogue and
+     the file back.
+  2. **A runtime that moved needs a re-push, not an edit.** OTAV recalculates a re-pointed
+     clip's duration itself, but the block's fit in SQLite and the schedule event's duration
+     were computed from the old runtime. Past `exportedDays.durationEpsilonSeconds` (0.5s,
+     inside `verifyToleranceSeconds`) the day is pushed again instead (`pushDays`).
+  3. **Never the live playlist.** The clip on air (`GET /playback/current_item`) and one
+     starting within `exportedDays.imminentMinutes` are refused, and today's playlist is never
+     rebuilt by re-push (OTAV won't clear a playing playlist, and it would interrupt air).
+  `exportedDays.mode = 'block'` restores the old conservative behaviour: the clip waits for the
+  operator to re-push those days, or to force the swap. Retrying a `blocked` clip retries the
+  SWAP, not the encode — the verified work file is kept.
 - **State survives everything.** The queue is in SQLite; `resetStaleRunning()` on startup
   re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
   panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.
@@ -89,6 +110,7 @@ Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>
 
 - **Auth (optional, server-side toggle):** `PUT /authorize` with `{username, password}` → `{token, level}`. Token must be appended as a query param on every subsequent request; expires on OTAV relaunch (expect periodic 401s and re-auth). Access levels: 1 read-only, 2 modify playlists, 3 modify+control playback/DGO, 4 full admin.
 - **Playlists:** `GET/POST/PUT /playlists/{n}`, `GET /playlists/{n}/items`, `GET /playlists/{n}/start_times`, `GET /playlists/{n}/out_of_time_range_items`, `GET /playlists/{n}/not_chronological_items`. Playlists can be addressed by index or `unique_id`.
+- **One clip:** `GET/PUT/DELETE /playlists/{n}/items/{m}`, `POST /playlists/{n}/items/{m}` to insert at an index, and `GET /playback/current_item` for whatever is on air. Items are addressable by `unique_id`, which (unlike the index) doesn't shift. The PUT accepts "all properties of a clip" — including `url` for a FILE clip, which is what lets Air Spec repair an already-pushed day — and saves the playlist itself; **never send `duration`**, the doc is explicit that OTAV calculates it from the media it finds. Deleting the playing clip, or clearing the playing playlist, is refused.
 - **Scheduler & control:** `GET /scheduler/start|stop|resynchronize`, `GET /scheduler/playlists`.
 - **Playback control:** generic (`/playback/play|stop|pause`), per-playlist (`/playlists/{n}/play|stop|pause`), or per-clip (`/playlists/{n}/items/{m}/play|stop|pause`) — three addressing granularities for the same verbs.
 - **Actions:** `GET /actions` lists device-control actions available on that server (ATEM switches, etc.) — version-sensitive (OTAV 4.2 changed Actions semantics); check `GET /info` for server version before assuming action shape.

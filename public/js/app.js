@@ -2880,9 +2880,13 @@ function renderSpecBanner() {
     chip('Container', t.container),
     chip('Originals →', txConfig.archiveDir),
   );
+  const fixes = txConfig.exportedDays?.mode === 'fix';
   box.append(el('span', {
     className: 'muted spec-note',
-    textContent: `${txConfig.concurrency} clip at a time · ${txConfig.order} first`
+    textContent: `${txConfig.concurrency} clip at a time · ${txConfig.order} first · `
+      + (fixes
+        ? 'a day already pushed gets its playlist repaired on OTAV'
+        : 'a day already pushed has to be pushed again by hand')
       + ` · edit config/config.json → "transcode" to change the spec`,
   }));
 }
@@ -3022,8 +3026,9 @@ function txRowActions(item) {
       const force = item.status === 'blocked';
       if (force) {
         const ok = await confirmDialog('Replace anyway',
-          'OTAV already has playlists that point at this file’s old name. Replacing it now means those '
-          + 'days have to be pushed again before they air. Continue?',
+          'OTAV already has playlists that point at this file’s old name, and they could not be '
+          + 'repaired — the reason is on the row. Forcing the swap now means those days name a file '
+          + 'that has moved to the archive, so they have to be pushed again before they air. Continue?',
           { confirmLabel: 'Replace anyway', danger: true });
         if (!ok) return;
       }
@@ -3033,7 +3038,9 @@ function txRowActions(item) {
     }, item.status === 'blocked' ? 'mini danger' : 'mini');
   }
   if (item.status === 'failed' || item.status === 'skipped' || item.status === 'blocked') {
-    act('↻ Retry', 'Put this clip back in the queue', async () => {
+    act('↻ Retry', item.status === 'blocked'
+      ? 'Try the swap (and the OTAV playlist repair) again'
+      : 'Put this clip back in the queue', async () => {
       await api.send('POST', `/api/transcode/items/${item.id}/retry`);
       await Promise.all([refreshTxStatus(), loadTxItems()]);
     });

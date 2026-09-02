@@ -29,6 +29,7 @@ import { mkdir, stat, rename, copyFile, unlink } from 'node:fs/promises';
 import { dirname, basename, extname, join } from 'node:path';
 import { db } from '../db.js';
 import { loadConfig, localizePath, delocalizePath } from '../config.js';
+import { repointExportedDays } from './otavClient.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +59,30 @@ const DEFAULT_TARGET = {
   verifyToleranceSeconds: 1.5,
 };
 
+// What to do when a converted clip changes name and a day ALREADY EXPORTED to
+// OTAV names the old one (see replaceBlockers).
+//
+//   fix   — repair those playlists: re-point the clip in place, or push the day
+//           again when the runtime moved. This is the default: OTAV's own API
+//           makes the repair a single edit per clip, and leaving the operator to
+//           remember which days to re-push is how a day ends up airing a file
+//           that isn't there any more.
+//   block — the conservative behaviour: the clip stays queued until the operator
+//           pushes those days again, or forces the swap.
+const DEFAULT_EXPORTED_DAYS = {
+  mode: 'fix',
+  // Rebuild a future day when the runtime moved. Off: those days stay blocked
+  // (a re-push is a bigger operation than an edit — it clears and refills).
+  repush: true,
+  // A runtime that moved less than this leaves the block's fit alone, so the
+  // playlist can simply be re-pointed. verifyToleranceSeconds bounds how far
+  // the runtime is allowed to move at all; this is where "far enough to matter"
+  // sits inside that, well under the filler tolerance a block is fitted to.
+  durationEpsilonSeconds: 0.5,
+  // Never edit a clip this close to its start time on today's playlist.
+  imminentMinutes: 10,
+};
+
 export function transcodeConfig() {
   const c = loadConfig().transcode || {};
   return {
@@ -75,6 +100,13 @@ export function transcodeConfig() {
       ? Number(c.perFileTimeoutMinutes) : 240,
     order: c.order || 'shortest',
     target: { ...DEFAULT_TARGET, ...(c.target || {}) },
+    exportedDays: {
+      ...DEFAULT_EXPORTED_DAYS,
+      ...(c.exportedDays || {}),
+      // Same reason as the work/archive overrides above: a test (or a one-off
+      // run) can pick the policy without editing the operator's config.
+      ...(process.env.TRANSCODE_EXPORTED_MODE ? { mode: process.env.TRANSCODE_EXPORTED_MODE } : {}),
+    },
   };
 }
 
@@ -292,6 +324,7 @@ export function getState() {
       sampleRate: cfg.target.sampleRate, audioChannels: cfg.target.audioChannels,
       container: cfg.target.container,
     },
+    exportedDays: cfg.exportedDays,
     running: [...running.values()].map((r) => ({
       id: r.id, file_path: r.file_path, name: r.name, pct: r.pct, speed: r.speed,
       fps: r.fps, elapsedMs: Date.now() - r.startedAt, etaSeconds: r.etaSeconds,
@@ -498,13 +531,14 @@ const setItem = (id, patch) => {
 };
 
 /**
- * Is it safe to swap this file for its converted version right now?
+ * Which already-exported days name this file, if any.
  *
  * The converted file lands at a .mov path, so a clip whose extension changes
  * changes its file_path — and a day already EXPORTED to OTAV has that old path
- * baked into a playlist file on the playout Mac. Replacing it would leave that
- * playlist pointing at a file that has moved to the archive, so the swap waits
- * (status 'blocked') until the operator re-pushes those days, or forces it.
+ * baked into a playlist file on the playout Mac. Under the default
+ * `exportedDays.mode = 'fix'` these are the days replaceAndRepoint() repairs;
+ * under 'block' they are what makes the swap wait (status 'blocked') until the
+ * operator re-pushes them, or forces it.
  */
 export function replaceBlockers(item) {
   const target = transcodeConfig().target;
@@ -523,10 +557,56 @@ export function replaceBlockers(item) {
   return rows.map((r) => `${r.channel || 'channel'} ${r.target_date}`);
 }
 
+/** Mark an item as waiting on something the operator has to do, and say what. */
+function blockItem(itemId, item, message) {
+  setItem(itemId, { status: 'blocked', error: message });
+  emit({ type: 'item', id: itemId, status: 'blocked', file_path: item.file_path });
+  throw new Error(`blocked: ${message}`);
+}
+
+/** Point every catalogue row for this physical file at the converted one. */
+function pointCatalogue(item, finalCanonical) {
+  return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
+    .run(finalCanonical, Math.round(item.out_duration || item.src_duration || 0), item.file_path).changes;
+}
+
+/** Snapshot the catalogue rows for one file, returning a restore(). */
+function catalogueSnapshot(filePath) {
+  const rows = db.prepare('SELECT id, file_path, duration FROM Resource WHERE file_path = ?').all(filePath);
+  return () => {
+    const back = db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE id = ?');
+    for (const r of rows) back.run(r.file_path, r.duration, r.id);
+  };
+}
+
+/** Record the swap and tell the tab about it. */
+function finishReplace(itemId, item, finalCanonical, backupPath, renamed, note = null) {
+  setItem(itemId, {
+    status: 'replaced',
+    file_path: finalCanonical,
+    backup_path: backupPath,
+    replaced_at: new Date().toISOString(),
+    error: note,
+  });
+  emit({
+    type: 'item', id: itemId, status: 'replaced', file_path: finalCanonical,
+    message: note ? `replaced — ${note}` : 'replaced',
+  });
+  return { path: finalCanonical, duration: item.out_duration, renamed };
+}
+
 /**
- * Swap a converted item into place: archive the original, move the new file to
- * the original's folder, and re-point the catalogue at it (every channel that
- * catalogued the same physical file). Returns { path, duration, renamed }.
+ * Swap a converted item into place: put the new file at its final path, archive
+ * the original (moved, never deleted), and re-point the catalogue at it (every
+ * channel that catalogued the same physical file).
+ *
+ * When the name changes the new file goes in FIRST and the original is archived
+ * only once it has landed — the two names can coexist, so no path is ever left
+ * with nothing behind it. A same-name swap has no such luxury and moves the
+ * original out of the way first, putting it straight back if the new file fails
+ * to land.
+ *
+ * Returns { path, duration, renamed }.
  */
 export async function replaceItem(itemId, { force = false } = {}) {
   const item = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(itemId);
@@ -534,55 +614,126 @@ export async function replaceItem(itemId, { force = false } = {}) {
   if (!item.out_path) throw new Error('nothing converted for this item yet');
   if (item.status === 'replaced') return { path: item.file_path, duration: item.out_duration, renamed: 0 };
 
-  const blockers = force ? [] : replaceBlockers(item);
-  if (blockers.length) {
-    setItem(itemId, {
-      status: 'blocked',
-      error: `already exported to OTAV for ${blockers.join(', ')} — re-push those days, then replace`,
-    });
-    emit({ type: 'item', id: itemId, status: 'blocked', file_path: item.file_path });
-    throw new Error(`blocked: exported playlists reference the old path (${blockers.join(', ')})`);
-  }
-
-  const target = transcodeConfig().target;
+  const cfg = transcodeConfig();
   const finalCanonical = join(
     dirname(item.file_path),
-    basename(item.file_path, extname(item.file_path)) + target.container,
+    basename(item.file_path, extname(item.file_path)) + cfg.target.container,
   );
-  const localFinal = localizePath(finalCanonical);
-  const localOut = item.out_path;                       // work file, already local
-  const localSrc = localizePath(item.file_path);
+  const renaming = finalCanonical !== item.file_path;
 
   // A different clip already sitting at the destination name would be
   // overwritten — refuse rather than destroy it.
-  if (finalCanonical !== item.file_path) {
+  if (renaming) {
     const clash = db.prepare('SELECT id FROM Resource WHERE file_path = ? LIMIT 1').get(finalCanonical);
     if (clash) throw new Error(`another catalogued clip already uses ${finalCanonical}`);
   }
 
+  const blockers = force ? [] : replaceBlockers(item);
+  if (blockers.length && cfg.exportedDays.mode !== 'fix') {
+    return blockItem(itemId, item,
+      `already exported to OTAV for ${blockers.join(', ')} — re-push those days, then replace`);
+  }
+  if (blockers.length) return replaceAndRepoint(itemId, item, finalCanonical, cfg);
+
+  const localFinal = localizePath(finalCanonical);
+  const localSrc = localizePath(item.file_path);
   const archive = archivePathFor(item.file_path);
   await mkdir(dirname(archive), { recursive: true });
-  await moveFile(localSrc, archive);
+
+  if (renaming) {
+    await moveFile(item.out_path, localFinal);
+    try {
+      await moveFile(localSrc, archive);
+    } catch (err) {
+      await moveFile(localFinal, item.out_path).catch(() => {});
+      throw err;
+    }
+  } else {
+    await moveFile(localSrc, archive);
+    try {
+      await moveFile(item.out_path, localFinal);
+    } catch (err) {
+      // Put the original back: better a failed item than a gap on air.
+      await moveFile(archive, localSrc).catch(() => {});
+      throw err;
+    }
+  }
+  return finishReplace(itemId, item, finalCanonical, delocalizePath(archive), pointCatalogue(item, finalCanonical));
+}
+
+/**
+ * The same swap, for a clip whose old path is baked into a playlist on a
+ * playout Mac (one or more days are already 'exported').
+ *
+ * repointExportedDays() owns the order: it checks every affected day is fixable
+ * BEFORE anything moves, calls back to land the new file and re-point the
+ * catalogue, then edits those playlists — re-pointing the clip in place, or
+ * pushing the day again when the runtime moved enough to change the block's
+ * fit. The original is archived only after all of that succeeds, so until the
+ * playlists name the new file the old path still resolves and those days still
+ * air. A day that cannot be fixed leaves the clip queued, exactly as before.
+ */
+async function replaceAndRepoint(itemId, item, finalCanonical, cfg) {
+  const policy = cfg.exportedDays;
+  const srcDuration = item.src_duration || 0;
+  const outDuration = item.out_duration || 0;
+  // OTAV re-reads a re-pointed clip's runtime from the file itself, so the
+  // playlist's own timing self-corrects. The block's fit in THIS database and
+  // the duration written into the schedule event do not — those were computed
+  // from the old runtime, so a runtime that moved needs the day rebuilt.
+  const durationChanged = !!srcDuration && !!outDuration
+    && Math.abs(outDuration - srcDuration) > (policy.durationEpsilonSeconds ?? 0.5);
+
+  const localFinal = localizePath(finalCanonical);
+  const localSrc = localizePath(item.file_path);
+  const archive = archivePathFor(item.file_path);
+  let renamed = 0;
+
+  let report;
   try {
-    await moveFile(localOut, localFinal);
+    report = await repointExportedDays(item.file_path, finalCanonical, {
+      durationChanged,
+      repush: policy.repush !== false,
+      imminentMinutes: policy.imminentMinutes ?? 10,
+      onLog: (message) => line(`OTAV: ${message}`),
+      commit: async () => {
+        await mkdir(dirname(archive), { recursive: true });
+        await moveFile(item.out_path, localFinal);
+        const restore = catalogueSnapshot(item.file_path);
+        renamed = pointCatalogue(item, finalCanonical);
+        return {
+          rollback: async () => {
+            restore();
+            renamed = 0;
+            await moveFile(localFinal, item.out_path).catch(() => {});
+          },
+        };
+      },
+    });
   } catch (err) {
-    // Put the original back: better a failed item than a gap on air.
-    await moveFile(archive, localSrc).catch(() => {});
-    throw err;
+    return blockItem(itemId, item,
+      `OTAV already has playlists naming the old file and they could not be fixed: ${err.message}`);
   }
 
-  const renamed = db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
-    .run(finalCanonical, Math.round(item.out_duration || item.src_duration || 0), item.file_path).changes;
+  // Every playlist names the new file now, so the original can be archived. A
+  // failure here is cosmetic — the catalogue and the playlists are already
+  // correct — so it leaves the original in place and says so rather than
+  // undoing a good swap.
+  let backupPath = delocalizePath(archive);
+  let note = null;
+  try {
+    await moveFile(localSrc, archive);
+  } catch (err) {
+    backupPath = null;
+    note = `the original could not be archived (${err.message}) and is still at ${item.file_path}`;
+    line(note, 'warn');
+  }
 
-  setItem(itemId, {
-    status: 'replaced',
-    file_path: finalCanonical,
-    backup_path: delocalizePath(archive),
-    replaced_at: new Date().toISOString(),
-    error: null,
-  });
-  emit({ type: 'item', id: itemId, status: 'replaced', file_path: finalCanonical, message: 'replaced' });
-  return { path: finalCanonical, duration: item.out_duration, renamed };
+  const fixed = [];
+  if (report.patched) fixed.push(`${report.patched} clip(s) re-pointed`);
+  if (report.repushed) fixed.push(`${report.repushed} day(s) pushed again`);
+  if (fixed.length) line(`${basename(finalCanonical)}: ${fixed.join(', ')} on OTAV.`, 'ok');
+  return finishReplace(itemId, item, finalCanonical, backupPath, renamed, note);
 }
 
 /** rename(), falling back to copy+unlink across filesystems (share -> local). */
@@ -802,12 +953,22 @@ export function startConvert({ channelId = null, limit = null, replace = null } 
   return { started: true, total, autoReplace };
 }
 
-/** Put a failed/blocked/skipped item back in the queue. */
+/**
+ * Put a failed/blocked/skipped item back in the queue.
+ *
+ * A clip that already has a verified work file goes back to 'converted', not
+ * 'pending': a blocked clip is one whose SWAP could not be completed (the OTAV
+ * playlist repair failed, the clip was on air), and re-encoding a two-hour
+ * feature to retry a REST edit would cost hours for nothing.
+ */
 export function requeue(id) {
   const item = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(id);
   if (!item) throw new Error('unknown item');
-  setItem(id, { status: 'pending', error: null, progress: 0 });
-  return { ok: true };
+  const converted = !!item.out_path && item.status !== 'failed';
+  setItem(id, converted
+    ? { status: 'converted', error: null, progress: 1 }
+    : { status: 'pending', error: null, progress: 0 });
+  return { ok: true, status: converted ? 'converted' : 'pending' };
 }
 
 /** Take an item out of the queue without converting it. */

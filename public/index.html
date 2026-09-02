@@ -147,6 +147,7 @@
     <div class="section-head">
       <h2>Air Spec <span class="muted" style="font-size:13px;font-weight:500">· normalise the library with ffmpeg</span></h2>
       <p>Brings every clip to one house format so OnTheAir Video plays the whole catalogue with the same timing and no audio drift. Each clip is <strong>converted to a work file, verified, then swapped in</strong> — the original is moved to the archive folder, never deleted. <strong>This routine is slow on purpose:</strong> it re-encodes at broadcast quality over the share, one clip at a time. Expect hours for a channel and days for the whole library. Start it, walk away, and come back to this tab — the queue lives in the database, so it survives a reload and picks up where it stopped after a restart.</p>
+      <p>A converted clip changes name (an <code>.avi</code> becomes a <code>.mov</code>), so <strong>days already pushed to OTAV are repaired for you</strong>: the clip is re-pointed in place on the playout Mac, keeping its slot, its name and its watermark — or, when the new file's runtime moved enough to change the block's fit, that day is pushed again. Nothing is moved until every affected day has been checked, and the original is archived only once those playlists name the new file, so no playlist is ever left naming a file that isn't there. The clip on air, one about to start, and today's playlist as a whole are never rebuilt automatically.</p>
     </div>
 
     <div class="spec-banner" id="specBanner">
