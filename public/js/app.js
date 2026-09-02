@@ -155,23 +155,38 @@ function showGridSkeleton() {
   }
 }
 
-// Per-channel filtering of the schedule/generator. null = all channels.
+// Per-channel filtering of the schedule/generator. The grid shows ONE channel
+// at a time: an all-channels view is six times the blocks for a week nobody can
+// read across anyway, and each card costs a query on the server. The choice is
+// remembered like the theme, so a reload doesn't bounce back to the first one.
+const SCHEDULE_CHANNEL_KEY = 'otav.scheduleChannel';
 let scheduleChannels = [];
-let currentScheduleChannel = null;
+let currentScheduleChannel = Number(localStorage.getItem(SCHEDULE_CHANNEL_KEY)) || null;
 
 async function renderChannelStrip() {
   try { scheduleChannels = await api.get('/api/channels'); } catch { scheduleChannels = []; }
+  if (!scheduleChannels.length) return;
+  // A remembered channel that has since been deleted (or nothing remembered)
+  // falls back to the first one rather than loading every channel at once.
+  if (!scheduleChannels.some((c) => c.id === currentScheduleChannel)) {
+    currentScheduleChannel = scheduleChannels[0].id;
+    localStorage.setItem(SCHEDULE_CHANNEL_KEY, String(currentScheduleChannel));
+  }
   const strip = $('#channelStrip');
   strip.innerHTML = '';
   if (scheduleChannels.length <= 1) return; // no point showing a strip for a single channel
-  const mk = (label, id) => {
-    const active = currentScheduleChannel === id;
-    const b = el('button', { className: `chip ${active ? 'active' : ''}`, textContent: label });
-    b.onclick = () => { currentScheduleChannel = id; loadSchedule(); };
-    return b;
-  };
-  strip.append(mk('All channels', null));
-  for (const c of scheduleChannels) strip.append(mk(c.name, c.id));
+  for (const c of scheduleChannels) {
+    const b = el('button', {
+      className: `chip ${currentScheduleChannel === c.id ? 'active' : ''}`,
+      textContent: c.name,
+    });
+    b.onclick = () => {
+      currentScheduleChannel = c.id;
+      localStorage.setItem(SCHEDULE_CHANNEL_KEY, String(c.id));
+      loadSchedule();
+    };
+    strip.append(b);
+  }
 }
 
 function scheduleChannelQuery() {
@@ -242,17 +257,20 @@ function emptyState(icon, title, hint) {
 }
 
 $('#btnReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadSchedule));
+// The channel strip filters the GRID, not these two: they are week-wide
+// actions, and both covered every channel before the strip lost its "All"
+// chip — generating one channel at a time would leave the other five empty
+// without saying so, and the printable schedule is meant to be the combined
+// document (which is also what the weeklyDraft cron generates).
 $('#btnDownload').addEventListener('click', () => {
-  // Printable schedule (fillers excluded) for the current week + channel filter.
-  // No channel filter → one combined document covering every channel.
+  // Printable schedule (fillers excluded), every channel in one document.
   const week = $('#weekStart').value || isoToday();
-  window.open(`/api/blocks/export?week=${week}${scheduleChannelQuery()}`, '_blank');
+  window.open(`/api/blocks/export?week=${week}`, '_blank');
 });
 $('#btnGenerate').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}${scheduleChannelQuery()}`);
+  const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}`);
   const n = r.results?.length ?? 0;
-  const scope = currentScheduleChannel != null ? ' (this channel)' : '';
-  toast(`Generated ${n} draft block${n === 1 ? '' : 's'}${scope}`, 'ok', 'Drafts ready');
+  toast(`Generated ${n} draft block${n === 1 ? '' : 's'} across every channel`, 'ok', 'Drafts ready');
   await loadSchedule();
 }));
 $('#btnApproveWeek').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {

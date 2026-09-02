@@ -381,10 +381,33 @@ router.get('/', (req, res) => {
     ORDER BY sb.target_date, c.name, start_time
   `).all(...params);
 
-  // Attach validation summary so the UI can render tolerance badges directly.
+  // Tolerance badges need two numbers per block, so take them as ONE grouped
+  // sum over the week rather than calling validateBlock() per block: that
+  // fetches and labels every clip of every block, and its EPISODE_NO_CTE
+  // window-numbers the whole non-filler catalogue each time it runs. On the
+  // real library that was ~500ms of SQL for a week (46 blocks, 774 clips) plus
+  // a response carrying every clip the cards never look at. The clips
+  // themselves load when a block is actually opened (GET /api/blocks/:id).
+  const totals = new Map();
+  for (const t of db.prepare(`
+    SELECT si.block_id, SUM(r.duration) AS total
+    FROM ScheduleItem    si
+    JOIN ScheduledBlock  sb ON sb.id = si.block_id
+    JOIN BlockTemplate   bt ON bt.id = sb.template_id
+    JOIN Resource        r  ON r.id  = si.resource_id
+    WHERE ${clauses.join(' AND ')}
+    GROUP BY si.block_id
+  `).all(...params)) totals.set(t.block_id, t.total || 0);
+
+  const tol = fitTolerance();
   const blocks = rows.map((r) => {
-    const v = validateBlock(r.id);
-    return { ...r, is_mirror: r.slot_order > 0, blockSeconds: v.blockSeconds, totalSeconds: v.totalSeconds, diff: v.diff, fits: v.fits };
+    const blockSeconds = blockDurationSeconds(r.start_time, r.end_time);
+    const totalSeconds = totals.get(r.id) || 0;
+    const diff = blockSeconds - totalSeconds;   // >0 underrun, <0 overrun
+    return {
+      ...r, is_mirror: r.slot_order > 0,
+      blockSeconds, totalSeconds, diff, fits: fitsTolerance(diff, tol),
+    };
   });
   res.json({ week: dates, blocks });
 });

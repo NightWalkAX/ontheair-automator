@@ -262,6 +262,25 @@ test('generation: greedy series cycling, strict mirror airings, cross-day progre
   assert.equal(tueMinMath, monMaxMath + 1, 'Math rolls forward day to day');
 });
 
+test('the week list summarises every block exactly as opening it would', async () => {
+  // The list takes its fit from ONE grouped sum so a week costs one query
+  // instead of validateBlock() per block (which fetches and labels every clip).
+  // Two code paths for the same number is the risk that buys: pin them together
+  // so a change to either can't silently drift the badges off the block editor.
+  const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
+  assert.ok(view.blocks.length >= 4);
+  for (const b of view.blocks) {
+    const detail = (await j('GET', `/api/blocks/${b.id}`)).data;
+    assert.equal(b.blockSeconds, detail.blockSeconds, `block ${b.id} length`);
+    assert.equal(b.totalSeconds, detail.totalSeconds, `block ${b.id} content`);
+    assert.equal(b.diff, detail.diff, `block ${b.id} diff`);
+    assert.equal(b.fits, detail.fits, `block ${b.id} fit`);
+    // And the list really does leave the clips to the detail view.
+    assert.equal(b.items, undefined, 'the week list must not carry clips');
+    assert.ok(detail.items.length, 'the detail view must');
+  }
+});
+
 test('mirror airings are read-only; primary edits + tolerance 409 guard', async () => {
   const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
   const primary = view.blocks.find((b) => b.target_date === '2026-07-20' && !b.is_mirror);
