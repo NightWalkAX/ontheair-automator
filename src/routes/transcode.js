@@ -9,6 +9,7 @@ import { Router } from 'express';
 import {
   startScan, startConvert, requestStop, abortNow, getState, listItems, itemCounts,
   replaceItem, replacePending, requeue, skip, transcodeConfig, REASON_LABELS, subscribe,
+  setExportedDaysMode, exportedDaysPolicy, EXPORTED_DAYS_MODES,
 } from '../services/transcode.js';
 
 export const router = Router();
@@ -36,8 +37,25 @@ router.get('/config', (req, res) => {
     autoReplace: c.autoReplace,
     order: c.order,
     perFileTimeoutMinutes: c.perFileTimeoutMinutes,
-    exportedDays: c.exportedDays,
+    exportedDays: exportedDaysPolicy(),
   });
+});
+
+// PUT /api/transcode/exported-days — switch what happens to a day already
+// pushed to OTAV when a clip under it is converted. Persisted to config.json
+// (loadConfig re-reads per call, so it applies to the very next swap) because
+// this is a standing policy, not a per-run choice: it also governs the Replace
+// button on a single row, with no run in flight.
+router.put('/exported-days', (req, res) => {
+  const mode = String(req.body?.mode ?? '');
+  if (!EXPORTED_DAYS_MODES.includes(mode)) {
+    return res.status(400).json({ ok: false, error: `mode must be one of ${EXPORTED_DAYS_MODES.join(', ')}` });
+  }
+  try {
+    res.json({ ok: true, exportedDays: setExportedDaysMode(mode) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: `config.json could not be written: ${err.message}` });
+  }
 });
 
 // GET /api/transcode/items?status=&channel=&limit=&offset=
