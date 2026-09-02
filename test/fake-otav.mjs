@@ -15,6 +15,9 @@ export function startFakeOtav({
   refuseClear = false,        // 422 "not editable" on DELETE, as scheduler-opened playlists do
   folderBased = false,        // playlists play a folder's contents: item lists aren't editable
   refuseLogo = false,         // instance rejects the undocumented logo properties on a clip
+  onAirUrl = null,            // media path of the clip on air (state.onAirUrl is settable mid-test)
+  startTimes = {},            // clip unique_id -> seconds into the day, for /start_times
+  keepClipUrl = false,        // accept a PUT of "url" but keep the old value (a liar)
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -23,6 +26,7 @@ export function startFakeOtav({
   const state = {
     received: [], cleared: 0, resynced: 0, authorized: 0,
     playlists: new Map(), scheduled: [...scheduled], opened: [],
+    onAirUrl,
   };
 
   const server = createServer((req, res) => {
@@ -87,6 +91,10 @@ export function startFakeOtav({
       if (itemsMatch) {
         const ref = decodeURIComponent(itemsMatch[1]);
         const pl = findPlaylist(ref);
+        if (req.method === 'GET') {
+          if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index' });
+          return send(200, pl.items);
+        }
         if (req.method === 'DELETE') {
           if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index (items)' });
           if (refuseClear) return send(422, { success: false, error: 'The specified playlist is not editable.' });
@@ -114,10 +122,25 @@ export function startFakeOtav({
         if (!clip) return send(404, { success: false, error: 'No clip matches the given unique ID or index' });
         if (req.method === 'GET') return send(200, clip);
         if (refuseLogo) return send(400, { success: false, error: 'Unknown property logo_filename' });
-        Object.assign(clip, json);
+        const { url, ...rest } = json;
+        Object.assign(clip, keepClipUrl ? rest : json);
         const mirror = state.received.find((c) => c.unique_id === clip.unique_id);
-        if (mirror) Object.assign(mirror, json);
+        if (mirror) Object.assign(mirror, keepClipUrl ? rest : json);
         return send(200, { success: true });
+      }
+      const timesMatch = /^\/playlists\/([^/]+)\/start_times$/.exec(path);
+      if (timesMatch && req.method === 'GET') {
+        const pl = findPlaylist(decodeURIComponent(timesMatch[1]));
+        if (!pl) return send(404, { success: false, error: 'No playlist matches the given unique ID or index' });
+        return send(200, Object.fromEntries(pl.items.map((c) => [
+          c.unique_id, { start_time: startTimes[c.unique_id] ?? 0, overrun_underrun: 0 },
+        ])));
+      }
+      // Nothing on air answers 404, which is what the integrator treats as
+      // "no clip to protect".
+      if (req.method === 'GET' && path === '/playback/current_item') {
+        if (!state.onAirUrl) return send(404, { success: false, error: 'nothing is playing' });
+        return send(200, { unique_id: 'on-air', clip_type: 0, url: state.onAirUrl });
       }
       if (req.method === 'GET' && path === '/scheduler') {
         return send(200, {

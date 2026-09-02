@@ -36,6 +36,7 @@ router.get('/config', (req, res) => {
     autoReplace: c.autoReplace,
     order: c.order,
     perFileTimeoutMinutes: c.perFileTimeoutMinutes,
+    exportedDays: c.exportedDays,
   });
 });
 

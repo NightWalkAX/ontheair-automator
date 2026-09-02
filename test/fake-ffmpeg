@@ -3,7 +3,9 @@
 // sidecar (so the verification probe passes), keeping the input's duration, and
 // emits a couple of `-progress pipe:1` frames so the progress parser is
 // exercised. A file named *_fail.* makes it exit non-zero, standing in for a
-// source ffmpeg cannot transcode.
+// source ffmpeg cannot transcode; one named *_drift.* comes out a second longer
+// than it went in — inside verifyToleranceSeconds, but far enough that the
+// block it sits in no longer adds up.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
@@ -15,6 +17,8 @@ let duration = 60;
 try {
   duration = Number(JSON.parse(readFileSync(`${input}.json`, 'utf8')).format.duration) || 60;
 } catch { /* keep the default */ }
+
+if (/_drift\./.test(basename(input))) duration += 1;
 
 if (/_fail\./.test(basename(input))) {
   process.stderr.write('fake-ffmpeg: refusing this source on purpose\n');

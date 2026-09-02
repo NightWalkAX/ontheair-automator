@@ -18,6 +18,14 @@
 //                        body { "clip_type": 0, "url": <path>, "name": <name> }
 //                        (clip_type 0 = FILE; url is the media path)
 //   - Resync scheduler : GET    /scheduler/resynchronize
+//   - Re-point a clip  : PUT    /playlists/{n}/items/{m}  body { "url": <path> }
+//                        ("Update playlist's clip": url is OPTIONAL and editable
+//                         for FILE clips, the playlist saves itself once the new
+//                         value loads, and durations must NOT be sent because
+//                         OTAV recalculates them from the media it finds)
+//   - Clips of a list  : GET    /playlists/{n}/items      -> [Playlist Item]
+//   - Item start times : GET    /playlists/{n}/start_times -> { uid: {start_time} }
+//   - Clip on air      : GET    /playback/current_item    -> Playlist Item
 //
 // One playlist PER DAY, per channel: pushing 2026-07-27 creates/reuses a
 // playlist named from the channel's playlist_name_pattern (default
@@ -28,6 +36,7 @@
 // Because the scheduler Mac and both broadcast Macs mount the same SMB share at
 // the same path, Resource.file_path is used verbatim as the clip "url".
 
+import { dirname, join } from 'node:path';
 import { db } from '../db.js';
 import {
   createScheduleBatch, flushScheduleBatch, inspectPaths, prepareDaySchedule,
@@ -462,6 +471,52 @@ class OtavClient {
 
   getClip(ref, clipRef) {
     return this.request('GET', `/playlists/${OtavClient.ref(ref)}/items/${OtavClient.ref(clipRef)}`);
+  }
+
+  /** Every clip of a playlist, in play order (each carries unique_id + url). */
+  playlistItems(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}/items`); }
+
+  /**
+   * Point one existing FILE clip at a different file.
+   *
+   * This is the whole reason Air Spec can repair a day it already exported: the
+   * clip keeps its position, its name and its watermark, and OTAV re-reads the
+   * runtime from the new file itself. Only `url` is sent — the doc is explicit
+   * that durations are calculated by OTAV and must not be pushed at it.
+   */
+  setClipUrl(ref, clipRef, url) {
+    return this.request('PUT', `/playlists/${OtavClient.ref(ref)}/items/${OtavClient.ref(clipRef)}`, { url });
+  }
+
+  /** { unique_id: { start_time, overrun_underrun } } — start_time in seconds. */
+  itemStartTimes(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}/start_times`); }
+
+  /** The clip on air right now, whichever playlist it came from. */
+  currentItem() { return this.request('GET', '/playback/current_item'); }
+
+  /**
+   * Resolve a day's playlist WITHOUT touching its contents.
+   *
+   * ensureDayPlaylist() clears the playlist it resolves, because a push rebuilds
+   * the day from scratch — exactly wrong when the point is to edit one clip in
+   * place. Same resolution order, no clear: the file the schedule references
+   * first (that is the authoritative one), else whatever is open under the name.
+   */
+  async findDayPlaylist(name, playlistPath) {
+    if (playlistPath) {
+      try {
+        const opened = await this.openSchedulerPlaylist(playlistPath);
+        OtavClient.assertEditable(opened, playlistPath);
+        const found = await this.refForPath(playlistPath, opened?.unique_id || name);
+        return { ref: found.ref, playlist: found.playlist ?? opened };
+      } catch (err) {
+        if (err.fatal) throw err;   // folder-based won't become editable
+      }
+    }
+    const hit = await this.findOpenByName(name);
+    if (!hit) throw new Error(`playlist "${name}" is neither open on that OTAV nor in its schedule`);
+    OtavClient.assertEditable(hit, null);
+    return { ref: hit.unique_id ?? hit.index ?? name, playlist: hit };
   }
 
   resynchronize() { return this.request('GET', '/scheduler/resynchronize'); }
@@ -963,5 +1018,274 @@ export async function diagnoseChannel(channelId, targetDate, { probeCreate = fal
   }
   return out;
 }
+
+// ---- Repointing a day already exported at a clip's new path ----------------
+//
+// Air Spec converts a clip and its path can change (an .avi becomes a .mov). A
+// day whose status is already 'exported' has the OLD path baked into a playlist
+// on the playout Mac, so swapping the file silently leaves that playlist naming
+// something that moved to the archive.
+//
+// OTAV's own API is the repair: `url` is an editable property of a FILE clip,
+// the clip keeps its slot / name / watermark, the playlist saves itself, and the
+// runtime is re-read from the new file. One PUT per occurrence.
+//
+// What a PUT does NOT fix is anything computed from the OLD runtime — the
+// block's fit in this database and the duration written into the schedule
+// event. So when the converted file's runtime moved, the day is PUSHED AGAIN
+// (rebuilt from the schedule as it now stands) instead of patched.
+//
+// Three things are never touched:
+//   - the clip on air (GET /playback/current_item), or one about to start;
+//   - TODAY's playlist by re-push: OTAV refuses to clear a playing playlist and
+//     it would interrupt air even where it doesn't;
+//   - anything at all, unless EVERY affected day was found fixable first — a
+//     half-fixed set of days is worse than a clip that stays queued.
+
+/** Exported days at or after `fromDate` whose playlists name `filePath`. */
+function exportedDaysFor(filePath, fromDate) {
+  return db.prepare(`
+    SELECT DISTINCT sb.target_date, sb.channel_id,
+           c.name AS channel_name, c.name, c.api_ip, c.api_port, c.api_username, c.api_password,
+           c.playlist_ref, c.playlist_name_pattern,
+           c.schedule_path, c.playlist_dir, c.playlist_template
+    FROM ScheduleItem   si
+    JOIN ScheduledBlock sb ON sb.id = si.block_id
+    JOIN Resource       r  ON r.id  = si.resource_id
+    -- LEFT, so a block with no channel row shows up here and is refused loudly
+    -- rather than quietly falling out of a set that must match replaceBlockers'.
+    LEFT JOIN ChannelType c ON c.id  = sb.channel_id
+    WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?
+    ORDER BY sb.target_date, c.name
+  `).all(filePath, fromDate);
+}
+
+/**
+ * Where a channel's day playlist file lives — read-only, creates nothing.
+ * Mirrors prepareDaySchedule's layout (beside the schedule unless the channel
+ * names its own folder). Null when the channel isn't set up for file-level
+ * scheduling, in which case the playlist is found by name instead.
+ */
+function dayPlaylistFile(channel, playlistName, reportedSchedulePath) {
+  const schedulePath = channel.schedule_path || reportedSchedulePath || null;
+  const dir = channel.playlist_dir || (schedulePath ? dirname(schedulePath) : null);
+  return dir ? join(dir, `${playlistName}.xpls`) : null;
+}
+
+/**
+ * Same media file? OTAV echoes the path it was given, but a value that made a
+ * round trip through someone's JSON can come back with escaped separators, and
+ * the share is mounted on a case-insensitive filesystem.
+ */
+function samePath(a, b) {
+  const norm = (v) => String(v ?? '').replace(/\\\//g, '/').trim();
+  const x = norm(a);
+  const y = norm(b);
+  return !!x && (x === y || x.toLowerCase() === y.toLowerCase());
+}
+
+/**
+ * Fix every exported day that names `oldPath` so it names `newPath` instead.
+ *
+ * Runs as ONE serialized push (no operator push can interleave with it) in
+ * three steps:
+ *
+ *   1. PLAN — read-only. Resolve each affected day's playlist, find the clips
+ *      naming the old path, and decide patch-or-re-push. If ANY day cannot be
+ *      handled, this throws having changed nothing.
+ *   2. COMMIT — the caller's `commit()` puts the new file in place and re-points
+ *      the catalogue. It MUST leave the original file where it is: until the
+ *      playlists name the new file, the old path is what keeps those days
+ *      airable. It returns { rollback } for step 3.
+ *   3. FIX — PUT the new url on each clip, or push the whole day again. On
+ *      failure `rollback()` runs and the error is rethrown.
+ *
+ * Returns { days: [{ channel, date, how, clips }], patched, repushed }.
+ */
+export function repointExportedDays(oldPath, newPath, {
+  durationChanged = false,
+  repush = true,
+  imminentMinutes = 10,
+  today = new Date().toISOString().slice(0, 10),
+  commit = async () => ({}),
+  onLog = () => {},
+} = {}) {
+  return serialized(async () => {
+    const rows = exportedDaysFor(oldPath, today);
+    // Nothing exported names it any more (it was pushed again since the caller
+    // looked). Still commit: the caller archives the original next, and it must
+    // never do that without the new file having landed.
+    if (!rows.length) {
+      await commit();
+      return { days: [], patched: 0, repushed: 0 };
+    }
+
+    // ---- 1. PLAN ----------------------------------------------------------
+    const clients = new Map();   // channel_id -> { client, onAir, reported }
+    const plans = [];
+    const blocked = [];
+    const where = (r) => `${r.channel_name || 'channel'} ${r.target_date}`;
+
+    for (const row of rows) {
+      if (!row.api_ip) {
+        blocked.push(`${where(row)}: the channel has no API address configured`);
+        continue;
+      }
+      let entry = clients.get(row.channel_id);
+      if (!entry) {
+        entry = { client: new OtavClient(row) };
+        clients.set(row.channel_id, entry);
+        try {
+          await entry.client.authorize();
+          // Whichever playlist it belongs to, the clip on air must not have the
+          // file yanked from under it. One read per instance answers that.
+          const cur = await entry.client.currentItem().catch(() => null);
+          entry.onAir = samePath(cur?.url, oldPath);
+          // A channel that doesn't name its schedule: ask the instance, exactly
+          // as a push does, rather than making the operator retype the path.
+          if (!row.schedule_path) {
+            const sched = await entry.client.request('GET', '/scheduler').catch(() => null);
+            entry.reported = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
+          }
+        } catch (err) {
+          entry.error = String(err.message || err);
+        }
+      }
+      if (entry.error) { blocked.push(`${where(row)}: ${entry.error}`); continue; }
+      if (entry.onAir) { blocked.push(`${where(row)}: that clip is on air right now`); continue; }
+
+      const playlistName = dayPlaylistName(row, row.target_date);
+      let ref;
+      let items;
+      try {
+        const found = await entry.client.findDayPlaylist(
+          playlistName, dayPlaylistFile(row, playlistName, entry.reported),
+        );
+        ref = found.ref;
+        items = await entry.client.playlistItems(ref);
+      } catch (err) {
+        blocked.push(`${where(row)}: ${err.message}`);
+        continue;
+      }
+
+      const list = Array.isArray(items) ? items : (items?.items ?? []);
+      const clips = list
+        .map((it, index) => ({ ref: it.unique_id ?? String(index), url: it.url }))
+        .filter((it) => samePath(it.url, oldPath));
+      if (!clips.length) {
+        // The day is exported but its playlist no longer names this file (it was
+        // pushed again since). Nothing to repair.
+        plans.push({ row, playlistName, ref, clips: [], how: 'absent' });
+        continue;
+      }
+
+      if (!durationChanged) {
+        // Never edit a clip that is about to start. start_time is documented as
+        // seconds, so a value outside one day is a shape this build doesn't
+        // understand: skip the check rather than refuse the repair over it.
+        if (row.target_date === today && imminentMinutes > 0) {
+          const times = await entry.client.itemStartTimes(ref).catch(() => null);
+          const now = new Date();
+          const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+          const soon = clips.find((c) => {
+            const at = Number(times?.[c.ref]?.start_time);
+            if (!Number.isFinite(at) || at < 0 || at >= 86_400) return false;
+            return at >= nowSec && at <= nowSec + imminentMinutes * 60;
+          });
+          if (soon) {
+            blocked.push(`${where(row)}: that clip starts within ${imminentMinutes} min`);
+            continue;
+          }
+        }
+        plans.push({ row, playlistName, ref, clips, how: 'patch' });
+        continue;
+      }
+
+      // The runtime moved, so the day has to be rebuilt rather than patched.
+      if (!repush) {
+        blocked.push(`${where(row)}: the runtime changed and automatic re-push is off`);
+        continue;
+      }
+      if (row.target_date === today) {
+        blocked.push(`${where(row)}: the runtime changed, and today's playlist is not rebuilt `
+          + 'automatically — push this day again when it is off air');
+        continue;
+      }
+      plans.push({ row, playlistName, ref, clips, how: 'repush' });
+    }
+
+    if (blocked.length) throw new Error(blocked.join('; '));
+
+    const todo = plans.filter((p) => p.how !== 'absent');
+    if (!todo.length) {
+      // Every exported day already moved on; commit and there is nothing to fix.
+      await commit();
+      return { days: plans.map(summarize), patched: 0, repushed: 0 };
+    }
+    onLog(`${todo.length} exported day(s) name the old path — `
+      + `${todo.filter((p) => p.how === 'patch').length} to re-point, `
+      + `${todo.filter((p) => p.how === 'repush').length} to push again`);
+
+    // ---- 2. COMMIT --------------------------------------------------------
+    const { rollback } = (await commit()) || {};
+
+    // ---- 3. FIX ------------------------------------------------------------
+    const done = [];
+    try {
+      for (const plan of todo) {
+        const entry = clients.get(plan.row.channel_id);
+        if (plan.how === 'patch') {
+          for (const clip of plan.clips) {
+            await entry.client.setClipUrl(plan.ref, clip.ref, newPath);
+            // Read it back: a server that accepted the PUT but kept the old
+            // value would otherwise look like a successful repair.
+            const back = await entry.client.getClip(plan.ref, clip.ref).catch(() => null);
+            if (back && !samePath(back.url, newPath)) {
+              throw new Error(`${plan.row.channel_name} ${plan.row.target_date}: OTAV kept `
+                + `"${back.url}" instead of the new path`);
+            }
+            done.push({ plan, clip });
+          }
+          onLog(`re-pointed ${plan.clips.length} clip(s) in "${plan.playlistName}"`);
+        } else {
+          const report = await pushDays([plan.row.target_date], NULL_PROGRESS, [plan.row.channel_id]);
+          const failed = (report[0]?.channels ?? []).filter((c) => !c.ok);
+          if (failed.length) {
+            throw new Error(`${plan.row.channel_name} ${plan.row.target_date}: `
+              + failed.map((c) => c.error).join('; '));
+          }
+          done.push({ plan });
+          onLog(`pushed "${plan.playlistName}" again (the runtime changed)`);
+        }
+      }
+    } catch (err) {
+      // The original file has not been archived yet, so every playlist still
+      // resolves — put back what this pass changed and let the caller keep the
+      // clip queued. A day that was re-pushed already names the new file and is
+      // correct as it stands, so only the url patches are undone.
+      for (const { plan, clip } of done.reverse()) {
+        if (!clip) continue;
+        await clients.get(plan.row.channel_id).client
+          .setClipUrl(plan.ref, clip.ref, oldPath).catch(() => {});
+      }
+      await rollback?.();
+      throw err;
+    }
+
+    return {
+      days: plans.map(summarize),
+      patched: todo.filter((p) => p.how === 'patch').reduce((n, p) => n + p.clips.length, 0),
+      repushed: todo.filter((p) => p.how === 'repush').length,
+    };
+  });
+}
+
+const summarize = (p) => ({
+  channel: p.row.channel_name,
+  date: p.row.target_date,
+  playlist: p.playlistName,
+  how: p.how,
+  clips: p.clips.length,
+});
 
 export { OtavClient };
