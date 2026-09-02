@@ -18,7 +18,7 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
 1. Scans mounted media directories (`ffmpeg`/`ffprobe`) to catalog video assets into SQLite.
 2. Auto-generates weekly draft schedules from fixed block templates using rule-based content selection (sequential series/lesson playback, cooldown-based random movie selection, latest-episode-first for Sunday TV blocks).
 3. Fits filler clips into each block via a "knapsack" pass targeting 0s overrun / max 5s underrun.
-4. Presents drafts in an admin review UI for manual reordering/swapping before approval.
+4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.
 5. Pushes approved schedules to 6 separate **Softron OnTheAir Video (OTAV)** instances over their REST APIs.
 
 ## Intended technology stack (per SEED.md)
