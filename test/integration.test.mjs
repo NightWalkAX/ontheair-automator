@@ -337,6 +337,88 @@ test('a re-scan skips clips that have not changed, and notices the ones that hav
   }
 });
 
+test('a media root that contains another root is refused', async () => {
+  // The incident this exists to prevent: "/Volumes/Public" was assigned as a
+  // root and pulled in 196,014 clips — Premiere projects, presets, b-roll, raw
+  // footage — against a broadcast library of about 5,000. Re-scanning cannot
+  // undo that; only deleting rows can, and deleting rows cascades away the
+  // PlayHistory that drives movie cooldown and series progression.
+  //
+  // Paths here are synthetic and under the configured mount point: the rule is
+  // pure path arithmetic and nothing touches the disk, which is the point —
+  // it has to fire before a scan is ever started.
+  const { loadConfig } = await import('../src/config.js');
+  const mount = loadConfig().smb.mountPoint.replace(/\/+$/, '');
+  const stMovies = db.prepare("SELECT id FROM ShowType WHERE code = 'movies'").get().id;
+  const tag = Date.now();
+
+  const ch = (await j('POST', '/api/channels', { name: `Root Guard ${tag}` })).data;
+  const parent = `${mount}/GuardShare${tag}`;
+  const child = `${parent}/Broadcast/Movies`;
+
+  // The narrow, correct root goes in first.
+  const ok = await j('POST', '/api/media/roots', {
+    channel_ids: [ch.id], show_type_id: stMovies, path: child,
+  });
+  assert.equal(ok.status, 201, JSON.stringify(ok.data));
+
+  // Now the mistake: a root that swallows it.
+  const rejected = await j('POST', '/api/media/roots', {
+    channel_ids: [ch.id], show_type_id: stMovies, path: parent,
+  });
+  assert.equal(rejected.status, 409, JSON.stringify(rejected.data));
+  assert.match(rejected.data.error, /contains 1 media root\(s\)/);
+  assert.match(rejected.data.error, /the whole share, not just the broadcast folders/);
+  assert.ok(rejected.data.error.includes(child), 'the error names the root in the way');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM MediaRoot WHERE path = ?').get(parent).n, 0,
+    'and nothing was written');
+
+  // A DEEPER folder is still allowed: it narrows the scan, and is how a
+  // subfolder gets its own show type ("Mathematics" + "Mathematics/Grade 1").
+  const deeper = await j('POST', '/api/media/roots', {
+    channel_ids: [ch.id], show_type_id: stMovies, path: `${child}/Franchises`,
+  });
+  assert.equal(deeper.status, 201, JSON.stringify(deeper.data));
+
+  // Another channel is unaffected — the rule is scoped to where the rows land.
+  const other = (await j('POST', '/api/channels', { name: `Root Guard Other ${tag}` })).data;
+  const elsewhere = await j('POST', '/api/media/roots', {
+    channel_ids: [other.id], show_type_id: stMovies, path: parent,
+  });
+  assert.equal(elsewhere.status, 201, 'a channel with nothing inside that path may use it');
+
+  // Editing a root UP the tree is the same mistake by another door.
+  const victim = db.prepare('SELECT id, path FROM MediaRoot WHERE channel_id = ? AND path = ?')
+    .get(ch.id, child);
+  const moved = await j('PUT', `/api/media/roots/${victim.id}`, { path: parent });
+  assert.equal(moved.status, 409, JSON.stringify(moved.data));
+  assert.equal(db.prepare('SELECT path FROM MediaRoot WHERE id = ?').get(victim.id).path, child,
+    'the root is unchanged after a refused edit');
+
+  // Re-saving a root unchanged still works even though a deeper root now sits
+  // under it: the rule is about widening, and this widens nothing. Without that
+  // carve-out the show type of "Mathematics" could never be edited again once
+  // "Mathematics/Grade 1" existed.
+  const noop = await j('PUT', `/api/media/roots/${victim.id}`,
+    { path: child, show_type_id: stMovies });
+  assert.equal(noop.status, 200, JSON.stringify(noop.data));
+
+  // Copying a donor root that swallows one the target already has is refused
+  // for the same reason — the widening arrives through a different route.
+  const target = (await j('POST', '/api/channels', { name: `Copy Target ${tag}` })).data;
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)')
+    .run(target.id, stMovies, child);
+  const copied = await j('POST', '/api/media/roots/copy', {
+    from_channel_id: other.id, to_channel_ids: [target.id],
+  });
+  assert.equal(copied.status, 409, JSON.stringify(copied.data));
+  assert.match(copied.data.error, /^copying "/);
+
+  for (const id of [ch.id, other.id, target.id]) {
+    db.prepare('DELETE FROM ChannelType WHERE id = ?').run(id);
+  }
+});
+
 test('a directory that links back into the tree does not inflate the scan', async () => {
   // The reported symptom: ~5k real clips announced as 196014 files to scan.
   // Over SMB a symlink on the server reaches the client as a real DIRECTORY, so

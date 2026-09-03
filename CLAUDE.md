@@ -43,6 +43,13 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
    histogram, what `ScheduleItem`/`PlayHistory` still reference, and how many distinct `dev:ino`
    the paths resolve to. That last ratio is what decides the repair — many paths per physical
    file is a de-duplication, all-ENOENT is a different problem — so run it before any cleanup.
+   **A media root may not CONTAIN another media root** (`containedRootsError()` in
+   `src/routes/media.js`, enforced on add, edit and copy, scoped per channel, HTTP 409). This is
+   the guard for the incident above: assigning `/Volumes/Public` as a root pulled the whole
+   production share into the catalogue. Adding a DEEPER root is still allowed — that is how a
+   subfolder gets its own show type (`Mathematics` alongside `Mathematics/Grade 1`), and it
+   narrows the scan. An edit that leaves the path and channel alone is not checked either, or the
+   show type of a parent root could never be changed again once a child existed.
    **Two different operations, don't conflate them:** `POST /api/media/scan` DISCOVERS new files
    and therefore has to `readdir` every folder under every media root — the whole share, whether
    or not any of it is catalogued. `POST /api/media/recheck` (`recheckCatalog()`, the "Re-check
