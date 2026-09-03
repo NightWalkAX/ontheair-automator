@@ -337,6 +337,47 @@ test('a re-scan skips clips that have not changed, and notices the ones that hav
   }
 });
 
+test('a directory that links back into the tree does not inflate the scan', async () => {
+  // The reported symptom: ~5k real clips announced as 196014 files to scan.
+  // Over SMB a symlink on the server reaches the client as a real DIRECTORY, so
+  // a link pointing back at an ancestor makes the walk re-enumerate the subtree
+  // once per level. A depth cap only bounds how bad it gets — one link inflates
+  // a folder ~24x and two multiply rather than add. Identity is the fix.
+  const { mkdirSync: mk, writeFileSync: wf, symlinkSync, rmSync } = await import('node:fs');
+  const loopRoot = mkdtempSync(join(tmpdir(), 'otav-loop-'));
+  try {
+    // A small real tree: 3 folders, 2 clips each.
+    for (const sub of ['a', 'b', 'c']) {
+      mk(join(loopRoot, sub), { recursive: true });
+      for (const n of [1, 2]) wf(join(loopRoot, sub, `clip_${sub}${n}_600.mov`), 'x');
+    }
+    // …and a link from deep inside back to the top. This is what the client
+    // sees as an ordinary directory when the share is mounted over SMB.
+    symlinkSync(loopRoot, join(loopRoot, 'a', 'back'));
+
+    const chId = (await j('GET', '/api/channels')).data[0].id;
+    const stLessons = db.prepare("SELECT id FROM ShowType WHERE code = 'lessons'").get().id;
+    const rootId = db.prepare(
+      'INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)',
+    ).run(chId, stLessons, loopRoot).lastInsertRowid;
+
+    try {
+      const r = await j('POST', `/api/media/roots/${rootId}/scan`);
+      assert.equal(r.status, 200, `${r.status}: ${JSON.stringify(r.data ?? r.body)}`);
+      // 6 clips exist. Without the identity check the walk would come back with
+      // many multiples of that, and every one of them would be ffprobed.
+      assert.equal(r.data.scanned, 6,
+        `the walk must report the 6 clips that exist, not ${r.data.scanned}`);
+      assert.equal(r.data.ingested, 6);
+    } finally {
+      db.prepare('DELETE FROM Resource WHERE file_path LIKE ?').run(`${loopRoot}%`);
+      db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(rootId);
+    }
+  } finally {
+    rmSync(loopRoot, { recursive: true, force: true });
+  }
+});
+
 test('re-check reads the catalogue, never the share, and reports what vanished', async () => {
   // The point of this operation: answer "are my clips still there and still the
   // length I recorded?" WITHOUT listing a single directory. The walk is what
