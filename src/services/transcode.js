@@ -613,11 +613,27 @@ function archivePathFor(canonicalPath) {
   return join(localizePath(archiveDir), canonicalPath.replace(/^\/+/, ''));
 }
 
+/**
+ * The encoder profile for a codec + pixel format.
+ *
+ * A profile is not a free choice: h264 "high" is 4:2:0 ONLY, so asking x264 for
+ * high with yuv422p fails outright ("high profile doesn't support 4:2:2"), and
+ * x265 has no profile called "high" at all. Both were reachable the moment the
+ * codec and pixel format became selectable in the tab, so the profile follows
+ * them rather than being pinned to what the default spec happened to use.
+ */
+function profileFor(vcodec, pixFmt) {
+  const is422 = String(pixFmt) === 'yuv422p';
+  if (vcodec === 'libx265') return is422 ? 'main422-8' : 'main';
+  return is422 ? 'high422' : 'high';
+}
+
 function videoArgsFor(target) {
   if (Array.isArray(target.videoArgs)) return target.videoArgs.map(String);
   const args = ['-c:v', target.vcodec];
   if (/^libx26[45]$/.test(target.vcodec)) {
-    args.push('-preset', target.preset, '-crf', String(target.crf), '-profile:v', 'high');
+    args.push('-preset', target.preset, '-crf', String(target.crf),
+      '-profile:v', profileFor(target.vcodec, target.pixFmt));
     // Closed short GOPs with no B-frames: OTAV cues and seeks on these, and
     // B-pyramids are where "starts a few frames late" comes from.
     args.push('-bf', '0', '-g', '60', '-keyint_min', '1', '-sc_threshold', '0');
