@@ -232,6 +232,14 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_resource_subject   ON Resource(channel_id, subject, chapter);
     CREATE INDEX IF NOT EXISTS idx_playhistory_lookup ON PlayHistory(channel_id, resource_id, played_at);
     CREATE INDEX IF NOT EXISTS idx_scheduleitem_block ON ScheduleItem(block_id, play_order);
+    -- ON DELETE CASCADE needs to find the referencing rows BY resource_id. The
+    -- two indexes above/below cannot serve that (one is keyed on block_id, the
+    -- other leads with channel_id), so without these SQLite full-scans both
+    -- tables once PER deleted Resource row — deleting a media root's worth of
+    -- rows then takes hours and cannot be interrupted, because node:sqlite is
+    -- synchronous and the signal handlers never get to run.
+    CREATE INDEX IF NOT EXISTS idx_scheduleitem_resource ON ScheduleItem(resource_id);
+    CREATE INDEX IF NOT EXISTS idx_playhistory_resource  ON PlayHistory(resource_id);
     CREATE INDEX IF NOT EXISTS idx_scheduledblock_date ON ScheduledBlock(target_date, status);
     CREATE INDEX IF NOT EXISTS idx_channelseries_order ON ChannelSeries(channel_id, play_order);
     CREATE INDEX IF NOT EXISTS idx_bts_template ON BlockTemplateSeries(template_id, play_order);
