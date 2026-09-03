@@ -213,6 +213,14 @@ started and left alone:
   because it also governs the Replace button on a single row. `loadConfig()` re-reads per call,
   so no restart is needed. `TRANSCODE_EXPORTED_MODE` still wins and greys the switch out.
   Retrying a `blocked` clip retries the SWAP, not the encode — the verified work file is kept.
+- **ffmpeg's progress stream lies.** Its first `-progress` block is all `N/A`, and `"N/A"` is
+  TRUTHY — so `a || b` picks it and `Number("N/A")` is NaN, which survives every `??` (NaN is
+  neither null nor undefined) and reaches SQLite, where **NaN is stored as NULL** and fails the
+  NOT NULL on `TranscodeItem.progress`, inside a stdout handler, as an uncaughtException that
+  kills the process mid-run. `parseProgressBlock()` is exported so that shape can be asserted
+  directly, `setItem()` coerces any non-finite number to null, and the progress write is wrapped
+  — a cosmetic update must never end a conversion. `test/fake-ffmpeg` emits the `N/A` block
+  precisely because a fake that skips it cannot catch this, and didn't.
 - **State survives everything.** The queue is in SQLite; `resetStaleRunning()` on startup
   re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
   panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.

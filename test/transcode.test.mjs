@@ -135,6 +135,53 @@ test('specReasons only flags what actually breaks playout', () => {
   }, target).includes('no_audio'));
 });
 
+test('every field of an ffmpeg progress block is a finite number or null', () => {
+  // The crash this pins: ffmpeg's first progress block is all "N/A", "N/A" is
+  // TRUTHY so `a || b` picks it, Number("N/A") is NaN, NaN survives `??`
+  // because it is neither null nor undefined, and SQLite stores NaN as NULL —
+  // failing the NOT NULL on TranscodeItem.progress inside a stdout handler,
+  // which escapes as an uncaughtException and kills the process mid-run.
+  const finiteOrNull = (v, what) => assert.ok(v === null || Number.isFinite(v),
+    `${what} must be a finite number or null, got ${v}`);
+
+  // The real first block.
+  const first = tx.parseProgressBlock(
+    { out_time_us: 'N/A', out_time_ms: 'N/A', speed: 'N/A', fps: 'N/A' }, 600,
+  );
+  for (const [k, v] of Object.entries(first)) finiteOrNull(v, k);
+  assert.equal(first.pct, null, 'nothing has been decoded, so there is no percentage');
+
+  // A normal block.
+  const mid = tx.parseProgressBlock(
+    { out_time_us: '150000000', speed: '2.5x', fps: '59.94' }, 600,
+  );
+  assert.equal(mid.seconds, 150);
+  assert.equal(mid.pct, 0.25);
+  assert.equal(mid.speed, 2.5);
+  assert.equal(mid.fps, 59.94);
+
+  // out_time_ms is the older field, and it is MILLIseconds — the previous code
+  // multiplied it by 1000 as if it were the microsecond one.
+  assert.equal(tx.parseProgressBlock({ out_time_ms: '150000' }, 600).seconds, 150);
+
+  // Everything that can make a NaN, and the edges around duration.
+  for (const [info, duration, label] of [
+    [{ out_time_us: '' }, 600, 'empty string'],
+    [{ out_time_us: 'garbage' }, 600, 'unparseable'],
+    [{ out_time_us: '150000000' }, 0, 'zero duration'],
+    [{ out_time_us: '150000000' }, null, 'unknown duration'],
+    [{ speed: '0x' }, 600, 'stalled at 0x'],
+  ]) {
+    const p = tx.parseProgressBlock(info, duration);
+    for (const [k, v] of Object.entries(p)) finiteOrNull(v, `${label}: ${k}`);
+  }
+
+  // A percentage never leaves [0, 0.999] — ffmpeg overshoots its own duration
+  // on some containers, and a progress bar past 100% is a bug report.
+  assert.equal(tx.parseProgressBlock({ out_time_us: '9999000000' }, 600).pct, 0.999);
+  assert.equal(tx.parseProgressBlock({ out_time_us: '-5000000' }, 600).pct, 0);
+});
+
 test('ffmpeg args carry the sync-critical flags', () => {
   const target = tx.transcodeConfig().target;
   const args = tx.buildFfmpegArgs('/in.avi', '/out.mov', target, { hasAudio: true }).join(' ');
