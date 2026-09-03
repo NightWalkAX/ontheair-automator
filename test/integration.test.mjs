@@ -337,6 +337,107 @@ test('a re-scan skips clips that have not changed, and notices the ones that hav
   }
 });
 
+test('re-check reads the catalogue, never the share, and reports what vanished', async () => {
+  // The point of this operation: answer "are my clips still there and still the
+  // length I recorded?" WITHOUT listing a single directory. The walk is what
+  // takes an age over SMB and what hangs when the mount goes away, and most of
+  // the NAS is not catalogued for any channel anyway.
+  //
+  // That "no listing" claim is proved the hard way rather than with a spy: the
+  // movies directory is set to --x (traversable, NOT listable) for part of this
+  // test. A readdir there fails with EACCES; a stat of a path already known
+  // succeeds, because traversal only needs +x. So a re-check that still works
+  // is a re-check that never listed anything.
+  const { utimesSync, unlinkSync, writeFileSync: wf, existsSync: ex, readFileSync: rf,
+    chmodSync, readdirSync } = await import('node:fs');
+  const chId = (await j('GET', '/api/channels')).data[0].id;
+  const moviesDir = join(mediaDir, 'movies');
+  const countFile = join(mediaDir, '..', 'recheck-probes.log');
+  const calls = () => (ex(countFile) ? rf(countFile, 'utf8').split('\n').filter(Boolean) : []);
+  const reset = () => { if (ex(countFile)) unlinkSync(countFile); };
+  const realProbe = process.env.FFPROBE_PATH;
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+  try {
+    process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe-counting');
+    process.env.FFPROBE_COUNT_FILE = countFile;
+
+    // 1. Nothing has changed: no probe at all, everything reused.
+    reset();
+    const clean = (await j('POST', '/api/media/recheck', { channel_id: chId })).data;
+    assert.ok(clean.checked > 0, 'it checked the catalogued clips');
+    assert.equal(clean.unchanged, clean.checked, 'all unchanged');
+    assert.equal(clean.probed, 0, 'nothing re-probed');
+    assert.equal(clean.missing.length, 0);
+    assert.equal(calls().length, 0, 'ffprobe must not run on an unchanged catalogue');
+
+    // 2. A duration that drifted is corrected, and every catalogue row for that
+    //    physical file gets the new value.
+    reset();
+    const touched = join(moviesDir, 'Zootopia_5400.mov');
+    const future = new Date(Date.now() + 120_000);
+    utimesSync(touched, future, future);
+    db.prepare('UPDATE Resource SET duration = 1 WHERE file_path = ?').run(touched);
+    const changed = (await j('POST', '/api/media/recheck', { channel_id: chId })).data;
+    assert.equal(changed.probed, 1, 'exactly the file whose mtime moved');
+    assert.equal(changed.updated, 1);
+    assert.deepEqual(calls(), [touched]);
+    assert.equal(db.prepare('SELECT duration FROM Resource WHERE file_path = ?').get(touched).duration,
+      5400, 'the corrected duration is written back');
+
+    // 3. A clip that vanished is REPORTED, never deleted — a block holding it
+    //    would fail on air, and a catalogue that silently shrinks is worse than
+    //    one that is wrong out loud.
+    reset();
+    const doomed = join(moviesDir, 'Robo_Dog_7_3000.mov');
+    const before = db.prepare('SELECT COUNT(*) AS n FROM Resource').get().n;
+    unlinkSync(doomed);
+    const gone = (await j('POST', '/api/media/recheck', { channel_id: chId })).data;
+    assert.equal(gone.missing.length, 1, 'the missing clip is found');
+    assert.equal(gone.missing[0].file, doomed);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM Resource').get().n, before,
+      'and nothing was deleted from the catalogue');
+    wf(doomed, 'x');
+
+    // 4. The real proof, on a directory that cannot be listed.
+    if (!isRoot) {
+      chmodSync(moviesDir, 0o100);   // --x : traversable, not listable
+      try {
+        assert.throws(() => readdirSync(moviesDir), /EACCES/,
+          'the directory really is unlistable for this check to mean anything');
+        reset();
+        const blind = (await j('POST', '/api/media/recheck', { channel_id: chId })).data;
+        assert.equal(blind.checked, clean.checked, 'every catalogued clip was still checked');
+        assert.equal(blind.missing.length, 0, 'and none of them looked missing');
+        assert.equal(blind.errors.length, 0, 'nor unreadable');
+
+        // The contrast: a root scan DOES need to list, so it finds nothing here.
+        const walked = (await j('POST', '/api/media/scan', { channel_id: chId })).data;
+        const moviesRoot = walked.results.find((r) => r.mediaRoot.path === moviesDir);
+        assert.equal(moviesRoot.scanned, 0,
+          'a root scan cannot see into a directory it may not list — which is the difference');
+      } finally {
+        chmodSync(moviesDir, 0o755);
+      }
+    }
+
+    // 5. force re-probes everything that is present.
+    reset();
+    const forced = (await j('POST', '/api/media/recheck', { channel_id: chId, force: true })).data;
+    assert.equal(forced.unchanged, 0, 'force reuses nothing');
+    assert.ok(forced.probed > 0, 'and it really probed');
+    assert.ok(calls().length > 0);
+  } finally {
+    try { (await import('node:fs')).chmodSync(join(mediaDir, 'movies'), 0o755); } catch { /* already */ }
+    process.env.FFPROBE_PATH = realProbe;
+    delete process.env.FFPROBE_COUNT_FILE;
+    reset();
+    // Re-align mtimes/durations so later tests see a consistent catalogue.
+    await j('POST', '/api/media/scan', { channel_id: chId, force: true });
+    db.exec('UPDATE Resource SET approved = 1');
+  }
+});
+
 test('mirror airings are read-only; primary edits + tolerance 409 guard', async () => {
   const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
   const primary = view.blocks.find((b) => b.target_date === '2026-07-20' && !b.is_mirror);

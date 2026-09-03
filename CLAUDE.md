@@ -25,6 +25,16 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
    rather than out of date. Rows are still BUILT for skipped files — franchise detection weighs
    a title against every other title in its folder, so omitting them would break saga grouping
    and series registration on every re-scan.
+   **Two different operations, don't conflate them:** `POST /api/media/scan` DISCOVERS new files
+   and therefore has to `readdir` every folder under every media root — the whole share, whether
+   or not any of it is catalogued. `POST /api/media/recheck` (`recheckCatalog()`, the "Re-check
+   catalogued clips" button) takes the file list from the DATABASE instead and performs **zero
+   directory listings**: per file a `stat`, then a probe only if mtime moved. It is the cheap
+   answer to "are my clips still there and still the length I recorded?", and the only thing
+   that reports a catalogued clip that has **vanished** — which is what makes a scheduled block
+   fail on air. Missing clips are reported, never deleted (a share hiccup must not shrink the
+   catalogue), and an unreadable file is reported separately from a missing one: "fix
+   permissions" and "somebody deleted a film" are different problems.
 2. Auto-generates weekly draft schedules from fixed block templates using rule-based content selection (sequential series/lesson playback, cooldown-based random movie selection, latest-episode-first for Sunday TV blocks).
 3. Fits filler clips into each block via a "knapsack" pass targeting 0s overrun / max 5s underrun.
 4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.

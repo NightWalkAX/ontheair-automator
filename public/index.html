@@ -71,7 +71,12 @@
       <button id="btnMount" class="ghost">🔌 Mount SMB share</button>
       <span id="mountStatus" class="mount-pill off">checking…</span>
       <span class="spacer"></span>
-      <button id="btnScanAll">🔍 Scan all roots (ffprobe)</button>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px;margin:0">
+        <span style="text-transform:none;letter-spacing:0">Channel</span>
+        <select id="recheckChannel" style="width:auto"></select>
+      </label>
+      <button id="btnRecheck" title="Check only the clips already catalogued — reads the file list from the database, no directory listing of the share">✅ Re-check catalogued clips</button>
+      <button id="btnScanAll" class="ghost" title="Walk every media root looking for NEW files. This lists the whole share and is slow.">🔍 Scan roots for new files</button>
     </div>
 
     <div class="split">

@@ -457,6 +457,125 @@ export async function scanMediaRoot(mediaRoot, { force = false } = {}) {
 }
 
 /**
+ * Re-check the clips ALREADY catalogued for a channel, without walking the NAS.
+ *
+ * scanMediaRoot() exists to DISCOVER files, so it has to readdir every folder
+ * under every media root — the whole share, whether or not any of it is
+ * catalogued. That is the right operation when new content has been dropped in,
+ * and the wrong one when the question is "are the clips I already have still
+ * correct?": the walk is the part that takes an age over SMB and the part that
+ * hangs when the mount goes away.
+ *
+ * This takes the file list from the DATABASE instead — one query, zero
+ * directory listings — and per file does the cheap thing first:
+ *
+ *   gone      the row points at a file that is not there any more. REPORTED,
+ *             never deleted: a clip that vanished may be a share hiccup, and a
+ *             catalogue that silently shrinks is worse than one that is wrong
+ *             out loud. It is what makes a scheduled block fail on air, so it
+ *             is the headline number.
+ *   unchanged mtime still matches the stored added_at -> nothing to do.
+ *   changed   mtime moved -> re-probe and update duration + added_at.
+ *
+ * `force` re-probes every present file regardless of mtime.
+ *
+ * Distinct PHYSICAL files are probed once even when several channels catalogue
+ * the same path, and every row for that path is updated together.
+ */
+export async function recheckCatalog({ channelId = null, force = false } = {}) {
+  const l = log('recheck');
+  const files = db.prepare(`
+    SELECT file_path,
+           MIN(duration) AS duration,
+           MIN(added_at) AS added_at,
+           COUNT(*)      AS rows_for_path
+    FROM Resource
+    ${channelId ? 'WHERE channel_id = ?' : ''}
+    GROUP BY file_path
+    ORDER BY file_path
+  `).all(...(channelId ? [channelId] : []));
+
+  l.info(`re-checking ${files.length} catalogued file(s)`
+    + `${channelId ? ` for channel ${channelId}` : ' across every channel'}`
+    + `${force ? ' · FORCED: re-probing everything' : ''} · no directory walk`);
+
+  const progress = progressLogger('recheck', files.length, { stepWarnMs: 20_000 });
+  progress.start(channelId ? `channel ${channelId}` : 'every channel');
+
+  const updateDuration = db.prepare(
+    'UPDATE Resource SET duration = ?, added_at = ? WHERE file_path = ?',
+  );
+
+  const missing = [];
+  const errors = [];
+  let unchanged = 0;
+  let probed = 0;
+  let updated = 0;
+
+  for (const row of files) {
+    const stepStart = Date.now();
+    const localFile = localizePath(row.file_path);
+    try {
+      let info;
+      try {
+        info = await stat(localFile);
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          missing.push({ file: row.file_path, rows: row.rows_for_path });
+          l.warn(`MISSING on disk (still catalogued): ${row.file_path}`);
+        } else {
+          // EACCES, or the mount having gone away — not the same thing as gone,
+          // and saying so is the difference between "fix permissions" and
+          // "somebody deleted a film".
+          errors.push({ file: row.file_path, error: `${err.code || ''} ${err.message}`.trim() });
+          l.warn(`unreadable (NOT treated as missing): ${row.file_path} — ${err.code || err.message}`);
+        }
+        progress.step(basename(row.file_path), Date.now() - stepStart);
+        continue;
+      }
+
+      const mtime = info.mtime.toISOString();
+      if (!force && row.added_at === mtime && row.duration > 0) {
+        unchanged++;
+        progress.step(basename(row.file_path), Date.now() - stepStart);
+        continue;
+      }
+
+      const duration = await probeDuration(localFile);
+      probed++;
+      if (duration == null) {
+        errors.push({ file: row.file_path, error: 'no duration from ffprobe' });
+        l.warn(`probe returned no duration: ${row.file_path}`);
+        progress.step(basename(row.file_path), Date.now() - stepStart);
+        continue;
+      }
+      if (duration !== row.duration || mtime !== row.added_at) {
+        updateDuration.run(duration, mtime, row.file_path);
+        updated++;
+        if (duration !== row.duration) {
+          l.info(`duration changed: ${row.file_path} ${row.duration}s -> ${duration}s`
+            + ` (${row.rows_for_path} catalogue row(s) updated)`);
+        }
+      }
+    } catch (err) {
+      errors.push({ file: row.file_path, error: String(err.message || err) });
+      l.warn(`re-check failed: ${row.file_path} — ${err.message || err}`);
+    }
+    progress.step(basename(row.file_path), Date.now() - stepStart);
+  }
+
+  progress.done(`${unchanged} unchanged, ${probed} probed, ${updated} updated, `
+    + `${missing.length} missing, ${errors.length} error(s)`);
+  if (missing.length) {
+    l.warn(`${missing.length} catalogued clip(s) are no longer on disk — a block holding one of `
+      + 'these will fail on air. Nothing was deleted; review them in the Catalog Editor.');
+  }
+  return {
+    checked: files.length, unchanged, probed, updated, missing, errors,
+  };
+}
+
+/**
  * Scan every MediaRoot (optionally filtered to one channel).
  * `force` re-probes files that are already catalogued and unchanged.
  */
