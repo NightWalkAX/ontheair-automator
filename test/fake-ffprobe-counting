@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fake-ffprobe that also records that it RAN. Set FFPROBE_COUNT_FILE and every
+# invocation appends the file it was asked about, so a test can prove a scan
+# skipped the probe rather than trusting the count the scan reports about itself.
+file="${@: -1}"
+if [ -n "$FFPROBE_COUNT_FILE" ]; then printf '%s\n' "$file" >> "$FFPROBE_COUNT_FILE"; fi
+base="$(basename "$file")"
+num="$(printf '%s' "$base" | grep -oE '[0-9]+' | tail -1)"
+echo "${num:-60}"

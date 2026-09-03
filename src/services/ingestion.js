@@ -330,7 +330,27 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
  * are registered in ChannelSeries.
  * Returns { scanned, ingested, errors }.
  */
-export async function scanMediaRoot(mediaRoot) {
+/**
+ * Ingest one media root.
+ *
+ * `force` re-probes every file. Without it, a file whose path is already
+ * catalogued for this channel AND whose mtime still matches what was recorded
+ * reuses its stored duration instead of paying for another ffprobe. That is the
+ * whole cost of a re-scan: the directory walk is seconds, the probe is one
+ * process spawn and a container read per file over SMB, thousands of times.
+ *
+ * mtime is the right key because it is what this function already stores in
+ * `added_at`, and because the two ways a file's duration can change both move
+ * it: an operator replacing the file, and Air Spec swapping in a converted one
+ * (which also lands at a new path). Any mismatch — a different clock, a format
+ * this build did not write, a missing duration — falls through to a probe, so
+ * the failure mode is "slower", never "stale".
+ *
+ * Rows are still BUILT for skipped files: franchise detection weighs a title
+ * against every other title in the folder, so leaving them out would break
+ * saga grouping and series registration on every re-scan.
+ */
+export async function scanMediaRoot(mediaRoot, { force = false } = {}) {
   const showType = db.prepare('SELECT code, is_filler FROM ShowType WHERE id = ?').get(mediaRoot.show_type_id);
   const typeIsFiller = showType?.is_filler ? 1 : 0;
   const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
@@ -350,6 +370,17 @@ export async function scanMediaRoot(mediaRoot) {
   const progress = progressLogger('scan', files.length, { stepWarnMs: 20_000 });
   progress.start(mediaRoot.path);
 
+  // What this channel already knows, so an unchanged file costs a stat instead
+  // of an ffprobe. One query beats one lookup per file.
+  const cataloged = new Map();
+  if (!force) {
+    for (const r of db.prepare(
+      'SELECT file_path, duration, added_at FROM Resource WHERE channel_id = ?',
+    ).all(mediaRoot.channel_id)) cataloged.set(r.file_path, r);
+  }
+  let probed = 0;
+  let reused = 0;
+
   // Probe first, upsert after. Franchise detection needs to weigh a title against
   // every OTHER title in the folder (a lone "Big_Hero_6" is not a sequel, two
   // "Angry_Birds_N" are), so the rows are staged before any of them is written.
@@ -358,17 +389,28 @@ export async function scanMediaRoot(mediaRoot) {
     const file = delocalizePath(localFile);
     const stepStart = Date.now();
     try {
-      const duration = await probeDuration(localFile);
-      if (duration == null) {
-        errors.push({ file, error: 'no duration from ffprobe' });
-        progress.step(basename(file), Date.now() - stepStart);
-        continue;
+      // stat comes first: its mtime is both what gets stored and what decides
+      // whether the probe can be skipped.
+      const info = await stat(localFile);
+      const mtime = info.mtime.toISOString();
+      const known = cataloged.get(file);
+      let duration;
+      if (known && known.added_at === mtime && known.duration > 0) {
+        duration = known.duration;
+        reused++;
+      } else {
+        duration = await probeDuration(localFile);
+        probed++;
+        if (duration == null) {
+          errors.push({ file, error: 'no duration from ffprobe' });
+          progress.step(basename(file), Date.now() - stepStart);
+          continue;
+        }
       }
       // Filler if the root's show type is the Fillers type, OR the clip sits in a
       // "Filler(s)" folder — any length (the operator explicitly organizes these
       // as fillers, so no duration cap).
       const isFiller = typeIsFiller || (looksLikeFillerFolder(file) ? 1 : 0);
-      const info = await stat(localFile);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
       const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file);
       rows.push({
@@ -382,7 +424,7 @@ export async function scanMediaRoot(mediaRoot) {
         audience_rating: null,
         channel_id: mediaRoot.channel_id,
         show_type_id: mediaRoot.show_type_id,
-        added_at: info.mtime.toISOString(),
+        added_at: mtime,
       });
     } catch (err) {
       errors.push({ file, error: String(err.message || err) });
@@ -390,7 +432,7 @@ export async function scanMediaRoot(mediaRoot) {
     }
     progress.step(basename(file), Date.now() - stepStart);
   }
-  progress.done(`${errors.length} error(s)`);
+  progress.done(`${probed} probed, ${reused} unchanged (probe skipped), ${errors.length} error(s)`);
 
   let sagaSubjects = null;
   if (SAGA_CODES.has(showType?.code)) {
@@ -411,28 +453,34 @@ export async function scanMediaRoot(mediaRoot) {
   registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault, sagaSubjects);
   l.info(`root ${mediaRoot.path} done · ${ingested} row(s) written in `
     + `${Math.round((Date.now() - writeStart) / 1000)}s · ${subjects.size} subject(s) · ${errors.length} error(s)`);
-  return { scanned: files.length, ingested, errors };
+  return { scanned: files.length, ingested, probed, reused, errors };
 }
 
-/** Scan every MediaRoot (optionally filtered to one channel). */
-export async function scanAll({ channelId } = {}) {
+/**
+ * Scan every MediaRoot (optionally filtered to one channel).
+ * `force` re-probes files that are already catalogued and unchanged.
+ */
+export async function scanAll({ channelId, force = false } = {}) {
   const rows = channelId
     ? db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(channelId)
     : db.prepare('SELECT * FROM MediaRoot').all();
 
   const l = log('scan');
-  l.info(`scanAll · ${rows.length} media root(s)${channelId ? ` for channel ${channelId}` : ''}`);
+  l.info(`scanAll · ${rows.length} media root(s)${channelId ? ` for channel ${channelId}` : ''}`
+    + `${force ? ' · FORCED: re-probing everything' : ''}`);
   const results = [];
   for (const root of rows) {
     try {
-      results.push({ mediaRoot: root, ...(await scanMediaRoot(root)) });
+      results.push({ mediaRoot: root, ...(await scanMediaRoot(root, { force })) });
     } catch (err) {
       // One unreachable root must not lose the roots already scanned, and the
       // reason has to survive in the log even if nobody is watching the request.
       l.error(`root ${root.path} FAILED`, err);
-      results.push({ mediaRoot: root, scanned: 0, ingested: 0, errors: [{ file: root.path, error: String(err.message || err) }] });
+      results.push({ mediaRoot: root, scanned: 0, ingested: 0, probed: 0, reused: 0, errors: [{ file: root.path, error: String(err.message || err) }] });
     }
   }
-  l.info(`scanAll done · ${results.reduce((n, r) => n + r.ingested, 0)} row(s) across ${rows.length} root(s)`);
+  const sum = (k) => results.reduce((n, r) => n + (r[k] || 0), 0);
+  l.info(`scanAll done · ${sum('ingested')} row(s) across ${rows.length} root(s) · `
+    + `${sum('probed')} probed, ${sum('reused')} unchanged`);
   return results;
 }
