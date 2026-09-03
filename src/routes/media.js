@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { db } from '../db.js';
 import { loadConfig, localizePath } from '../config.js';
 import { mountShare, isMounted } from '../services/smbMount.js';
-import { scanAll, scanMediaRoot, cloneScannedResources } from '../services/ingestion.js';
+import { scanAll, scanMediaRoot, recheckCatalog, cloneScannedResources } from '../services/ingestion.js';
 
 /** Query/body flags arrive as "1", "true" or a real boolean. */
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -199,6 +199,28 @@ router.post('/scan', async (req, res) => {
     const force = truthy(req.body?.force ?? req.query.force);
     const results = await scanAll({ channelId, force });
     res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// POST /api/media/recheck  { channel_id?, force? }
+//
+// Re-check ONLY the clips already catalogued, taking the file list from the
+// database instead of walking the share. Use this to answer "are my clips still
+// there and still the length I recorded?" — /scan is for discovering new
+// content and has to readdir the whole NAS to do it.
+//
+// Nothing is ever deleted: a clip that has vanished is reported so the operator
+// can act on it, because a block holding a missing file fails on air.
+router.post('/recheck', async (req, res) => {
+  try {
+    const channelId = req.body?.channel_id ?? req.query.channel_id;
+    const result = await recheckCatalog({
+      channelId: channelId ? Number(channelId) : null,
+      force: truthy(req.body?.force ?? req.query.force),
+    });
+    res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }

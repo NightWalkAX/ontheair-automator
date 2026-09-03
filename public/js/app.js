@@ -973,6 +973,14 @@ async function loadMediaTab() {
     // Check-media channel filter.
     const filt = $('#mediaChannelFilter'); filt.innerHTML = '';
     for (const c of mediaChannels) filt.append(el('option', { value: c.id, textContent: c.name }));
+    // Re-check scope. "" = every channel, which is the honest default: the
+    // catalogue is shared, and a clip several channels air is one physical file.
+    const rc = $('#recheckChannel');
+    const keep = rc.value;
+    rc.innerHTML = '';
+    rc.append(el('option', { value: '', textContent: 'every channel' }));
+    for (const c of mediaChannels) rc.append(el('option', { value: String(c.id), textContent: c.name }));
+    if (keep && [...rc.options].some((o) => o.value === keep)) rc.value = keep;
     await browse(st.mountPoint);
     await loadRoots();
     await loadResources();
@@ -1047,7 +1055,29 @@ $('#btnMount').addEventListener('click', (e) => withBusy(e.currentTarget, async 
 $('#btnScanAll').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const r = await api.send('POST', '/api/media/scan');
   const total = r.results.reduce((s, x) => s + x.ingested, 0);
-  toast(`Ingested ${total} resource(s) across ${r.results.length} root(s)`, 'ok', 'Scan complete');
+  const reused = r.results.reduce((s, x) => s + (x.reused || 0), 0);
+  toast(`Ingested ${total} resource(s) across ${r.results.length} root(s)`
+    + (reused ? ` · ${reused} unchanged, probe skipped` : ''), 'ok', 'Scan complete');
+}));
+
+// Re-check what is already catalogued. Separate from the root scan on purpose:
+// this one never lists a directory, so it is the cheap answer to "are my clips
+// still there and still the length I recorded?" — and the only thing that finds
+// a clip that has vanished, which is what makes a block fail on air.
+$('#btnRecheck').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const channel = $('#recheckChannel').value;
+  const r = await api.send('POST', '/api/media/recheck', channel ? { channel_id: Number(channel) } : {});
+  const parts = [`${r.checked} clip(s) checked`];
+  if (r.unchanged) parts.push(`${r.unchanged} unchanged`);
+  if (r.updated) parts.push(`${r.updated} duration(s) corrected`);
+  if (r.errors.length) parts.push(`${r.errors.length} unreadable`);
+  if (r.missing.length) {
+    toast(`${r.missing.length} catalogued clip(s) are NOT on disk any more — a block holding one `
+      + `will fail on air. Nothing was deleted. First: ${r.missing[0].file}`,
+    'bad', 'Missing media');
+  }
+  toast(parts.join(' · '), r.missing.length ? 'info' : 'ok', 'Re-check complete');
+  if (r.missing.length || r.updated) await loadMediaTab().catch(() => {});
 }));
 $('#btnAssignRoot').addEventListener('click', (e) => {
   const folder = selectedFolder || browsePath;
