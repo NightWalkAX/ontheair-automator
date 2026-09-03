@@ -15,7 +15,16 @@ When asked to start implementing, scaffold the project according to the stack an
 
 An internal, on-premise TV broadcast scheduler for a government network. It:
 
-1. Scans mounted media directories (`ffmpeg`/`ffprobe`) to catalog video assets into SQLite.
+1. Scans mounted media directories (`ffmpeg`/`ffprobe`) to catalog video assets into SQLite. A
+   re-scan is **incremental**: a file already catalogued for that channel whose mtime still
+   matches its stored `added_at` reuses its duration instead of paying for another ffprobe (one
+   process spawn plus a container read over SMB, per file — that is the entire cost of a scan).
+   Any mismatch falls through to a probe, so the failure mode is "slower", never "stale"; the two
+   ways a duration can change (an operator replacing the file, Air Spec swapping in a conversion)
+   both move mtime. `force` re-probes everything, for when the catalogue is suspected wrong
+   rather than out of date. Rows are still BUILT for skipped files — franchise detection weighs
+   a title against every other title in its folder, so omitting them would break saga grouping
+   and series registration on every re-scan.
 2. Auto-generates weekly draft schedules from fixed block templates using rule-based content selection (sequential series/lesson playback, cooldown-based random movie selection, latest-episode-first for Sunday TV blocks).
 3. Fits filler clips into each block via a "knapsack" pass targeting 0s overrun / max 5s underrun.
 4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.

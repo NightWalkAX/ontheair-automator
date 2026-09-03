@@ -281,6 +281,62 @@ test('the week list summarises every block exactly as opening it would', async (
   }
 });
 
+test('a re-scan skips clips that have not changed, and notices the ones that have', async () => {
+  // A re-scan used to cost exactly as much as the first one: an ffprobe process
+  // per file over the share, thousands of times, for a catalogue that had not
+  // moved. The probe is counted here by an ffprobe that records every call, so
+  // this proves the work was skipped rather than trusting the scan's own tally.
+  const { utimesSync, readFileSync: rf, existsSync: ex, unlinkSync: rm } = await import('node:fs');
+  const countFile = join(mediaDir, '..', 'probe-calls.log');
+  const realProbe = process.env.FFPROBE_PATH;
+  process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe-counting');
+  process.env.FFPROBE_COUNT_FILE = countFile;
+  const calls = () => (ex(countFile) ? rf(countFile, 'utf8').split('\n').filter(Boolean) : []);
+  const reset = () => { if (ex(countFile)) rm(countFile); };
+  const chId = (await j('GET', '/api/channels')).data[0].id;
+
+  try {
+    // Everything is already catalogued from the scan at the top of this file,
+    // and nothing has been touched since.
+    reset();
+    const again = (await j('POST', '/api/media/scan', { channel_id: chId })).data;
+    const total = again.results.reduce((n, r) => n + r.scanned, 0);
+    const reused = again.results.reduce((n, r) => n + r.reused, 0);
+    const probed = again.results.reduce((n, r) => n + r.probed, 0);
+    assert.ok(total > 0, 'the tree still has files');
+    assert.equal(reused, total, 'every unchanged file must be reused');
+    assert.equal(probed, 0, 'and none of them re-probed');
+    assert.equal(calls().length, 0, 'ffprobe must not have run at all');
+
+    // Rows are still BUILT for skipped files, or saga grouping and series
+    // registration would come apart on every re-scan.
+    assert.ok(again.results.every((r) => r.ingested === r.scanned),
+      'a skipped probe still writes its row');
+
+    // Touch one file: a new mtime is how both an operator swapping a file and
+    // Air Spec swapping in a conversion announce themselves.
+    reset();
+    const touched = join(mediaDir, 'movies', 'Zootopia_5400.mov');
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(touched, future, future);
+    const after = (await j('POST', '/api/media/scan', { channel_id: chId })).data;
+    assert.equal(after.results.reduce((n, r) => n + r.probed, 0), 1, 'exactly the changed file');
+    assert.deepEqual(calls(), [touched], 'and ffprobe ran on exactly that file');
+
+    // force re-probes the lot, for when the catalogue is suspected wrong rather
+    // than merely out of date.
+    reset();
+    const forced = (await j('POST', '/api/media/scan', { channel_id: chId, force: true })).data;
+    assert.equal(forced.results.reduce((n, r) => n + r.reused, 0), 0, 'force reuses nothing');
+    assert.equal(forced.results.reduce((n, r) => n + r.probed, 0), total, 'force probes everything');
+    assert.equal(calls().length, total, 'and ffprobe really ran that many times');
+  } finally {
+    process.env.FFPROBE_PATH = realProbe;
+    delete process.env.FFPROBE_COUNT_FILE;
+    reset();
+  }
+});
+
 test('mirror airings are read-only; primary edits + tolerance 409 guard', async () => {
   const view = (await j('GET', '/api/blocks?week=2026-07-20')).data;
   const primary = view.blocks.find((b) => b.target_date === '2026-07-20' && !b.is_mirror);

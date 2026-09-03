@@ -9,6 +9,9 @@ import { loadConfig, localizePath } from '../config.js';
 import { mountShare, isMounted } from '../services/smbMount.js';
 import { scanAll, scanMediaRoot, cloneScannedResources } from '../services/ingestion.js';
 
+/** Query/body flags arrive as "1", "true" or a real boolean. */
+const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
+
 export const router = Router();
 
 // Guard: only allow browsing within the configured SMB mount point, so this
@@ -186,11 +189,15 @@ router.delete('/roots/:id', (req, res) => {
   res.json({ ok: true, deletedResources: info.changes });
 });
 
-// POST /api/media/scan  { channel_id? }  — run ffprobe ingestion.
+// POST /api/media/scan  { channel_id?, force? }  — run ffprobe ingestion.
+// A file already catalogued whose mtime has not moved reuses its stored
+// duration; `force` (body or ?force=1) re-probes the whole tree, for when the
+// catalogue is suspected wrong rather than merely out of date.
 router.post('/scan', async (req, res) => {
   try {
     const channelId = req.body?.channel_id ? Number(req.body.channel_id) : undefined;
-    const results = await scanAll({ channelId });
+    const force = truthy(req.body?.force ?? req.query.force);
+    const results = await scanAll({ channelId, force });
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -202,7 +209,7 @@ router.post('/roots/:id/scan', async (req, res) => {
   const root = db.prepare('SELECT * FROM MediaRoot WHERE id = ?').get(Number(req.params.id));
   if (!root) return res.status(404).json({ error: 'MediaRoot not found' });
   try {
-    const result = await scanMediaRoot(root);
+    const result = await scanMediaRoot(root, { force: truthy(req.body?.force ?? req.query.force) });
     res.json({ ok: true, mediaRoot: root, ...result });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
