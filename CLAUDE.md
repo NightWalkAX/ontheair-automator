@@ -29,6 +29,22 @@ Portable, non-containerized, **macOS-native** app — the whole project folder (
 - **Frontend:** Plain HTML, CSS, and vanilla JavaScript — no framework, no bundler. Served as static files by the backend.
 - **Backend:** Node.js (Express/Fastify) or Python (FastAPI) — serves the static frontend, handles API routes, SQLite access, the cron scheduling engine, and HTTP calls out to OTAV.
 - **Database:** SQLite, single file (`./data/scheduler.sqlite`) inside the project folder so it travels with the app on USB. Enable `PRAGMA foreign_keys = ON`.
+- **Logging:** `src/logger.js` → `data/logs/automator.log` (rotates at 8MB, keeps 5). `server.js`
+  is a deliberately tiny bootstrap that installs logging and then `await import('./src/app.js')`
+  — ESM hoists static imports, so anything imported directly by the entrypoint would evaluate
+  BEFORE logging existed, and a module that throws while initialising (unreadable config, locked
+  SQLite, port taken) is exactly the crash that used to leave no evidence. Don't move app setup
+  back into `server.js`. Lines are written with `writeSync` on an append fd, not through a
+  stream, so a crash cannot discard the last thing that happened; `uncaughtException`,
+  `unhandledRejection`, node warnings, signals and non-zero exits are all recorded. A
+  blocked-event-loop watchdog logs any synchronous stall over 2s — that is what "the whole app
+  froze" looks like, and no request log shows it. `GET /api/log?lines=N` tails it from the
+  browser (reaching into the rotated files, since rotation happens on the write that crosses the
+  limit and leaves the live file briefly empty). `progressLogger()` is what long loops report
+  through: rate, ETA and RSS every 15s plus a warning for any single step over 20s, which is how
+  a stalled SMB read shows itself. **`SCHEDULER_LOG_DIR` isolates it for tests** the way
+  `SCHEDULER_DB` does the database — the npm scripts set both; without it a test run writes into
+  the operator's `data/`.
 - **Settings:** `config/config.json`, re-read on every `loadConfig()` call (no restart to pick up an edit) and written back by `updateConfig()` for the handful of settings the UI can change. `SCHEDULER_CONFIG` points both at a throwaway copy, the way `SCHEDULER_DB` does for the database — **any test that can write config must set it**, or it edits the operator's own.
 - **Ingestion worker:** runs in the same process (or a child process), uses `ffmpeg`/`ffprobe` (installed via Homebrew on the Mac) against local/mounted media folders to extract duration/metadata. Media root paths should be configurable per `ShowType`, not hardcoded.
 
