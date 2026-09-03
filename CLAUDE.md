@@ -35,6 +35,14 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
    followed (that is what SMB already does, and skipping them locally made linked folders
    silently invisible); it is only safe because of the identity check. `MAX_WALK_DEPTH` stays as
    a backstop for a filesystem with no stable inodes.
+   **A number far bigger than the library means the bloat is already in the DB.** Air Spec's
+   "clips this run" is `catalogFiles()` — `Resource` grouped by `file_path` — not a walk. A scan
+   that ran BEFORE the walk was cycle-safe persisted a row per enumerated path, so the same clip
+   sits under thousands of looped paths. `scripts/cleanup/09-diagnose-catalog-bloat.js` (writes
+   nothing) reports it: distinct paths, which paths repeat a directory segment, the path-depth
+   histogram, what `ScheduleItem`/`PlayHistory` still reference, and how many distinct `dev:ino`
+   the paths resolve to. That last ratio is what decides the repair — many paths per physical
+   file is a de-duplication, all-ENOENT is a different problem — so run it before any cleanup.
    **Two different operations, don't conflate them:** `POST /api/media/scan` DISCOVERS new files
    and therefore has to `readdir` every folder under every media root — the whole share, whether
    or not any of it is catalogued. `POST /api/media/recheck` (`recheckCatalog()`, the "Re-check
