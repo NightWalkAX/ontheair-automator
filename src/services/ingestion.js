@@ -163,17 +163,59 @@ async function probeDuration(filePath) {
 /**
  * Recursively collect video file paths under a directory.
  *
- * Instrumented because this is half the wall clock of a scan and none of it
- * used to be visible: a share that stalls mid-walk, or a directory nobody can
- * read, looked identical to "still working". `depth` also stops a symlink or
- * mount loop from walking forever instead of hanging the scan.
+ * Cycle-safe by IDENTITY, not by depth. Over SMB a symlink on the server can
+ * reach the client as a real DIRECTORY (Samba's `follow symlinks` / `wide
+ * links`), so `entry.isDirectory()` is true and a link pointing back at an
+ * ancestor turns the walk into A/B/A/B/… Bounding the depth only bounds how bad
+ * that gets: every level re-enumerates the whole subtree, so one link inflates
+ * a folder ~24x and two links multiply rather than add. That is how ~5k real
+ * clips get reported as 196014 files to scan.
+ *
+ * So each directory's dev:ino is recorded and never walked twice, whatever path
+ * led to it. Files are de-duplicated the same way, so a clip reachable by two
+ * paths is probed once. The depth cap stays as a backstop for a filesystem that
+ * cannot give stable inodes.
  */
-async function collectVideoFiles(dir, acc = [], depth = 0, stats = null) {
-  const walk = stats || { dirs: 0, unreadable: 0, startedAt: Date.now(), reported: 0, root: dir };
+/** Does this path resolve to a directory? (Follows links; false if unreadable.) */
+async function isDirectory(path) {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;   // dangling link, or no permission — nothing to walk
+  }
+}
+
+async function collectVideoFiles(dir, acc = null, depth = 0, stats = null) {
+  const walk = stats || {
+    dirs: 0, unreadable: 0, loops: 0, startedAt: Date.now(), reported: 0, root: dir,
+    seenDirs: new Set(), seenFiles: new Set(), files: [],
+  };
+  const out = acc || walk.files;
+
   if (depth > MAX_WALK_DEPTH) {
     log('scan').warn(`stopped at depth ${depth}: ${dir} (symlink or mount loop?)`);
-    return acc;
+    return out;
   }
+
+  // Identity first: if this directory has already been walked under another
+  // name, everything below it is already in `out`.
+  let dirInfo = null;
+  try {
+    dirInfo = await stat(dir);
+  } catch (err) {
+    walk.unreadable++;
+    log('scan').warn(`unreadable directory (skipped): ${dir} — ${err.code || err.message}`);
+    return out;
+  }
+  const dirKey = `${dirInfo.dev}:${dirInfo.ino}`;
+  if (dirInfo.ino && walk.seenDirs.has(dirKey)) {
+    walk.loops++;
+    log('scan').warn(`already walked this directory under another path, skipping: ${dir} `
+      + '(a symlink or bind mount points back into the tree)');
+    return out;
+  }
+  if (dirInfo.ino) walk.seenDirs.add(dirKey);
+
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -181,26 +223,50 @@ async function collectVideoFiles(dir, acc = [], depth = 0, stats = null) {
     walk.unreadable++;
     // Silent skips are how a whole channel quietly comes back empty.
     log('scan').warn(`unreadable directory (skipped): ${dir} — ${err.code || err.message}`);
-    return acc;
+    return out;
   }
   walk.dirs++;
   if (Date.now() - walk.reported > 15_000) {
     walk.reported = Date.now();
-    log('scan').info(`walking · ${walk.dirs} dir(s), ${acc.length} file(s) so far · at ${dir}`);
+    log('scan').info(`walking · ${walk.dirs} dir(s), ${out.length} file(s) so far`
+      + `${walk.loops ? `, ${walk.loops} loop(s) skipped` : ''} · at ${dir}`);
   }
+
   for (const entry of entries) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await collectVideoFiles(full, acc, depth + 1, walk);
+    // A symlinked folder is followed too. Over SMB the server resolves it and
+    // readdir already calls it a directory, so the client cannot tell the
+    // difference — treating it as one locally makes the two consistent, and
+    // stops a linked folder on a Mac share from being silently invisible. It is
+    // only safe because of the identity check above.
+    const isDir = entry.isDirectory()
+      || (entry.isSymbolicLink() && await isDirectory(full));
+    if (isDir) {
+      await collectVideoFiles(full, out, depth + 1, walk);
     } else if (VIDEO_EXTS.has(extname(entry.name).toLowerCase())) {
-      acc.push(full);
+      // Same identity rule for files: a clip reachable by two paths is one clip.
+      try {
+        const fi = await stat(full);
+        const key = `${fi.dev}:${fi.ino}`;
+        if (fi.ino && walk.seenFiles.has(key)) continue;
+        if (fi.ino) walk.seenFiles.add(key);
+      } catch { /* fall through and let the probe report it */ }
+      out.push(full);
     }
   }
+
   if (depth === 0) {
     log('scan').info(`walked ${walk.dirs} dir(s) in ${Math.round((Date.now() - walk.startedAt) / 1000)}s: `
-      + `${acc.length} video file(s)${walk.unreadable ? `, ${walk.unreadable} unreadable` : ''}`);
+      + `${out.length} video file(s)`
+      + `${walk.unreadable ? `, ${walk.unreadable} unreadable` : ''}`
+      + `${walk.loops ? `, ${walk.loops} directory loop(s) skipped` : ''}`);
+    if (walk.loops) {
+      log('scan').warn(`${walk.loops} directory loop(s) under ${dir} — something in the tree links `
+        + 'back into itself. Without the identity check this walk would have reported many times '
+        + 'more files than exist.');
+    }
   }
-  return acc;
+  return out;
 }
 
 // Prepared lazily: the module may be imported before initSchema() has created

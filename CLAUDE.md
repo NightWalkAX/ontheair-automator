@@ -25,6 +25,16 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
    rather than out of date. Rows are still BUILT for skipped files — franchise detection weighs
    a title against every other title in its folder, so omitting them would break saga grouping
    and series registration on every re-scan.
+   **The walk is cycle-safe by IDENTITY, not by depth.** Over SMB a symlink on the server
+   reaches the client as a real DIRECTORY (Samba `follow symlinks` / `wide links`), so a link
+   pointing back at an ancestor makes `collectVideoFiles()` re-enumerate the subtree once per
+   level — that is how ~5k clips get announced as 196014 files to scan. A depth cap only bounds
+   how bad it gets (one link inflates a folder ~24x, two multiply rather than add), so every
+   directory's `dev:ino` is recorded and never walked twice, and files are de-duplicated the
+   same way — two independent layers, either of which bounds the result. Symlinked folders ARE
+   followed (that is what SMB already does, and skipping them locally made linked folders
+   silently invisible); it is only safe because of the identity check. `MAX_WALK_DEPTH` stays as
+   a backstop for a filesystem with no stable inodes.
    **Two different operations, don't conflate them:** `POST /api/media/scan` DISCOVERS new files
    and therefore has to `readdir` every folder under every media root — the whole share, whether
    or not any of it is catalogued. `POST /api/media/recheck` (`recheckCatalog()`, the "Re-check
