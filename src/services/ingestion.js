@@ -13,8 +13,13 @@ import { db, withTx } from '../db.js';
 import { loadConfig, localizePath, delocalizePath } from '../config.js';
 import { parseEpisode, encodeChapter } from './episodeParse.js';
 import { groupSagas, sagaSubjectName } from './movieSaga.js';
+import { log, progressLogger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
+
+// A media tree is a handful of levels deep. Anything past this is a symlink or
+// mount loop, and walking it forever is indistinguishable from a freeze.
+const MAX_WALK_DEPTH = 24;
 
 const VIDEO_EXTS = new Set([
   '.mov', '.mp4', '.m4v', '.mxf', '.avi', '.mkv', '.mpg', '.mpeg', '.ts', '.wmv',
@@ -155,21 +160,45 @@ async function probeDuration(filePath) {
   return Number.isFinite(seconds) ? Math.round(seconds) : null;
 }
 
-/** Recursively collect video file paths under a directory. */
-async function collectVideoFiles(dir, acc = []) {
+/**
+ * Recursively collect video file paths under a directory.
+ *
+ * Instrumented because this is half the wall clock of a scan and none of it
+ * used to be visible: a share that stalls mid-walk, or a directory nobody can
+ * read, looked identical to "still working". `depth` also stops a symlink or
+ * mount loop from walking forever instead of hanging the scan.
+ */
+async function collectVideoFiles(dir, acc = [], depth = 0, stats = null) {
+  const walk = stats || { dirs: 0, unreadable: 0, startedAt: Date.now(), reported: 0, root: dir };
+  if (depth > MAX_WALK_DEPTH) {
+    log('scan').warn(`stopped at depth ${depth}: ${dir} (symlink or mount loop?)`);
+    return acc;
+  }
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return acc; // unreadable dir (permissions / unmounted) — skip
+  } catch (err) {
+    walk.unreadable++;
+    // Silent skips are how a whole channel quietly comes back empty.
+    log('scan').warn(`unreadable directory (skipped): ${dir} — ${err.code || err.message}`);
+    return acc;
+  }
+  walk.dirs++;
+  if (Date.now() - walk.reported > 15_000) {
+    walk.reported = Date.now();
+    log('scan').info(`walking · ${walk.dirs} dir(s), ${acc.length} file(s) so far · at ${dir}`);
   }
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      await collectVideoFiles(full, acc);
+      await collectVideoFiles(full, acc, depth + 1, walk);
     } else if (VIDEO_EXTS.has(extname(entry.name).toLowerCase())) {
       acc.push(full);
     }
+  }
+  if (depth === 0) {
+    log('scan').info(`walked ${walk.dirs} dir(s) in ${Math.round((Date.now() - walk.startedAt) / 1000)}s: `
+      + `${acc.length} video file(s)${walk.unreadable ? `, ${walk.unreadable} unreadable` : ''}`);
   }
   return acc;
 }
@@ -309,9 +338,17 @@ export async function scanMediaRoot(mediaRoot) {
   // Walk the tree via the LOCAL path (config.pathMap), but store every
   // file_path in canonical (OTAV Mac) form — that string is what gets pushed
   // as the clip url, so it must be valid on the playout Mac, not here.
+  const l = log('scan');
+  l.info(`root ${mediaRoot.path} (channel ${mediaRoot.channel_id}, show type ${mediaRoot.show_type_id})`);
   const files = await collectVideoFiles(localizePath(mediaRoot.path));
   const errors = [];
   let subjects = new Set();
+  // One ffprobe + one stat per file over SMB: thousands of round trips, and
+  // until now it reported nothing at all until the whole thing finished. The
+  // progress line carries rate, ETA and RSS so a run that looks frozen can be
+  // told apart from one that is merely slow, or leaking.
+  const progress = progressLogger('scan', files.length, { stepWarnMs: 20_000 });
+  progress.start(mediaRoot.path);
 
   // Probe first, upsert after. Franchise detection needs to weigh a title against
   // every OTHER title in the folder (a lone "Big_Hero_6" is not a sequel, two
@@ -319,10 +356,12 @@ export async function scanMediaRoot(mediaRoot) {
   const rows = [];
   for (const localFile of files) {
     const file = delocalizePath(localFile);
+    const stepStart = Date.now();
     try {
       const duration = await probeDuration(localFile);
       if (duration == null) {
         errors.push({ file, error: 'no duration from ffprobe' });
+        progress.step(basename(file), Date.now() - stepStart);
         continue;
       }
       // Filler if the root's show type is the Fillers type, OR the clip sits in a
@@ -347,8 +386,11 @@ export async function scanMediaRoot(mediaRoot) {
       });
     } catch (err) {
       errors.push({ file, error: String(err.message || err) });
+      l.warn(`probe failed: ${file} — ${err.message || err}`);
     }
+    progress.step(basename(file), Date.now() - stepStart);
   }
+  progress.done(`${errors.length} error(s)`);
 
   let sagaSubjects = null;
   if (SAGA_CODES.has(showType?.code)) {
@@ -357,13 +399,18 @@ export async function scanMediaRoot(mediaRoot) {
     for (const r of rows) if (r.subject) subjects.add(r.subject);
   }
 
+  // The writes are synchronous SQLite, so this DOES block the event loop —
+  // worth timing, because thousands of rows is where "the whole app froze for a
+  // moment" comes from and the watchdog will name it.
+  const writeStart = Date.now();
   let ingested = 0;
   for (const row of rows) {
     upsert(row);
     ingested++;
   }
-
   registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault, sagaSubjects);
+  l.info(`root ${mediaRoot.path} done · ${ingested} row(s) written in `
+    + `${Math.round((Date.now() - writeStart) / 1000)}s · ${subjects.size} subject(s) · ${errors.length} error(s)`);
   return { scanned: files.length, ingested, errors };
 }
 
@@ -373,9 +420,19 @@ export async function scanAll({ channelId } = {}) {
     ? db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(channelId)
     : db.prepare('SELECT * FROM MediaRoot').all();
 
+  const l = log('scan');
+  l.info(`scanAll · ${rows.length} media root(s)${channelId ? ` for channel ${channelId}` : ''}`);
   const results = [];
   for (const root of rows) {
-    results.push({ mediaRoot: root, ...(await scanMediaRoot(root)) });
+    try {
+      results.push({ mediaRoot: root, ...(await scanMediaRoot(root)) });
+    } catch (err) {
+      // One unreachable root must not lose the roots already scanned, and the
+      // reason has to survive in the log even if nobody is watching the request.
+      l.error(`root ${root.path} FAILED`, err);
+      results.push({ mediaRoot: root, scanned: 0, ingested: 0, errors: [{ file: root.path, error: String(err.message || err) }] });
+    }
   }
+  l.info(`scanAll done · ${results.reduce((n, r) => n + r.ingested, 0)} row(s) across ${rows.length} root(s)`);
   return results;
 }
