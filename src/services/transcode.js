@@ -750,6 +750,47 @@ export function buildFfmpegArgs(inPath, outPath, target, { hasAudio = true } = {
   return args;
 }
 
+/**
+ * A finite number, or null. ffmpeg's progress stream is full of "N/A" and the
+ * occasional empty field, and every one of them becomes NaN through Number() or
+ * parseFloat() — which is not null, so it passes every `??` guard downstream.
+ */
+function num(v) {
+  if (v == null || v === '' || v === 'N/A') return null;
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * One `-progress pipe:1` block turned into { seconds, pct, speed, fps }, where
+ * every field is a finite number or null. Never NaN.
+ *
+ * ffmpeg's FIRST block is all "N/A" — it has decoded nothing yet — and "N/A" is
+ * TRUTHY, so `info.out_time_us || info.out_time_ms * 1000` picks it and
+ * Number("N/A") is NaN. NaN is neither null nor undefined, so it survives every
+ * `??` downstream and reaches SQLite, which stores NaN as NULL and fails the
+ * NOT NULL on TranscodeItem.progress — inside a stdout handler, so it escapes
+ * as an uncaughtException and takes the process down. That is what ended a
+ * conversion run four minutes after it started.
+ *
+ * Exported so the shape of that block can be asserted directly; the bug is
+ * invisible end-to-end because the write is (now) wrapped in a try/catch.
+ */
+export function parseProgressBlock(info, duration) {
+  const us = num(info.out_time_us);
+  const ms = num(info.out_time_ms);
+  const seconds = us != null ? us / 1_000_000 : (ms != null ? ms / 1000 : null);
+  const pct = seconds != null && duration > 0
+    ? Math.max(0, Math.min(0.999, seconds / duration))
+    : null;
+  return {
+    seconds,
+    pct: Number.isFinite(pct) ? pct : null,
+    speed: num(info.speed),
+    fps: num(info.fps),
+  };
+}
+
 /** Run ffmpeg, reporting progress against `duration`. Resolves on exit code 0. */
 function runFfmpeg(args, { duration, onProgress, timeoutMs, register }) {
   const { ffmpegPath } = transcodeConfig();
@@ -775,13 +816,7 @@ function runFfmpeg(args, { duration, onProgress, timeoutMs, register }) {
         if (i > 0) info[l.slice(0, i).trim()] = l.slice(i + 1).trim();
       }
       if (info.out_time_us || info.out_time_ms || info.speed) {
-        const secs = Number(info.out_time_us || info.out_time_ms * 1000 || 0) / 1_000_000;
-        onProgress?.({
-          seconds: secs,
-          pct: duration ? Math.min(0.999, secs / duration) : null,
-          speed: info.speed && info.speed !== 'N/A' ? parseFloat(info.speed) : null,
-          fps: info.fps ? parseFloat(info.fps) : null,
-        });
+        onProgress?.(parseProgressBlock(info, duration));
       }
     });
     child.stderr.on('data', (c) => {
@@ -800,8 +835,16 @@ function runFfmpeg(args, { duration, onProgress, timeoutMs, register }) {
 const setItem = (id, patch) => {
   const keys = Object.keys(patch);
   if (!keys.length) return;
+  // SQLite stores NaN as NULL, so a NaN that got this far turns into a NOT NULL
+  // failure on a column like `progress` — an error about a constraint, pointing
+  // nowhere near the arithmetic that produced it. Numbers are made finite here
+  // so that never happens again whatever the caller computed.
+  const value = (k) => {
+    const v = patch[k];
+    return typeof v === 'number' && !Number.isFinite(v) ? null : v;
+  };
   db.prepare(`UPDATE TranscodeItem SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
-    .run(...keys.map((k) => patch[k]), id);
+    .run(...keys.map(value), id);
 };
 
 /**
@@ -1057,15 +1100,23 @@ async function convertOne(item, cfg) {
         live.pct = p.pct ?? live.pct;
         live.speed = p.speed ?? live.speed;
         live.fps = p.fps ?? live.fps;
-        if (p.pct != null && live.speed) {
+        if (p.pct != null && live.speed > 0) {
           const remaining = (item.src_duration || 0) * (1 - p.pct);
-          live.etaSeconds = live.speed > 0 ? Math.round(remaining / live.speed) : null;
+          const eta = Math.round(remaining / live.speed);
+          live.etaSeconds = Number.isFinite(eta) ? eta : null;
         }
         // Persisted occasionally so a reloaded tab (or a restart) still shows
-        // roughly how far the clip in flight had got.
+        // roughly how far the clip in flight had got. Cosmetic, and therefore
+        // never allowed to end the run: this is a stdout handler, so anything
+        // thrown here escapes as an uncaughtException and takes the whole
+        // process down mid-conversion.
         if (Date.now() - lastPersist > 5000) {
           lastPersist = Date.now();
-          setItem(item.id, { progress: live.pct ?? 0 });
+          try {
+            setItem(item.id, { progress: Number.isFinite(live.pct) ? live.pct : 0 });
+          } catch (err) {
+            fileLog('airspec').warn(`could not persist progress for ${basename(item.file_path)}`, err);
+          }
           emit({ type: 'progress-item', id: item.id, pct: live.pct, speed: live.speed, etaSeconds: live.etaSeconds });
         }
       },
