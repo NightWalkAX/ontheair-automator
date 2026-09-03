@@ -260,6 +260,7 @@ export function initSchema() {
       achannels    INTEGER,
       src_duration REAL,
       size_bytes   INTEGER,
+      src_mtime    TEXT,                   -- file mtime when probed (re-scan skip key)
       out_path     TEXT,                   -- local work file, until it is moved in
       out_duration REAL,
       out_size_bytes INTEGER,
@@ -277,6 +278,10 @@ export function initSchema() {
 
   // Lightweight migrations for DBs created before a column was added. Each is
   // guarded so re-running is a no-op.
+  // Air Spec re-scans: the file's mtime when it was probed, so an unchanged
+  // clip is skipped instead of re-probed. NULL on rows probed before this
+  // existed, which correctly means "unknown, probe it".
+  addColumnIfMissing('TranscodeItem', 'src_mtime', 'TEXT');
   addColumnIfMissing('ChannelType', 'playlist_ref', 'TEXT');
   // Name template for the per-day playlist created on push. Tokens:
   // {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".

@@ -136,11 +136,20 @@ The routine is deliberately slow (full re-encode at broadcast quality over the S
 `concurrency` 1 by default — hours per channel, days for the library), so it is built to be
 started and left alone:
 
-- **Two phases.** `POST /api/transcode/scan` ffprobes every catalogued file and records what is
-  off spec in `TranscodeItem` (one row per distinct physical path, statuses
-  `ok|pending|running|converted|blocked|replaced|failed|skipped|missing`). `POST
+- **Two phases.** `POST /api/transcode/scan` judges the CATALOGUED clips against the spec and
+  records what is off spec in `TranscodeItem` (one row per distinct physical path, statuses
+  `ok|pending|running|converted|blocked|replaced|failed|skipped|missing|stale`). `POST
   /api/transcode/start` works that queue. An on-spec file is NEVER re-encoded, and a re-scan
   never pushes finished work back into the queue.
+  **Scope:** the file list comes from `catalogFiles()` — `Resource`, grouped by distinct
+  `file_path` — so this never lists a directory and never sees anything on the NAS that no
+  channel has catalogued. Scoped further by `channel` / `showType` / `fillers`.
+  **A re-scan is incremental.** Each clip is `stat`ed first: unchanged mtime AND size since the
+  recorded `probed_at` keeps its verdict with no ffprobe at all (`src_mtime` is the column that
+  makes this possible; store the size from `stat`, never ffprobe's self-reported one, so both
+  sides of the comparison come from the same place). `force=1` re-probes the lot. The stat also
+  separates "the file is not on disk any more" from "ffprobe could not read it", which used to
+  be the same `missing` status and are different problems.
 - **Copy → convert → verify → swap → archive, per clip.** Output goes to `transcode.workDir`,
   is probed and checked against the spec (and against the source duration,
   `verifyToleranceSeconds`) BEFORE anything moves. When the name changes (the usual case) the
