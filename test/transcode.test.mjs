@@ -801,3 +801,98 @@ test('the spec cannot be changed out from under a running job', async () => {
   assert.match(busy.body.error, /running/);
   assert.equal((await specOf()).width, 1920, 'the run keeps the spec it started with');
 });
+
+
+// ---- The probe pass only looks at what is catalogued ------------------------
+//
+// The file list comes from Resource, so Air Spec never lists a directory and
+// never sees anything on the share that no channel has catalogued. What it DID
+// do was re-run ffprobe on all of it on every check — one process spawn and one
+// container read over SMB per clip, for verdicts that had not changed.
+
+test('a re-check keeps the verdicts of clips that have not changed', async () => {
+  const { utimesSync, existsSync: ex, readFileSync: rf, unlinkSync } = await import('node:fs');
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+    .run('Probe Scope').lastInsertRowid;
+  const ins = db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES (?, ?, ?, 0, 0, ?, 1)
+  `);
+  const onSpec = media('scope_ok.mov', ON_SPEC);
+  const offSpec = media('scope_off.avi', OFF_SPEC);
+  ins.run('scope_ok', onSpec, 600, chan);
+  ins.run('scope_off', offSpec, 300, chan);
+
+  // An ffprobe that records every call, so "it skipped the work" is proved
+  // rather than taken from the scan's own tally.
+  const countFile = join(scratch, 'airspec-probes.log');
+  const calls = () => (ex(countFile) ? rf(countFile, 'utf8').split('\n').filter(Boolean) : []);
+  const reset = () => { if (ex(countFile)) unlinkSync(countFile); };
+  const realProbe = process.env.FFPROBE_PATH;
+  process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe-json-counting');
+  process.env.FFPROBE_COUNT_FILE = countFile;
+
+  try {
+    // First pass: both get probed and judged.
+    reset();
+    await j('POST', `/api/transcode/scan?channel=${chan}`);
+    await settle();
+    const statusOf = (p) => db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(p);
+    assert.equal(statusOf(onSpec).status, 'ok');
+    assert.equal(statusOf(offSpec).status, 'pending');
+    assert.equal(calls().length, 2, 'both clips probed the first time');
+    assert.ok(statusOf(onSpec).src_mtime, 'the mtime it was probed at is recorded');
+
+    // Second pass: nothing moved, so nothing is re-probed.
+    reset();
+    await j('POST', `/api/transcode/scan?channel=${chan}`);
+    await settle();
+    assert.equal(calls().length, 0, 'ffprobe must not run again on unchanged clips');
+    assert.equal(statusOf(onSpec).status, 'ok', 'and the verdicts stand');
+    assert.equal(statusOf(offSpec).status, 'pending');
+
+    // Touch one: only that one is re-probed.
+    reset();
+    const future = new Date(Date.now() + 120_000);
+    utimesSync(offSpec, future, future);
+    await j('POST', `/api/transcode/scan?channel=${chan}`);
+    await settle();
+    assert.deepEqual(calls(), [offSpec], 'exactly the clip whose mtime moved');
+
+    // force re-probes both.
+    reset();
+    await j('POST', `/api/transcode/scan?channel=${chan}&force=1`);
+    await settle();
+    assert.equal(calls().length, 2, 'force re-probes everything');
+
+    // Scope: another channel's clips are not touched at all.
+    reset();
+    const otherChan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)')
+      .run('Other Scope').lastInsertRowid;
+    const elsewhere = media('scope_elsewhere.avi', OFF_SPEC);
+    ins.run('scope_elsewhere', elsewhere, 300, otherChan);
+    await j('POST', `/api/transcode/scan?channel=${chan}`);
+    await settle();
+    assert.ok(!calls().includes(elsewhere), 'a clip on another channel is out of scope');
+    assert.equal(statusOf(elsewhere), undefined, 'and never entered this channel\'s queue');
+  } finally {
+    process.env.FFPROBE_PATH = realProbe;
+    delete process.env.FFPROBE_COUNT_FILE;
+    reset();
+  }
+});
+
+test('a re-check does not undo work already done on an unchanged clip', async () => {
+  // The row for a clip already converted (or replaced) must survive a check
+  // untouched — the whole point of skipping it is that nothing about it moved.
+  const converted = db.prepare("SELECT * FROM TranscodeItem WHERE status = 'replaced' LIMIT 1").get()
+    || db.prepare("SELECT * FROM TranscodeItem WHERE status = 'converted' LIMIT 1").get();
+  assert.ok(converted, 'need a finished clip for this');
+
+  await j('POST', '/api/transcode/scan');
+  await settle();
+  const after = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(converted.id);
+  assert.equal(after.status, converted.status, 'status untouched');
+  assert.equal(after.out_path, converted.out_path, 'and so is the work it points at');
+  assert.equal(after.backup_path, converted.backup_path);
+});

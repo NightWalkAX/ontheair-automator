@@ -28,6 +28,9 @@ import { promisify } from 'node:util';
 import { mkdir, stat, rename, copyFile, unlink } from 'node:fs/promises';
 import { dirname, basename, extname, join } from 'node:path';
 import { db, withTx } from '../db.js';
+// `log` is already this module's SSE ring buffer, so the file logger comes in
+// under a name that cannot be confused with it.
+import { log as fileLog, progressLogger } from '../logger.js';
 import { loadConfig, updateConfig, localizePath, delocalizePath } from '../config.js';
 import { repointExportedDays } from './otavClient.js';
 
@@ -390,10 +393,10 @@ export async function probeFormat(localPath) {
 const upsertItem = () => db.prepare(`
   INSERT INTO TranscodeItem
     (file_path, resource_id, channel_id, status, reasons, width, height, fps, vcodec, pix_fmt,
-     acodec, sample_rate, achannels, src_duration, size_bytes, probed_at, error)
+     acodec, sample_rate, achannels, src_duration, size_bytes, src_mtime, probed_at, error)
   VALUES
     (@file_path, @resource_id, @channel_id, @status, @reasons, @width, @height, @fps, @vcodec, @pix_fmt,
-     @acodec, @sample_rate, @achannels, @src_duration, @size_bytes, @probed_at, @error)
+     @acodec, @sample_rate, @achannels, @src_duration, @size_bytes, @src_mtime, @probed_at, @error)
   ON CONFLICT(file_path) DO UPDATE SET
     resource_id  = excluded.resource_id,
     channel_id   = excluded.channel_id,
@@ -408,6 +411,7 @@ const upsertItem = () => db.prepare(`
     achannels    = excluded.achannels,
     src_duration = excluded.src_duration,
     size_bytes   = excluded.size_bytes,
+    src_mtime    = excluded.src_mtime,
     probed_at    = excluded.probed_at,
     error        = excluded.error,
     -- A clip already converted/replaced keeps that state: a re-probe must never
@@ -550,22 +554,72 @@ export function abortNow() {
  */
 export function startScan(opts = {}) {
   if (activity) throw new Error(`a ${activity.kind} is already running`);
+  const { force = false } = opts;
   const files = catalogFiles(opts);
   activity = { kind: 'scan', startedAt: Date.now(), stopRequested: false, opts, done: 0, total: files.length };
-  emit({ type: 'phase', phase: 'scan', message: `Probing ${files.length} file(s) with ffprobe…` });
+  const l = fileLog('airspec');
+  l.info(`probe pass · ${files.length} catalogued file(s)`
+    + `${opts.channelId ? ` for channel ${opts.channelId}` : ' across every channel'}`
+    + `${opts.includeFillers === false ? ' · fillers excluded' : ''}`
+    + `${force ? ' · FORCED: re-probing everything' : ''}`);
+  emit({
+    type: 'phase',
+    phase: 'scan',
+    message: force
+      ? `Re-probing all ${files.length} file(s) with ffprobe…`
+      : `Checking ${files.length} file(s) — only the ones that changed get re-probed.`,
+  });
 
   (async () => {
     const upsert = upsertItem();
-    let offSpec = 0; let missing = 0;
+    // What was probed before, so an unchanged clip costs a stat instead of an
+    // ffprobe. One query beats a lookup per file.
+    const known = new Map();
+    if (!force) {
+      for (const r of db.prepare(
+        'SELECT file_path, src_mtime, size_bytes, probed_at FROM TranscodeItem',
+      ).all()) known.set(r.file_path, r);
+    }
+    const progress = progressLogger('airspec', files.length, { stepWarnMs: 20_000 });
+    progress.start('ffprobe pass');
+    let offSpec = 0; let missing = 0; let reused = 0; let probed = 0;
     try {
       for (const f of files) {
         if (activity.stopRequested) { line('Scan stopped by operator.', 'warn'); break; }
+        const stepStart = Date.now();
         const local = localizePath(f.file_path);
-        const fmt = await probeFormat(local);
+
+        // stat first: it is the cheap call, it is what decides whether the probe
+        // can be skipped, and it separates "the file is gone" from "ffprobe
+        // cannot read it" — which used to be the same 'missing' status.
+        let info = null;
+        let statErr = null;
+        try { info = await stat(local); } catch (err) { statErr = err; }
+        const mtime = info ? info.mtime.toISOString() : null;
+
+        const prev = known.get(f.file_path);
+        if (info && prev?.probed_at && prev.src_mtime && prev.src_mtime === mtime
+            && prev.size_bytes === info.size) {
+          // Same file, already judged. Its row (and its status, including work
+          // already finished) stays exactly as it is.
+          reused++;
+          activity.done++;
+          progress.step(basename(f.file_path), Date.now() - stepStart);
+          continue;
+        }
+
+        const fmt = info ? await probeFormat(local) : null;
+        if (info) probed++;
         const reasons = fmt ? specReasons({ ...fmt, file_path: f.file_path }) : ['unreadable'];
         const status = !fmt ? 'missing' : (reasons.length ? 'pending' : 'ok');
         if (status === 'pending') offSpec++;
-        if (status === 'missing') missing++;
+        if (status === 'missing') {
+          missing++;
+          const why = statErr
+            ? (statErr.code === 'ENOENT' ? 'the file is not on disk any more' : `unreadable (${statErr.code})`)
+            : 'ffprobe could not read this file';
+          l.warn(`${why}: ${f.file_path}`);
+        }
         upsert.run({
           file_path: f.file_path,
           resource_id: f.resource_id ?? null,
@@ -576,18 +630,31 @@ export function startScan(opts = {}) {
           vcodec: fmt?.vcodec ?? null, pix_fmt: fmt?.pix_fmt ?? null,
           acodec: fmt?.acodec ?? null, sample_rate: fmt?.sample_rate ?? null,
           achannels: fmt?.achannels ?? null,
-          src_duration: fmt?.duration ?? null, size_bytes: fmt?.size_bytes ?? null,
+          src_duration: fmt?.duration ?? null,
+          // stat's size, not ffprobe's: this is half the key that decides
+          // whether the next check can skip this clip, so both sides of that
+          // comparison have to come from the same place. (They agree for local
+          // files anyway — ffprobe's format.size IS the file size — but tying
+          // the skip to a probe's self-report is a coupling worth not having.)
+          size_bytes: info?.size ?? fmt?.size_bytes ?? null,
+          src_mtime: mtime,
           probed_at: new Date().toISOString(),
-          error: fmt ? null : 'ffprobe could not read this file',
+          error: fmt ? null : (statErr?.code === 'ENOENT'
+            ? 'the file is not on disk any more'
+            : 'ffprobe could not read this file'),
         });
         activity.done++;
+        progress.step(basename(f.file_path), Date.now() - stepStart);
         if (activity.done % 10 === 0 || status !== 'ok') {
           emit({ type: 'progress', done: activity.done, total: activity.total, message: basename(f.file_path) });
         }
       }
+      progress.done(`${probed} probed, ${reused} unchanged, ${offSpec} off spec, ${missing} unreadable`);
       line(`Scan finished: ${offSpec} file(s) off spec, ${missing} unreadable, `
-        + `${activity.done - offSpec - missing} already on spec.`, 'ok');
+        + `${activity.done - offSpec - missing - reused} already on spec`
+        + (reused ? `, ${reused} unchanged since the last probe (skipped)` : '') + '.', 'ok');
     } catch (err) {
+      progress.fail(err);
       line(`Scan failed: ${err.message || err}`, 'bad');
     } finally {
       activity = null;
@@ -595,7 +662,7 @@ export function startScan(opts = {}) {
     }
   })();
 
-  return { started: true, total: files.length };
+  return { started: true, total: files.length, force };
 }
 
 // ---- Conversion ------------------------------------------------------------

@@ -84,8 +84,13 @@ router.get('/items', (req, res) => {
   });
 });
 
-// POST /api/transcode/scan?channel=&showType=&fillers=0 — ffprobe every
-// catalogued file and record which ones are off spec.
+// POST /api/transcode/scan?channel=&showType=&fillers=0&force=1
+//
+// Judge the CATALOGUED clips against the house spec — the file list comes from
+// Resource, so this never lists a directory and never sees anything on the NAS
+// that no channel has catalogued. A clip whose mtime and size are unchanged
+// since its last probe keeps its verdict (and any work already done on it)
+// instead of being re-probed; `force` re-probes the lot.
 router.post('/scan', (req, res) => {
   const q = { ...req.body, ...req.query };
   try {
@@ -93,6 +98,9 @@ router.post('/scan', (req, res) => {
       channelId: num(q.channel),
       showTypeId: num(q.showType),
       includeFillers: String(q.fillers ?? '1') !== '0',
+      // Without this a file whose mtime and size have not moved keeps the
+      // verdict it already has instead of paying for another ffprobe.
+      force: q.force === true || q.force === 1 || q.force === '1' || q.force === 'true',
     });
     res.json({ ok: true, ...r });
   } catch (err) {

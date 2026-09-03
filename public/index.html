@@ -262,7 +262,8 @@
       <label class="field"><span>Clips this run</span>
         <input type="number" id="txLimit" min="1" placeholder="all queued" style="width:120px" />
       </label>
-      <button id="btnTxScan" class="ghost">🔍 Probe library (ffprobe)</button>
+      <button id="btnTxScan" class="ghost" title="Check the clips catalogued for the selected channel against the house spec. Reads the file list from the database — it never lists the share, and never looks at anything on the NAS that no channel has catalogued. Clips unchanged since their last probe keep their verdict.">🔍 Check catalogued clips</button>
+      <label class="chk" title="Re-run ffprobe on every clip, even ones unchanged since the last check. Slow — only needed if you think a verdict is wrong."><input type="checkbox" id="txForceProbe" /> re-probe everything</label>
       <button id="btnTxStart">▶︎ Start converting</button>
       <button id="btnTxStop" class="ghost">■ Stop after this clip</button>
       <button id="btnTxAbort" class="danger">✕ Abort now</button>

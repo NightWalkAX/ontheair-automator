@@ -1,0 +1,13 @@
+#!/usr/bin/env node
+// fake-ffprobe-json that also records that it RAN. Set FFPROBE_COUNT_FILE and
+// every invocation appends the file it was asked about, so a test can prove a
+// check skipped the probe rather than trusting the count it reports about itself.
+import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+const file = process.argv[process.argv.length - 1];
+if (process.env.FFPROBE_COUNT_FILE) appendFileSync(process.env.FFPROBE_COUNT_FILE, `${file}\n`);
+try {
+  process.stdout.write(readFileSync(`${file}.json`, 'utf8'));
+} catch {
+  process.stderr.write('fake-ffprobe: no sidecar, treating as unreadable\n');
+  process.exit(1);
+}

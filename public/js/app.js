@@ -3365,10 +3365,27 @@ async function loadTranscodeTab() {
 
 $('#btnTxScan').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const channel = $('#txChannel').value;
+  const force = $('#txForceProbe').checked;
   const q = new URLSearchParams({ fillers: $('#txFillers').checked ? '1' : '0' });
   if (channel) q.set('channel', channel);
+  if (force) q.set('force', '1');
+  // Say the SCOPE out loud. The list comes from the catalogue, so "every
+  // channel" means every catalogued clip — not everything on the NAS.
+  const where = channel
+    ? ($('#txChannel').selectedOptions[0]?.textContent || 'that channel')
+    : 'every channel';
+  if (force) {
+    const ok = await confirmDialog('Re-probe everything',
+      `This runs ffprobe again on every clip catalogued for ${where}, including the ones that `
+      + 'have not changed since the last check — one process and one read over the share each. '
+      + 'Leave it off unless you think a verdict is wrong. Continue?',
+      { confirmLabel: 'Re-probe everything' });
+    if (!ok) return;
+  }
   const r = await api.send('POST', `/api/transcode/scan?${q}`);
-  toast(`Probing ${r.total} file(s) — the queue fills in as it goes`, 'ok', 'Scan started');
+  toast(`${r.total} catalogued clip(s) for ${where}`
+    + (force ? ' — re-probing all of them' : ' — only the changed ones get re-probed'),
+  'ok', 'Check started');
   await refreshTxStatus();
 }));
 
