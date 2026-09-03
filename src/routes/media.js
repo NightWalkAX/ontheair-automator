@@ -12,6 +12,51 @@ import { scanAll, scanMediaRoot, recheckCatalog, cloneScannedResources } from '.
 /** Query/body flags arrive as "1", "true" or a real boolean. */
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
+/** Is `parent` a strict ancestor directory of `child`? Trailing slashes ignored. */
+const isAncestorOf = (parent, child) => {
+  const p = String(parent).replace(/\/+$/, '');
+  return p !== String(child).replace(/\/+$/, '') && String(child).startsWith(`${p}/`);
+};
+
+/**
+ * Refuse a root that CONTAINS another root.
+ *
+ * A parent root re-walks everything its children already cover, and the failure
+ * is not a slow scan — it is a catalogue full of files nobody meant to air.
+ * "/Volumes/Public" was assigned as a root once and pulled in 196,014 clips
+ * (Premiere projects, presets, b-roll, raw camera footage) against a broadcast
+ * library of about 5,000. Nothing about that is recoverable by re-scanning: the
+ * only way back is deleting rows, and deleting rows cascades away the
+ * PlayHistory that drives movie cooldown and series progression.
+ *
+ * The reverse — adding a CHILD under an existing root — is deliberately still
+ * allowed. That is how a deeper folder gets its own show type (the catalogue
+ * has "Mathematics" alongside "Mathematics/Grade 1"), and it narrows the scan
+ * rather than widening it.
+ *
+ * Scoped per channel, because that is where the rows land. Returns an error
+ * message naming the roots in the way, or null when the path is fine.
+ */
+function containedRootsError(path, channelIds, { exceptRootId = null } = {}) {
+  if (!channelIds.length) return null;
+  const rows = db.prepare(`
+    SELECT m.id, m.path, COALESCE(c.name, '?') AS channel
+    FROM MediaRoot m LEFT JOIN ChannelType c ON c.id = m.channel_id
+    WHERE m.channel_id IN (${channelIds.map(() => '?').join(',')})
+      ${exceptRootId ? 'AND m.id != ?' : ''}
+  `).all(...channelIds, ...(exceptRootId ? [exceptRootId] : []));
+
+  const contained = rows.filter((r) => isAncestorOf(path, r.path));
+  if (!contained.length) return null;
+  const shown = contained.slice(0, 4).map((r) => `${r.channel}: ${r.path}`);
+  return `"${path}" contains ${contained.length} media root(s) that already exist`
+    + `, so it would re-scan everything they cover plus everything else under it — `
+    + `the whole share, not just the broadcast folders. Roots inside it: `
+    + `${shown.join('; ')}${contained.length > shown.length ? `; …and ${contained.length - shown.length} more` : ''}. `
+    + 'Assign the specific folders you want to air, or delete those roots first if you '
+    + 'really mean to replace them with this one.';
+}
+
 export const router = Router();
 
 // Guard: only allow browsing within the configured SMB mount point, so this
@@ -93,6 +138,8 @@ router.post('/roots', (req, res) => {
   if (!abs) {
     return res.status(400).json({ error: 'path is outside the configured mount point' });
   }
+  const contains = containedRootsError(abs, channels);
+  if (contains) return res.status(409).json({ error: contains });
   const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
   const created = [];
   let clonedResources = 0;
@@ -128,6 +175,13 @@ router.post('/roots/copy', (req, res) => {
   const roots = db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(from);
   if (!roots.length) return res.status(400).json({ error: 'the source channel has no media roots' });
 
+  // A donor root can be an ancestor of one the target already has, which would
+  // widen the target's catalogue exactly the way a hand-added parent does.
+  for (const r of roots) {
+    const contains = containedRootsError(r.path, targets);
+    if (contains) return res.status(409).json({ error: `copying "${r.path}": ${contains}` });
+  }
+
   const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
   const created = [];
   let clonedResources = 0;
@@ -159,6 +213,15 @@ router.put('/roots/:id', (req, res) => {
     const abs = withinMount(b.path);
     if (!abs) return res.status(400).json({ error: 'path is outside the configured mount point' });
     path = abs;
+  }
+  // Only a change that could WIDEN the root is checked. Re-saving a root whose
+  // path is unchanged must stay possible even once deeper roots exist under it
+  // — the catalogue deliberately has "Mathematics" alongside "Mathematics/Grade
+  // 1", and otherwise the parent's show type could never be edited again.
+  const targetChannel = b.channel_id != null ? Number(b.channel_id) : cur.channel_id;
+  if (path !== cur.path || targetChannel !== cur.channel_id) {
+    const contains = containedRootsError(path, [targetChannel], { exceptRootId: id });
+    if (contains) return res.status(409).json({ error: contains });
   }
   try {
     db.prepare('UPDATE MediaRoot SET channel_id = ?, show_type_id = ?, path = ? WHERE id = ?').run(

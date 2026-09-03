@@ -20,12 +20,16 @@ router.post('/', (req, res) => {
           schedule_path, playlist_dir, playlist_template, api_username, api_password,
           logo_filename, logo_enabled = 1 } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name is required' });
+  // Every optional column takes `?? null`, api_ip/api_port included: node:sqlite
+  // refuses to bind `undefined`, so registering a channel before its Mac has an
+  // address used to die on a 500 naming "SQLite parameter 3".
   const info = db.prepare(`
     INSERT INTO ChannelType (name, is_active, api_ip, api_port, playlist_ref, playlist_name_pattern,
                              schedule_path, playlist_dir, playlist_template, api_username, api_password,
                              logo_filename, logo_enabled)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, is_active ? 1 : 0, api_ip, api_port, playlist_ref ?? null, playlist_name_pattern ?? null,
+  `).run(name, is_active ? 1 : 0, api_ip ?? null, api_port ?? null,
+         playlist_ref ?? null, playlist_name_pattern ?? null,
          schedule_path ?? null, playlist_dir ?? null, playlist_template ?? null,
          api_username ?? null, api_password ?? null,
          logo_filename ?? null, logo_enabled ? 1 : 0);
