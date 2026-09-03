@@ -63,6 +63,26 @@ GOPs, no B-frames, so OTAV cues cleanly. `yadif=deint=1` only touches frames fla
 Those defaults are the house recommendation, not a constraint — say so in the UI rather than
 hard-coding them into copy (`REASON_LABELS.resolution` is "wrong resolution", not "not 1080p").
 
+**The house spec is not the playout output spec, and deliberately differs.** The OTAV device
+emits **1080i59.94 (1920x1080), YUV 8-bit, 32 audio channels, 16 sample size, 29.97fps**. Three
+points where the files are intentionally not that, decided with the operator on 2026-09-02 —
+don't "fix" them into agreement:
+
+- **Files are 29.97 PROGRESSIVE against a 1080i59.94 output.** 59.94 fields = 29.97 frames, so
+  the rate already matches and the card builds both fields at output. The catalogue is films,
+  series, lessons and documentaries — 24p/29.97p at source — so progressive is the correct
+  normalisation, and `yadif=deint=1` only touches what is actually flagged interlaced. An
+  interlaced mode (`-flags +ilme+ildct -top 1`, no yadif) would only earn its keep for natively
+  59.94i live material, which this network does not air.
+- **Files are STEREO against a 32-channel output.** 32 is the DeckLink's channel count, not a
+  property of a clip: OTAV maps the clip's pair to output channels 1-2 and the rest are silent.
+  32ch PCM s16 48kHz is 10.3 GiB/hour — about 20 GiB of silence per two-hour feature, on a share
+  holding 5200+ clips. `audioChannels` validates to 1 or 2 on purpose.
+- **Files are 4:2:0 against a 4:2:2 output.** "YUV 8 bit" in Blackmagic/Softron device settings
+  means 4:2:2; the card upsamples 4:2:0 losslessly in that direction. `yuv422p` is selectable if
+  it is ever wanted — and `profileFor()` exists because it must be: h264 `high` is 4:2:0 ONLY
+  and x265 has no `high` profile at all, so a pinned profile failed those encodes outright.
+
 **Changing the spec re-judges the queue, it does not re-probe it.** `specReasons()` reads
 nothing but the probe columns already on `TranscodeItem`, so `reclassifyQueue()` recomputes
 every judgement exactly and instantly, with no ffprobe and no share access:
