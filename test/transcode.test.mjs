@@ -589,6 +589,24 @@ test('an env override wins over the switch and says so', async () => {
 
 const specOf = async () => (await j('GET', '/api/transcode/config')).body.target;
 
+test('the encoder profile follows the codec and pixel format', () => {
+  // A profile is not a free choice, and both of these became reachable the
+  // moment the tab could pick a codec and a pixel format: h264 "high" is 4:2:0
+  // only, and x265 has no profile called "high" at all. Either mismatch makes
+  // ffmpeg refuse the encode outright.
+  const spec = (patch) => tx.buildFfmpegArgs('/in.avi', '/out.mov',
+    { ...tx.transcodeConfig().target, ...patch }, { hasAudio: true }).join(' ');
+
+  assert.match(spec({ vcodec: 'libx264', pixFmt: 'yuv420p' }), /-profile:v high(?! ?42)/);
+  assert.match(spec({ vcodec: 'libx264', pixFmt: 'yuv422p' }), /-profile:v high422/);
+  assert.match(spec({ vcodec: 'libx265', pixFmt: 'yuv420p' }), /-profile:v main(?!42)/);
+  assert.match(spec({ vcodec: 'libx265', pixFmt: 'yuv422p' }), /-profile:v main422-8/);
+  // x265 must never be handed an h264 profile name.
+  assert.doesNotMatch(spec({ vcodec: 'libx265', pixFmt: 'yuv420p' }), /-profile:v high/);
+  // And the pixel format really does reach ffmpeg.
+  assert.match(spec({ pixFmt: 'yuv422p' }), /-pix_fmt yuv422p/);
+});
+
 test('the spec is editable, validated, and persisted to config.json', async () => {
   const before = await specOf();
   assert.equal(before.width, 1920);
