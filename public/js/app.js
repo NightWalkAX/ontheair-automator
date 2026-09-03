@@ -2886,19 +2886,47 @@ function txLogLine(message, kind = '') {
   log.scrollTop = log.scrollHeight;
 }
 
+// The banner is read by an operator, not by ffmpeg. "30000/1001" is the exact
+// way to write 29.97 and the only way to encode it, but nobody should have to
+// do that division in their head to check the house format — so the chips are
+// plain language and the exact values sit in the tooltip.
+const SPEC_LABELS = {
+  libx264: 'H.264', libx265: 'HEVC',
+  yuv420p: '8-bit 4:2:0', yuv422p: '8-bit 4:2:2',
+  pcm_s16le: 'PCM 16-bit', pcm_s24le: 'PCM 24-bit', aac: 'AAC',
+};
+const specLabel = (v) => SPEC_LABELS[v] || v;
+
+/** "30000/1001" -> "29.97"; a whole rate keeps its integer form. */
+function fpsLabel(fps) {
+  const s = String(fps);
+  if (!s.includes('/')) return s;
+  const [n, d] = s.split('/').map(Number);
+  if (!d) return s;
+  const v = n / d;
+  return (Math.round(v * 100) / 100).toFixed(2).replace(/\.00$/, '');
+}
+
+const CHANNEL_LABELS = { 1: 'mono', 2: 'stereo' };
+
 function renderSpecBanner() {
   const box = $('#specBanner');
   if (!box || !txConfig) return;
   const t = txConfig.target;
   box.innerHTML = '';
-  const chip = (label, value) => {
-    const s = el('span', { className: 'spec-chip' });
+  const chip = (label, value, title = '') => {
+    const s = el('span', { className: 'spec-chip', title });
     s.append(el('b', { textContent: label }), document.createTextNode(` ${value}`));
     return s;
   };
   box.append(
-    chip('Video', `${t.width}×${t.height} · ${t.fps} fps · ${t.vcodec} ${t.pixFmt}`),
-    chip('Audio', `${t.acodec} · ${t.sampleRate} Hz · ${t.audioChannels} ch`),
+    chip('Video',
+      `${t.width}×${t.height} · ${fpsLabel(t.fps)} fps · ${specLabel(t.vcodec)} ${specLabel(t.pixFmt)}`,
+      `${t.vcodec} ${t.pixFmt}, ${t.fps} fps exactly, CRF ${t.crf}, preset ${t.preset}`),
+    chip('Audio',
+      `${specLabel(t.acodec)} · ${t.sampleRate / 1000} kHz · ${CHANNEL_LABELS[t.audioChannels] || `${t.audioChannels} ch`}`,
+      `${t.acodec} ${t.sampleRate} Hz ${t.audioChannels} channel(s) — what the CLIP carries, `
+      + 'not what the playout card outputs'),
     chip('Container', t.container),
     chip('Originals →', txConfig.archiveDir),
   );
