@@ -25,8 +25,9 @@ import { log } from '../logger.js';
 
 import * as retagShowTypes from './001-retag-show-types.js';
 import * as pruneOrphanSeries from './002-prune-orphan-series.js';
+import * as lessonRoots from './003-lesson-roots-in-local-shows.js';
 
-const MIGRATIONS = [retagShowTypes, pruneOrphanSeries];
+const MIGRATIONS = [retagShowTypes, pruneOrphanSeries, lessonRoots];
 
 /** Where the record of what has already run lives, next to the database. */
 export function lockPath() {

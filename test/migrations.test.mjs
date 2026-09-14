@@ -38,6 +38,13 @@ test('the repairs run once, fix the rows, and are recorded', () => {
     INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
     VALUES ('cho1', '/m/Local Shows/Cho/cho1.mov', 600, 0, 1, ?, 'Cho', 1, ?)
     RETURNING id`).get(ch, stId('tv_shows')).id;
+  // ...an educational folder inside Local Shows with NO root of its own, which
+  // 003 has to carve out and re-type (001 types it TV Shows first, from the
+  // ancestor root, so this also pins the order the migrations run in)...
+  const cpce = db.prepare(`
+    INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+    VALUES ('cpce1', '/m/Local Shows/CPCE Teacher Lessons/c1.mov', 600, 0, 1, ?, 'CPCE Teacher Lessons', 1, ?)
+    RETURNING id`).get(ch, stId('movies')).id;
   // ...a file under no root at all, which must be left alone.
   const orphanFile = db.prepare(`
     INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
@@ -46,8 +53,10 @@ test('the repairs run once, fix the rows, and are recorded', () => {
 
   db.prepare(`INSERT INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
               VALUES (?, 'Math Intervention', ?, 1, 1, 0), (?, 'Cho', ?, 0, 1, 1),
-                     (?, 'New folder', ?, 0, 1, 2), (?, 'Planned', ?, 0, 1, 3)`)
-    .run(ch, stId('tv_shows'), ch, stId('tv_shows'), ch, stId('movies'), ch, stId('movies'));
+                     (?, 'New folder', ?, 0, 1, 2), (?, 'Planned', ?, 0, 1, 3),
+                     (?, 'CPCE Teacher Lessons', ?, 1, 1, 4)`)
+    .run(ch, stId('tv_shows'), ch, stId('tv_shows'), ch, stId('movies'), ch, stId('movies'),
+         ch, stId('tv_shows'));
   // "Planned" has no clips either, but a template names it: it stays.
   const tpl = db.prepare(`INSERT INTO BlockTemplate (channel_id, name, weekday, start_time, end_time, content_type)
                           VALUES (?, 'T', 'Mon', '08:00', '09:00', 'movie') RETURNING id`).get(ch).id;
@@ -69,8 +78,28 @@ test('the repairs run once, fix the rows, and are recorded', () => {
 
   const subjects = db.prepare('SELECT subject FROM ChannelSeries WHERE channel_id = ? ORDER BY subject')
     .all(ch).map((r) => r.subject);
-  assert.deepEqual(subjects, ['Cho', 'Math Intervention', 'Planned'],
+  assert.deepEqual(subjects, ['CPCE Teacher Lessons', 'Cho', 'Math Intervention', 'Planned'],
     'the dead series went, the one a template names stayed');
+
+  // 003: the educational folder got a root of its own and its clips with it.
+  assert.ok(
+    db.prepare('SELECT 1 AS x FROM MediaRoot WHERE channel_id = ? AND show_type_id = ? AND path = ?')
+      .get(ch, stId('lessons'), '/m/Local Shows/CPCE Teacher Lessons'),
+    'a Lessons root was carved out of the TV Shows folder'
+  );
+  assert.equal(typeOf(cpce), stId('lessons'), 'and its clips are lessons now');
+  assert.equal(
+    db.prepare('SELECT show_type_id FROM ChannelSeries WHERE channel_id = ? AND subject = ?')
+      .get(ch, 'CPCE Teacher Lessons').show_type_id,
+    stId('lessons'),
+    'series registry included'
+  );
+  // A folder on the list this installation has no clips under stays untouched:
+  // a root with no catalogue behind it is a guess about somebody else's share.
+  assert.equal(
+    db.prepare("SELECT COUNT(*) n FROM MediaRoot WHERE path LIKE '%R.E.A.D'").get().n, 0,
+    'no root invented for a folder with nothing in it'
+  );
 
   // Recorded, with the lock beside the database.
   assert.ok(existsSync(lockPath()), 'the lock file was written');
