@@ -515,6 +515,12 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 .validation.ok::before { content: "✓"; }
 .validation.bad { background: var(--bad-soft); color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); }
 .validation.bad::before { content: "⚠"; }
+
+/* Why a block is red, shown on the clips themselves: the fillers that make up a
+   run over the cap, and any clip in a movie block that is not a movie. */
+#itemList li.overfill, #itemList li.offtype { background: var(--bad-soft); }
+#itemList li.overfill { box-shadow: inset 3px 0 0 var(--bad); }
+#itemList li.offtype { box-shadow: inset 3px 0 0 var(--bad); outline: 1px dashed var(--bad); }
 .modal-actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
@@ -855,3 +861,10 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 }
 .tx-err { color: var(--bad); max-width: 340px; }
 #txTable td { vertical-align: top; }
+
+
+/* Duration filter in the block editor's library pane: three small boxes per
+   bound, kept narrow so the row still wraps cleanly at phone width. */
+.be-duration { align-items: center; gap: 6px; }
+.be-duration .hms { display: inline-flex; gap: 2px; }
+.be-duration input[type="number"] { width: 3.2em; text-align: center; }

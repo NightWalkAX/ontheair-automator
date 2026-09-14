@@ -17,7 +17,8 @@
   },
   "filler": {
     "maxUnderrunSeconds": 5,
-    "maxOverrunSeconds": 5
+    "maxOverrunSeconds": 5,
+    "maxConsecutiveSeconds": 1200
   },
   "movies": {
     "maxPerBlock": 2

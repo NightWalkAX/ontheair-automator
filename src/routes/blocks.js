@@ -3,57 +3,13 @@
 
 import { Router } from 'express';
 import { db, withTx } from '../db.js';
-import { blockDurationSeconds, fitTolerance, fitsTolerance, generateWeek, populateBlock } from '../services/scheduling.js';
+import {
+  blockDurationSeconds, fillerRunLimit, fitTolerance, fitsTolerance, generateWeek, populateBlock,
+} from '../services/scheduling.js';
+import { blockProblem, validateBlock } from '../services/blockValidation.js';
 import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
 
 export const router = Router();
-
-// ---- Duration validation (shared truth for UI + server) --------------------
-// A block "fits" when it is no more than maxUnderrun seconds short of the block
-// length and no more than maxOverrun seconds past it — exact is still the
-// target, but a small overrun is preferred over a bigger hole (see fitTolerance).
-function validateBlock(blockId) {
-  const block = db.prepare(`
-    SELECT sb.*,
-           COALESCE(s.start_time, bt.start_time) AS start_time,
-           COALESCE(s.end_time, bt.end_time)     AS end_time,
-           s.slot_order AS slot_order,
-           bt.name AS template_name,
-           bt.id AS template_id,
-           bt.max_per_show AS max_per_show,
-           bt.is_movie_block AS is_movie_block,
-           bt.movie_limit AS movie_limit,
-           COALESCE(sb.channel_id, bt.channel_id) AS channel_id
-    FROM ScheduledBlock sb
-    JOIN BlockTemplate bt ON bt.id = sb.template_id
-    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
-    WHERE sb.id = ?
-  `).get(blockId);
-  if (!block) return null;
-
-  // Items carry season/episode_no so the UI can name them "Show · S01E02"
-  // instead of exposing the internal `chapter` ordering key.
-  const items = db.prepare(`
-    WITH ${EPISODE_NO_CTE}
-    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
-           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
-    FROM ScheduleItem si
-    JOIN Resource r ON r.id = si.resource_id
-    LEFT JOIN EpisodeNo en ON en.id = r.id
-    LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
-    LEFT JOIN ShowType st ON st.id = r.show_type_id
-    WHERE si.block_id = ? ORDER BY si.play_order
-  `).all(blockId).map(withLabel);
-
-  const blockSeconds = blockDurationSeconds(block.start_time, block.end_time);
-  const totalSeconds = items.reduce((s, i) => s + i.duration, 0);
-  const diff = blockSeconds - totalSeconds; // >0 underrun, <0 overrun
-  const { maxUnderrun, maxOverrun } = fitTolerance();
-
-  const overrun = diff < 0;
-  const fits = fitsTolerance(diff, { maxUnderrun, maxOverrun });
-  return { block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, maxOverrun, fits };
-}
 
 // Record that a block's items aired: write PlayHistory (drives movie cooldown +
 // series progression), stamp fillers' last_used_at (repeat-heat), and advance the
@@ -399,14 +355,64 @@ router.get('/', (req, res) => {
     GROUP BY si.block_id
   `).all(...params)) totals.set(t.block_id, t.total || 0);
 
+  // The filler-run cap needs the LONGEST unbroken stretch of fillers per block,
+  // which is a gaps-and-islands problem and so, like the totals above, one
+  // grouped query for the whole week rather than a per-block walk. Position is
+  // ROW_NUMBER over play_order, not play_order itself, so a gap left by a
+  // deleted item can't be mistaken for a break in the run.
+  const fillerRuns = new Map();
+  for (const t of db.prepare(`
+    WITH items AS (
+      SELECT si.block_id, r.duration, r.is_filler,
+             ROW_NUMBER() OVER (PARTITION BY si.block_id ORDER BY si.play_order) AS pos
+      FROM ScheduleItem    si
+      JOIN ScheduledBlock  sb ON sb.id = si.block_id
+      JOIN BlockTemplate   bt ON bt.id = sb.template_id
+      JOIN Resource        r  ON r.id  = si.resource_id
+      WHERE ${clauses.join(' AND ')}
+    ),
+    islands AS (
+      SELECT block_id, duration,
+             pos - ROW_NUMBER() OVER (PARTITION BY block_id ORDER BY pos) AS grp
+      FROM items WHERE is_filler = 1
+    )
+    SELECT block_id, MAX(run) AS run FROM (
+      SELECT block_id, grp, SUM(duration) AS run FROM islands GROUP BY block_id, grp
+    ) GROUP BY block_id
+  `).all(...params)) fillerRuns.set(t.block_id, t.run || 0);
+
+  // Content types must not mix: how many non-filler clips in a movie block are
+  // not movies. Zero for every block once the catalogue is clean, but a draft
+  // generated before the guard existed still has to show red.
+  const offType = new Map();
+  for (const t of db.prepare(`
+    SELECT si.block_id, COUNT(*) AS n
+    FROM ScheduleItem    si
+    JOIN ScheduledBlock  sb ON sb.id = si.block_id
+    JOIN BlockTemplate   bt ON bt.id = sb.template_id
+    JOIN Resource        r  ON r.id  = si.resource_id
+    LEFT JOIN ShowType   st ON st.id = r.show_type_id
+    WHERE ${clauses.join(' AND ')}
+      AND bt.is_movie_block = 1 AND r.is_filler = 0
+      AND COALESCE(st.code, '') != 'movies'
+    GROUP BY si.block_id
+  `).all(...params)) offType.set(t.block_id, t.n || 0);
+
   const tol = fitTolerance();
+  const maxFillerRun = fillerRunLimit();
   const blocks = rows.map((r) => {
     const blockSeconds = blockDurationSeconds(r.start_time, r.end_time);
     const totalSeconds = totals.get(r.id) || 0;
     const diff = blockSeconds - totalSeconds;   // >0 underrun, <0 overrun
+    const fillerRun = fillerRuns.get(r.id) || 0;
+    const offTypeCount = offType.get(r.id) || 0;
     return {
       ...r, is_mirror: r.slot_order > 0,
-      blockSeconds, totalSeconds, diff, fits: fitsTolerance(diff, tol),
+      blockSeconds, totalSeconds, diff,
+      durationFits: fitsTolerance(diff, tol),
+      fillerRun, maxFillerRun, fillerFits: fillerRun <= maxFillerRun,
+      offTypeCount, typeFits: offTypeCount === 0,
+      fits: fitsTolerance(diff, tol) && fillerRun <= maxFillerRun && offTypeCount === 0,
     };
   });
   res.json({ week: dates, blocks });
@@ -664,15 +670,18 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
 });
 
 // POST /api/blocks/:id/approve — server-side re-validation before approving,
-// so a stale client can't push an out-of-tolerance block through.
+// so a stale client can't push a block through that no longer passes: duration
+// outside tolerance, a filler run over the cap, or mixed content types.
 router.post('/:id/approve', (req, res) => {
   const id = Number(req.params.id);
   const v = validateBlock(id);
   if (!v) return res.status(404).json({ error: 'not found' });
   if (!v.fits) {
     return res.status(409).json({
-      error: 'block is outside the filler tolerance and cannot be approved',
+      error: `block ${blockProblem(v)} and cannot be approved`,
       diff: v.diff, overrun: v.overrun, maxUnderrun: v.maxUnderrun, maxOverrun: v.maxOverrun,
+      fillerRun: v.fillerRun, maxFillerRun: v.maxFillerRun,
+      offTypeIds: v.offTypeIds,
     });
   }
   if (v.block.status !== 'approved') recordBlockPlays(v); // record only on first approval
@@ -695,7 +704,7 @@ router.post('/approve-week', (req, res) => {
       recordBlockPlays(v); // these are drafts, so always a first approval
       db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE id=?").run(id);
       approved.push(id);
-    } else blocked.push({ id, diff: v.diff });
+    } else blocked.push({ id, diff: v.diff, reason: blockProblem(v) });
   }
   res.json({ ok: blocked.length === 0, approved, blocked });
 });

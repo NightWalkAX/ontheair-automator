@@ -38,8 +38,10 @@ const { router: blocks } = await import('../src/routes/blocks.js');
 const { router: otav } = await import('../src/routes/otav.js');
 const { runWeeklyDraft } = await import('../src/cron/weeklyDraft.js');
 const { fitFillers, fitsTolerance, spreadFillers, makeFillerPacker, buildAlignedBlock,
-        chooseMovies, moviePool, movieLimit, pickMovieRun } =
+        chooseMovies, moviePool, movieLimit, pickMovieRun, maxFillerRunSeconds,
+        fillerRunLimit, activeFranchise } =
   await import('../src/services/scheduling.js');
+const { validateBlock, blockProblem } = await import('../src/services/blockValidation.js');
 const { sagaSubjectName } = await import('../src/services/movieSaga.js');
 const { cloneScannedResources } = await import('../src/services/ingestion.js');
 const { latestEpisode } = await import('../src/services/playHistory.js');
@@ -1391,6 +1393,156 @@ test('a franchise part is labelled by saga and part wherever a clip is listed', 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
 
+test('a movie block never airs anything that is not a movie', () => {
+  // The production bug, reproduced from both directions. A lesson series gets
+  // assigned to a movie block, AND (the actual cause) lesson files sit in the
+  // catalogue carrying show_type Movies after a bad root clone.
+  const ch = makeSagaChannel('Saga Types');
+  const stLessons = stId('lessons');
+  const addLesson = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+                                VALUES (?, ?, ?, 0, 1, ?, ?, ?, ?)`);
+  for (const c of [1, 2, 3]) {
+    addLesson.run(`Grade 7 Maths ${c}`, `/tmp/SagaTypes-lesson${c}.mov`, 700, ch, 'Grade 7 Maths', c, stLessons);
+  }
+  db.prepare(`INSERT INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+              VALUES (?, 'Grade 7 Maths', ?, 1, 1, 2)`).run(ch, stLessons);
+
+  const tpl = sagaTemplate(ch, ['Grade 7 Maths', 'Movies'], 4);
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+  const run = pickMovieRun(tpl, block, 3 * 3600, 20 * 3600, ch);
+  assert.ok(run.length, 'the block still fills');
+  assert.ok(run.every((r) => r.subject !== 'Grade 7 Maths'), 'no lesson series reaches a movie block');
+
+  // Now the harder case: the same lessons mis-typed as Movies is what the engine
+  // used to swallow. Their subject is registered as Lessons, so the series guard
+  // drops them; a whole-library block leans on the resource-level guard instead.
+  const open = sagaTemplate(ch, [], 4);
+  const openRun = pickMovieRun(open, block, 3 * 3600, 20 * 3600, ch);
+  assert.ok(openRun.every((r) => r.subject !== 'Grade 7 Maths'), 'nor an open movie night');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('one saga at a time: a franchise mid-run blocks every other franchise', () => {
+  const ch = makeSagaChannel('Saga Exclusive');
+  const stMovies = stId('movies');
+  // A second franchise, so the block has two to choose from.
+  const addFilm = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+                              VALUES (?, ?, ?, 0, 1, ?, ?, ?, ?)`);
+  for (const p of [1, 2, 3]) {
+    addFilm.run(`Other_${p}`, `/tmp/SagaExclusive-other${p}.mov`, 3600, ch, 'Other', p, stMovies);
+  }
+  db.prepare(`INSERT INTO ChannelSeries (channel_id, subject, show_type_id, is_serial, is_active, play_order)
+              VALUES (?, 'Other', ?, 1, 1, 2)`).run(ch, stMovies);
+  const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
+
+  // Nothing has started yet: no franchise counts as in progress.
+  assert.equal(activeFranchise(ch, null, block), null, 'nothing is mid-run before anything airs');
+
+  // "Saga" is now part way through — it owns the serial slots until it ends.
+  db.prepare("UPDATE ChannelSeries SET cursor_chapter = 2 WHERE channel_id = ? AND subject = 'Saga'").run(ch);
+  assert.equal(activeFranchise(ch, null, block), 'Saga');
+
+  const tpl = sagaTemplate(ch, ['Other', 'Saga'], 3);   // "Other" named FIRST
+  const run = pickMovieRun(tpl, block, 4 * 3600, 20 * 3600, ch);
+  assert.equal(run[0].subject, 'Saga', 'the saga in progress leads, whatever the template order');
+  assert.equal(run[0].chapter, 2, 'at the part it is due');
+  assert.ok(run.every((r) => r.subject !== 'Other'), 'the other franchise waits its turn');
+
+  // With the standalone folder assigned as well, the saga takes one slot and the
+  // rest of the block is standalone films — never a part of the other franchise.
+  const mixed = sagaTemplate(ch, ['Other', 'Saga', 'Movies'], 3);
+  const mixedRun = pickMovieRun(mixed, block, 4 * 3600, 20 * 3600, ch);
+  assert.equal(mixedRun[0].subject, 'Saga');
+  assert.ok(
+    mixedRun.slice(1).every((r) => Number(r.chapter) === 0),
+    'only standalone films share the block with the saga in progress'
+  );
+
+  // Past its last part the saga is finished, and the next one may start.
+  db.prepare("UPDATE ChannelSeries SET cursor_chapter = 5 WHERE channel_id = ? AND subject = 'Saga'").run(ch);
+  assert.equal(activeFranchise(ch, null, block), null, 'a finished saga is no longer in progress');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
+test('a block with more than the allowed filler back to back cannot be approved', async () => {
+  assert.equal(maxFillerRunSeconds([]), 0);
+  assert.equal(
+    maxFillerRunSeconds([
+      { is_filler: 1, duration: 600 }, { is_filler: 1, duration: 600 },
+      { is_filler: 0, duration: 60 },
+      { is_filler: 1, duration: 300 },
+    ]),
+    1200,
+    'the longest run, not the total'
+  );
+
+  const ch = makeSagaChannel('Filler Cap');
+  const tpl = sagaTemplate(ch, ['Movies'], 1);
+  const slot = db.prepare(`INSERT INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order)
+                           VALUES (?, '20:00', '23:00', 0) RETURNING id`).get(tpl.id).id;
+  const blockId = db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                              VALUES (?, ?, ?, '2026-12-28', 'draft') RETURNING id`).get(tpl.id, slot, ch).id;
+
+  // Build the block by hand: one 2h film, then filler to the 3h mark. One hour of
+  // filler back to back is well past the 20-minute cap, and the duration is exact,
+  // so this can only be refused for the filler run.
+  const film = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+                           VALUES ('Long', '/tmp/FillerCap-long.mov', 7200, 0, 1, ?, 'Movies', 0, ?) RETURNING id`)
+    .get(ch, stId('movies')).id;
+  const pad = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+                          VALUES (?, ?, 1200, 1, 1, ?) RETURNING id`);
+  const ins = db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order) VALUES (?, ?, ?)');
+  ins.run(blockId, film, 0);
+  for (let i = 0; i < 3; i++) {
+    ins.run(blockId, pad.get(`cap${i}`, `/tmp/FillerCap-pad${i}.mov`, ch).id, i + 1);
+  }
+
+  const v = validateBlock(blockId);
+  assert.equal(v.diff, 0, 'the duration is exact');
+  assert.equal(v.durationFits, true);
+  assert.equal(v.fillerRun, 3600);
+  assert.equal(v.maxFillerRun, fillerRunLimit());
+  assert.equal(v.fits, false, 'an hour of filler back to back blocks approval');
+  assert.match(blockProblem(v), /back to back/);
+
+  const res = await j('POST', `/api/blocks/${blockId}/approve`);
+  assert.equal(res.status, 409, 'the server refuses it too, not just the UI');
+  assert.equal(res.data.fillerRun, 3600);
+
+  // Two 20-minute pads back to back are still one run, so that is refused too.
+  db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(blockId);
+  ins.run(blockId, pad.get('capA', '/tmp/FillerCap-padA.mov', ch).id, 0);
+  ins.run(blockId, film, 1);
+  ins.run(blockId, pad.get('capB', '/tmp/FillerCap-padB.mov', ch).id, 2);
+  ins.run(blockId, pad.get('capC', '/tmp/FillerCap-padC.mov', ch).id, 3);
+  const trimmed = validateBlock(blockId);
+  assert.equal(trimmed.fillerRun, 2400, 'the trailing pair is still one run');
+  assert.equal(trimmed.fits, false);
+
+  // The same hour of filler spread as three 20-minute stretches around two
+  // features is exactly what the cap is meant to allow.
+  const half = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter, show_type_id)
+                           VALUES (?, ?, 3600, 0, 1, ?, 'Movies', 0, ?) RETURNING id`);
+  const f1 = half.get('Half A', '/tmp/FillerCap-halfA.mov', ch, stId('movies')).id;
+  const f2 = half.get('Half B', '/tmp/FillerCap-halfB.mov', ch, stId('movies')).id;
+  db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(blockId);
+  ins.run(blockId, pad.get('capD', '/tmp/FillerCap-padD.mov', ch).id, 0);
+  ins.run(blockId, f1, 1);
+  ins.run(blockId, pad.get('capE', '/tmp/FillerCap-padE.mov', ch).id, 2);
+  ins.run(blockId, f2, 3);
+  ins.run(blockId, pad.get('capF', '/tmp/FillerCap-padF.mov', ch).id, 4);
+  const ok = validateBlock(blockId);
+  assert.equal(ok.diff, 0);
+  assert.equal(ok.fillerRun, 1200);
+  assert.equal(ok.fits, true, '20 minutes at a time is allowed');
+  assert.equal(blockProblem(ok), null);
+  assert.equal((await j('POST', `/api/blocks/${blockId}/approve`)).status, 200);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
+});
+
 test('a wide gap is spread over distinct fillers instead of repeating one clip', () => {
   // The real pool's shape: one clip far longer than the rest, plus dozens of short
   // ones, ~11800s all told. The old exact-fit search reached for the longest
@@ -1582,6 +1734,34 @@ test('clone on re-add: a scanned folder assigned to a new channel needs no re-sc
   // Series registered for the new channel too.
   const reg = (await j('GET', `/api/channels/${ch3}/series`)).data.map((s) => s.subject).sort();
   assert.ok(reg.includes('Math') && reg.includes('History') && reg.includes('Biology'));
+});
+
+test('a wide root clone keeps the show type of the deeper roots inside it', async () => {
+  // The production incident: a root added one level too high cloned the whole
+  // tree under ITS type, and 971 lesson files ended up catalogued as Movies —
+  // which is how lessons started playing in movie blocks. The deepest root that
+  // contains a file decides its type, exactly as a scan would.
+  const ch5 = (await j('POST', '/api/channels', { name: 'Channel 5', api_ip: '127.0.0.1', api_port: fakeOtav.port })).data.id;
+  const lessonsPath = join(mediaDir, 'lessons');
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch5, stId('lessons'), lessonsPath);
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch5, stId('movies'), mediaDir);
+
+  cloneScannedResources(ch5, stId('movies'), mediaDir);
+  const lessons = db.prepare(
+    "SELECT COUNT(*) n FROM Resource WHERE channel_id = ? AND file_path LIKE ? AND show_type_id = ?"
+  ).get(ch5, lessonsPath + '/%', stId('lessons')).n;
+  const mistyped = db.prepare(
+    "SELECT COUNT(*) n FROM Resource WHERE channel_id = ? AND file_path LIKE ? AND show_type_id = ?"
+  ).get(ch5, lessonsPath + '/%', stId('movies')).n;
+  assert.ok(lessons > 0, `lesson files kept the lessons type (${lessons})`);
+  assert.equal(mistyped, 0, 'the wide root did not re-type them as movies');
+
+  // And the series registry agrees, or the engine's series guard would still
+  // wave them into a movie block.
+  const math = db.prepare('SELECT show_type_id FROM ChannelSeries WHERE channel_id = ? AND subject = ?').get(ch5, 'Math');
+  assert.equal(math?.show_type_id, stId('lessons'), 'the series is registered as lessons');
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch5);
 });
 
 test('copy roots: a new channel inherits every root of an existing one, catalog included', async () => {
