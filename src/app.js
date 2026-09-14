@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 
 import { requestLogger, log, logPath, tailLog } from './logger.js';
 import { initSchema } from './db.js';
+import { runPendingMigrations } from './migrations/index.js';
 import { loadConfig } from './config.js';
 import { startWeeklyDraftCron } from './cron/weeklyDraft.js';
 
@@ -29,6 +30,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
 initSchema();
+// One-off data repairs for rows earlier bugs wrote. Each runs at most once,
+// recorded in data/.migrations.lock — see src/migrations/index.js. They run
+// BEFORE the routes are mounted, so nothing serves a half-repaired catalogue.
+runPendingMigrations();
 // A conversion killed mid-clip left a 'running' row and an incomplete work
 // file; the original was never touched, so the clip just goes back in the queue.
 resetStaleRunning();
