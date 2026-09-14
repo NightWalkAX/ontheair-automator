@@ -453,7 +453,26 @@ export async function scanMediaRoot(mediaRoot, { force = false } = {}) {
   // as the clip url, so it must be valid on the playout Mac, not here.
   const l = log('scan');
   l.info(`root ${mediaRoot.path} (channel ${mediaRoot.channel_id}, show type ${mediaRoot.show_type_id})`);
-  const files = await collectVideoFiles(localizePath(mediaRoot.path));
+  let files = await collectVideoFiles(localizePath(mediaRoot.path));
+
+  // A file inside a DEEPER root of the same channel belongs to that root, not to
+  // this one — the deepest root wins, the same rule cloneScannedResources() and
+  // the catalogue repair use. Without this the two roots both catalogue the file
+  // and the LAST one scanned decides its show type, so a lesson folder sitting
+  // inside a TV Shows root (Local Shows/Math Intervention) would flip type on
+  // every re-scan depending on the order the roots happen to come out of the
+  // table. Skipping here also means the file is walked once, not twice.
+  const deeper = db.prepare(
+    "SELECT path FROM MediaRoot WHERE channel_id = ? AND id != ? AND path LIKE ? ESCAPE '\\' AND LENGTH(path) > LENGTH(?)"
+  ).all(mediaRoot.channel_id, mediaRoot.id, mediaRoot.path.replace(/[%_\\]/g, '\\$&') + '/%', mediaRoot.path)
+    .map((r) => localizePath(r.path));
+  if (deeper.length) {
+    const before = files.length;
+    files = files.filter((f) => !deeper.some((d) => f === d || f.startsWith(d + '/')));
+    if (before !== files.length) {
+      l.info(`root ${mediaRoot.path}: ${before - files.length} file(s) belong to a deeper root of this channel`);
+    }
+  }
   const errors = [];
   let subjects = new Set();
   // One ffprobe + one stat per file over SMB: thousands of round trips, and
@@ -673,9 +692,12 @@ export async function recheckCatalog({ channelId = null, force = false } = {}) {
  * `force` re-probes files that are already catalogued and unchanged.
  */
 export async function scanAll({ channelId, force = false } = {}) {
+  // Deepest first, so the root that actually owns a subtree catalogues it before
+  // any ancestor root gets there (scanMediaRoot skips what a deeper root owns;
+  // this only keeps the log in a sensible order).
   const rows = channelId
-    ? db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ?').all(channelId)
-    : db.prepare('SELECT * FROM MediaRoot').all();
+    ? db.prepare('SELECT * FROM MediaRoot WHERE channel_id = ? ORDER BY LENGTH(path) DESC').all(channelId)
+    : db.prepare('SELECT * FROM MediaRoot ORDER BY LENGTH(path) DESC').all();
 
   const l = log('scan');
   l.info(`scanAll · ${rows.length} media root(s)${channelId ? ` for channel ${channelId}` : ''}`

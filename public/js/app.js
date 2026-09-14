@@ -2720,7 +2720,13 @@ async function openTemplate(t) {
 async function loadTplSeries(channelId, included = []) {
   let rows = [];
   try { rows = await api.get(`/api/channels/${channelId}/series`); } catch { /* none */ }
-  const active = rows.filter((r) => r.is_active);
+  // A series with no clips cannot contribute anything to a block, and there are
+  // thousands of them on the channels that were once scanned against the whole
+  // production share — one registry row per folder walked. Keep one that a
+  // template already names (the operator is mid-way through a setup), hide the
+  // rest so the picker lists what can actually air.
+  const active = rows.filter((r) => r.is_active)
+    .filter((r) => r.chapter_count > 0 || included.includes(r.subject));
   tplSeries = active.map((r) => ({ subject: r.subject, meta: r }));
   // Keep the saved play order, dropping shows that are no longer active.
   const known = new Set(active.map((r) => r.subject));

@@ -1739,6 +1739,33 @@ test('clone on re-add: a scanned folder assigned to a new channel needs no re-sc
   assert.ok(reg.includes('Math') && reg.includes('History') && reg.includes('Biology'));
 });
 
+test('a scan gives a file the show type of the DEEPEST root that contains it', async () => {
+  // The catalogue's real shape: educational programmes living inside the TV
+  // Shows folder (Broadcast/Local Shows/Math Intervention). Both roots cover the
+  // same files, and before this the LAST root scanned decided their type — so
+  // the type flipped from one re-scan to the next depending on the order the
+  // roots came out of the table.
+  const ch6 = (await j('POST', '/api/channels', { name: 'Channel 6', api_ip: '127.0.0.1', api_port: fakeOtav.port })).data.id;
+  const lessonsPath = join(mediaDir, 'lessons');
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch6, stId('tv_shows'), mediaDir);
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?,?,?)').run(ch6, stId('lessons'), lessonsPath);
+
+  await j('POST', '/api/media/scan', { channel_id: ch6 });
+  const typed = (code) => db.prepare(
+    'SELECT COUNT(*) n FROM Resource WHERE channel_id = ? AND file_path LIKE ? AND show_type_id = ?'
+  ).get(ch6, lessonsPath + '/%', stId(code)).n;
+  assert.ok(typed('lessons') > 0, 'the lesson folder catalogued as lessons');
+  assert.equal(typed('tv_shows'), 0, 'the ancestor root did not claim it');
+
+  // And it stays put: scanning again must not hand the files back to the
+  // ancestor root.
+  await j('POST', '/api/media/scan', { channel_id: ch6 });
+  assert.equal(typed('tv_shows'), 0, 'a re-scan leaves the type where it was');
+  assert.ok(typed('lessons') > 0);
+
+  db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch6);
+});
+
 test('a wide root clone keeps the show type of the deeper roots inside it', async () => {
   // The production incident: a root added one level too high cloned the whole
   // tree under ITS type, and 971 lesson files ended up catalogued as Movies —
