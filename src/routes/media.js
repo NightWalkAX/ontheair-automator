@@ -223,13 +223,43 @@ router.put('/roots/:id', (req, res) => {
     const contains = containedRootsError(path, [targetChannel], { exceptRootId: id });
     if (contains) return res.status(409).json({ error: contains });
   }
+  const nextChannel = b.channel_id != null ? Number(b.channel_id) : cur.channel_id;
+  const nextType = b.show_type_id != null ? Number(b.show_type_id) : cur.show_type_id;
   try {
+    let retagged = 0;
     db.prepare('UPDATE MediaRoot SET channel_id = ?, show_type_id = ?, path = ? WHERE id = ?').run(
-      b.channel_id != null ? Number(b.channel_id) : cur.channel_id,
-      b.show_type_id != null ? Number(b.show_type_id) : cur.show_type_id,
-      path, id
+      nextChannel, nextType, path, id
     );
-    res.json({ ok: true, rescanNeeded: true });
+    // Changing a root's folder type used to leave everything it had already
+    // catalogued carrying the OLD type until somebody thought to re-scan — which
+    // is how lessons kept showing up in movie blocks long after the root itself
+    // was corrected. Re-tag the subtree now, minus anything a DEEPER root of the
+    // same channel owns (that root's type wins, as it does on scan).
+    if (nextType !== cur.show_type_id && path === cur.path && nextChannel === cur.channel_id) {
+      const like = path.replace(/[%_\\]/g, '\\$&') + '/%';
+      const deeper = db.prepare(
+        'SELECT path FROM MediaRoot WHERE channel_id = ? AND id != ? AND path LIKE ? ESCAPE \'\\\''
+      ).all(nextChannel, id, like).map((r) => r.path);
+      const exclude = deeper.map(() => "AND file_path NOT LIKE ? ESCAPE '\\'").join(' ');
+      retagged = db.prepare(`
+        UPDATE Resource SET show_type_id = ?
+        WHERE channel_id = ? AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
+          AND show_type_id IS NOT ? ${exclude}
+      `).run(nextType, nextChannel, path, like, nextType,
+        ...deeper.map((d) => d.replace(/[%_\\]/g, '\\$&') + '/%')).changes;
+      // Same for the series registry: a subject whose clips just changed type
+      // must not stay registered under the old one.
+      db.prepare(`
+        UPDATE ChannelSeries SET show_type_id = ?
+        WHERE channel_id = ? AND subject IN (
+          SELECT DISTINCT subject FROM Resource
+          WHERE channel_id = ? AND subject IS NOT NULL
+            AND (file_path = ? OR file_path LIKE ? ESCAPE '\\') ${exclude}
+        )
+      `).run(nextType, nextChannel, nextChannel, path, like,
+        ...deeper.map((d) => d.replace(/[%_\\]/g, '\\$&') + '/%'));
+    }
+    res.json({ ok: true, rescanNeeded: true, retagged });
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

@@ -9,8 +9,16 @@
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
 import { nextChapter, randomWithCooldown, cooldownEligible, latestEpisode } from './playHistory.js';
+import { log } from '../logger.js';
+
+const l = log('scheduling');
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// The ShowType.code a movie block is allowed to draw from. Content types must
+// never mix: a block flagged is_movie_block airs films and nothing else, however
+// a series got assigned to it and whatever a Resource row claims about itself.
+export const MOVIES_CODE = 'movies';
 
 // --- Fit tolerance (shared truth for the engine, the API and the UI) ---------
 // A block's `diff` is blockSeconds - totalSeconds: positive = underrun (dead
@@ -33,6 +41,33 @@ export function fitTolerance() {
 /** Is a blockSeconds-totalSeconds difference inside the fit tolerance? */
 export function fitsTolerance(diff, tol = fitTolerance()) {
   return diff <= tol.maxUnderrun && diff >= -tol.maxOverrun;
+}
+
+// --- Filler run cap (shared truth for the engine, the API and the UI) -------
+// A block is allowed plenty of filler overall — what an operator (and a viewer)
+// experiences as dead air is a long UNBROKEN run of it. So the cap is on the
+// longest consecutive stretch of fillers, not on the block's filler total: two
+// 15-minute stretches either side of a feature are fine, half an hour back to
+// back is not. Nothing in the engine tries to satisfy this by itself; a block
+// over the cap is flagged and the operator adds or removes content.
+
+/** Longest allowed unbroken filler stretch, in seconds (config.filler). */
+export function fillerRunLimit() {
+  const n = Number((loadConfig().filler || {}).maxConsecutiveSeconds);
+  return n > 0 ? n : 20 * 60;
+}
+
+/** Longest unbroken run of filler, in seconds, over items in play order. */
+export function maxFillerRunSeconds(items) {
+  let run = 0;
+  let max = 0;
+  for (const it of items) {
+    if (Number(it.is_filler)) {
+      run += Number(it.duration) || 0;
+      if (run > max) max = run;
+    } else run = 0;
+  }
+  return max;
 }
 
 /** Block length in seconds from 'HH:MM' start/end (handles past-midnight). */
@@ -94,7 +129,13 @@ export function templateSeries(template, channelId = template.channel_id) {
   `).all(channelId, template.id);
 
   const active = rows.filter((r) => r.is_active);
-  if (active.length) return active.map((r) => ({ subject: r.subject, rule: ruleFor(r.show_code, r.is_serial) }));
+  if (active.length) {
+    return active.map((r) => ({
+      subject: r.subject,
+      rule: ruleFor(r.show_code, r.is_serial),
+      show_code: r.show_code ?? null,
+    }));
+  }
 
   // Legacy fallback: derive a single series from the old columns.
   if (template.target_subject) {
@@ -103,7 +144,11 @@ export function templateSeries(template, channelId = template.channel_id) {
       tv_episode: { show_code: 'tv_shows', is_serial: 1 },
       movie: { show_code: 'movies', is_serial: 0 },
     }[template.content_type] || { show_code: 'movies', is_serial: 0 };
-    return [{ subject: template.target_subject, rule: ruleFor(legacy.show_code, legacy.is_serial) }];
+    return [{
+      subject: template.target_subject,
+      rule: ruleFor(legacy.show_code, legacy.is_serial),
+      show_code: legacy.show_code,
+    }];
   }
   return [];
 }
@@ -122,22 +167,28 @@ function ruleFor(showCode, isSerial) {
  * Non-filler candidate resources for a block's channel, optionally by subject
  * and capped at maxDuration so a single main item can never overrun the slot.
  */
-function candidates(channelId, subject, maxDuration) {
-  const clauses = ['channel_id = ?', 'is_filler = 0', 'approved = 1'];
+function candidates(channelId, subject, maxDuration, showCode = null) {
+  const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1'];
   const params = [channelId];
-  if (subject) { clauses.push('subject = ?'); params.push(subject); }
-  if (maxDuration) { clauses.push('duration <= ?'); params.push(maxDuration); }
-  return db.prepare(`SELECT * FROM Resource WHERE ${clauses.join(' AND ')}`).all(...params);
+  if (subject) { clauses.push('r.subject = ?'); params.push(subject); }
+  if (maxDuration) { clauses.push('r.duration <= ?'); params.push(maxDuration); }
+  // A show type filter is by ShowType.code rather than the subject label: the
+  // subject says what folder a clip came from, the show type says what it IS,
+  // and only the second one keeps a lesson out of a movie block.
+  if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
+  return db.prepare(`
+    SELECT r.* FROM Resource r
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
+    WHERE ${clauses.join(' AND ')}
+  `).all(...params);
 }
 
 // --- Per-series content iterators -------------------------------------------
 // Each returns { peek(): Resource|null, consume(): void }. `peek` shows the next
 // candidate without committing; `consume` advances past it once it's placed.
 
-function serialIterator(channelId, subject, block) {
-  const chapters = db.prepare(
-    'SELECT * FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND approved = 1 ORDER BY chapter ASC, id ASC'
-  ).all(channelId, subject);
+function serialIterator(channelId, subject, block, showCode = null) {
+  const chapters = seriesParts(channelId, subject, showCode);
   if (!chapters.length) return { peek: () => null, consume: () => {} };
 
   const target = nextChapter(channelId, subject, block.target_date);
@@ -148,6 +199,23 @@ function serialIterator(channelId, subject, block) {
     peek: () => (steps >= chapters.length ? null : chapters[idx % chapters.length]),
     consume: () => { idx++; steps++; },
   };
+}
+
+/**
+ * Every part of an ordered series, in play order. Scoped by show type when the
+ * caller has one to enforce (a movie block), so a series whose rows are typed as
+ * something else contributes nothing rather than contributing the wrong thing.
+ */
+function seriesParts(channelId, subject, showCode = null) {
+  const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1'];
+  const params = [channelId, subject];
+  if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
+  return db.prepare(`
+    SELECT r.* FROM Resource r
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY r.chapter ASC, r.id ASC
+  `).all(...params);
 }
 
 /** Single-pick iterator: yields one resource then is exhausted. */
@@ -215,11 +283,15 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
   } else {
     if (!scope.length) return [];
     const marks = scope.map(() => '?').join(',');
+    // Named series are scoped by show type as well. The subject label alone is
+    // not a content type: the production catalogue has 971 lesson files carrying
+    // show_type Movies, and without this join they schedule as films.
     all = db.prepare(`
-      SELECT * FROM Resource
-      WHERE channel_id = ? AND is_filler = 0 AND approved = 1 AND duration <= ?
-        AND subject IN (${marks})
-    `).all(channelId, blockSecs, ...scope);
+      SELECT r.* FROM Resource r
+      JOIN ShowType st ON st.id = r.show_type_id
+      WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
+        AND st.code = ? AND r.subject IN (${marks})
+    `).all(channelId, blockSecs, MOVIES_CODE, ...scope);
   }
   if (!all.length) return [];
 
@@ -272,11 +344,16 @@ export function chooseMovies(pool, startSecs, blockSecs, limit) {
     for (const r of cands) {
       if (nodes++ > NODE_CAP) return;
       if (chosen.includes(r)) continue;
-      // Same franchise already in the block? Only continue it forwards. Chapter 0
-      // means "no ordinal" (every standalone film in the flat Movies folder), so
-      // it carries no order to respect and two of them may share a block freely.
+      // Franchise rules. Chapter 0 means "no ordinal" (every standalone film in
+      // the flat Movies folder), so it carries no order to respect and two of
+      // them may share a block freely. An ordered part, though:
+      //   - may only continue its own franchise FORWARDS, and
+      //   - may not share the run with a DIFFERENT franchise, because a saga
+      //     that has started airs to its end before another one begins.
       if (r.subject != null && Number(r.chapter) > 0 && chosen.some(
-        (c) => c.subject === r.subject && Number(c.chapter) > 0 && Number(c.chapter) >= Number(r.chapter)
+        (c) => Number(c.chapter) > 0 && (
+          c.subject !== r.subject || Number(c.chapter) >= Number(r.chapter)
+        )
       )) continue;
       const end = Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
       if (end - startSecs > blockSecs) continue; // would run past the slot
@@ -312,7 +389,7 @@ export function chooseMovies(pool, startSecs, blockSecs, limit) {
 export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
   const limit = movieLimit(template);
   if (limit <= 0) return [];
-  const series = templateSeries(template, channelId);
+  const series = moviesOnly(templateSeries(template, channelId), template);
 
   const items = [];
   const used = new Set();
@@ -327,23 +404,27 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
   // block's only source. With a standalone folder also assigned, each franchise
   // takes one slot per block so the other series still gets one — the same
   // one-pick-per-series-per-round cycling a normal block uses.
-  const hasStandalone = series.some((sr) => sr.rule !== 'serial');
-  const maxPerFranchise = hasStandalone ? 1 : limit;
-  const serials = series
-    .filter((sr) => sr.rule === 'serial')
-    .map((sr) => ({ it: serialIterator(channelId, sr.subject, block), count: 0 }));
-  let progressed = true;
-  while (progressed && items.length < limit) {
-    progressed = false;
-    for (const a of serials) {
-      if (items.length >= limit) break;
-      if (a.count >= maxPerFranchise) continue;
-      const r = a.it.peek();
-      if (!r || used.has(r.id) || !fits(r)) continue;
+  // ONE franchise at a time. A saga that has started airs to its end — over as
+  // many blocks as it takes — before another saga begins, so the block's serial
+  // slots all belong to a single franchise: the one already mid-run on this
+  // channel, or, when none is, the first the template names.
+  const serialSubjects = series.filter((sr) => sr.rule === 'serial').map((sr) => sr.subject);
+  const activeSubject = activeFranchise(channelId, serialSubjects, block)
+    ?? (serialSubjects.length ? serialSubjects[0] : activeFranchise(channelId, null, block));
+  if (activeSubject) {
+    // How many parts it may take in ONE block is unchanged: a double bill only
+    // when the saga is the block's sole source, otherwise one part per block so
+    // an unordered folder still gets its slot. A saga therefore spans as many
+    // blocks as it has parts — which is the point, it just may not be
+    // interrupted by a different saga on the way.
+    const hasStandalone = series.some((sr) => sr.rule !== 'serial');
+    const maxParts = hasStandalone ? 1 : limit;
+    const it = serialIterator(channelId, activeSubject, block, MOVIES_CODE);
+    for (let n = 0; n < maxParts && items.length < limit; n++) {
+      const r = it.peek();
+      if (!r || used.has(r.id) || !fits(r)) break;
       place(r);
-      a.it.consume();
-      a.count++;
-      progressed = true;
+      it.consume();
     }
   }
 
@@ -353,10 +434,13 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
     const scope = series.length ? standalone : null; // null = every movie on the channel
     let pool = moviePool(template, block, blockSecs, channelId, scope)
       .filter((r) => !used.has(r.id));
-    // The whole-library pool sweeps in franchise members too. Picking those purely
-    // by fit would air "Narnia 2" with no "Narnia 1" before it, so each franchise
-    // is narrowed to the one part it is actually due to play.
-    if (scope === null) pool = onlyNextParts(pool, channelId, block);
+    // The pool sweeps in franchise members too, and picking those purely by fit
+    // would air "Narnia 2" with no "Narnia 1" before it — or start a second saga
+    // while the first is half aired. Standalone films always pass; an ordered
+    // part only when it belongs to the saga this block is already airing (at the
+    // part it is due), or, when no saga is in progress anywhere, when it is that
+    // franchise's opening part.
+    pool = franchiseFilter(pool, channelId, block, activeSubject);
     for (const r of chooseMovies(pool, pos, blockSecs - (pos - startSecs), limit - items.length)) {
       place(r);
     }
@@ -365,21 +449,82 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
 }
 
 /**
- * Keep every unordered film (chapter 0) plus, for each ordered series present, only
- * the part that series is due to play next. Lets an unrestricted movie block draw
- * on the whole library without airing a franchise out of order.
+ * Drop every series a movie block is not allowed to draw from, i.e. anything
+ * whose show type is not Movies. A series with no ChannelSeries row (and so no
+ * show type of its own) is kept: the resource-level guards in seriesParts() and
+ * moviePool() decide it by what its clips actually are.
  */
-function onlyNextParts(pool, channelId, block) {
+function moviesOnly(series, template) {
+  const kept = series.filter((sr) => sr.show_code == null || sr.show_code === MOVIES_CODE);
+  const dropped = series.filter((sr) => !kept.includes(sr));
+  if (dropped.length) {
+    // Worth a line in the log: this is why a movie block can come back short.
+    l.warn(`movie block "${template?.name ?? template?.id}" ignores `
+      + `${dropped.length} non-movie series: `
+      + dropped.map((sr) => `${sr.subject} (${sr.show_code})`).join(', '));
+  }
+  return kept;
+}
+
+/**
+ * The franchise this channel is part way through, if any — the saga that has
+ * started but not finished, and therefore owns every serial slot until it ends.
+ *
+ * A saga is IN PROGRESS when the part it is due to play is neither its first
+ * (never started) nor past its last (already finished). `subjects` narrows the
+ * search to the series a template names; pass null to look at every ordered
+ * movie subject on the channel, which is what a movie block with no series
+ * assigned needs. Returns the subject, or null when nothing is mid-run.
+ */
+export function activeFranchise(channelId, subjects, block) {
+  let list = subjects;
+  if (list == null) {
+    list = db.prepare(`
+      SELECT r.subject FROM Resource r
+      JOIN ShowType st ON st.id = r.show_type_id
+      LEFT JOIN ChannelSeries cs ON cs.channel_id = r.channel_id AND cs.subject = r.subject
+      WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1
+        AND st.code = ? AND r.chapter > 0 AND r.subject IS NOT NULL
+      GROUP BY r.subject
+      ORDER BY COALESCE(cs.play_order, 0), r.subject
+    `).all(channelId, MOVIES_CODE).map((r) => r.subject);
+  }
+  for (const subject of list) {
+    const parts = seriesParts(channelId, subject, MOVIES_CODE)
+      .map((r) => Number(r.chapter))
+      .filter((c) => c > 0);
+    if (parts.length < 2) continue; // a one-part "saga" is never mid-run
+    const target = nextChapter(channelId, subject, block.target_date);
+    if (target > parts[0] && target <= parts[parts.length - 1]) return subject;
+  }
+  return null;
+}
+
+/**
+ * Keep every unordered film (chapter 0), and of the ordered ones keep only what
+ * the one-saga-at-a-time rule allows: the part the ACTIVE franchise is due to
+ * play, or — when no saga is in progress — the opening part of a franchise,
+ * which is how the next saga gets started. Everything else is held back for a
+ * later block.
+ */
+function franchiseFilter(pool, channelId, block, activeSubject) {
+  const partsOf = (subject) => pool
+    .filter((x) => x.subject === subject)
+    .map((x) => Number(x.chapter))
+    .sort((a, b) => a - b);
   const due = new Map(); // subject -> chapter due next
   return pool.filter((r) => {
     if (!r.subject || Number(r.chapter) <= 0) return true;
-    if (!due.has(r.subject)) due.set(r.subject, nextChapter(channelId, r.subject, block.target_date));
-    const target = due.get(r.subject);
-    // The series may have run past its last part, in which case it wraps to the
-    // lowest remaining — mirror serialIterator's wrap rather than dropping it.
-    const parts = pool.filter((x) => x.subject === r.subject).map((x) => Number(x.chapter)).sort((a, b) => a - b);
-    const pick = parts.find((c) => c >= target) ?? parts[0];
-    return Number(r.chapter) === pick;
+    const parts = partsOf(r.subject);
+    if (activeSubject) {
+      if (r.subject !== activeSubject) return false;
+      if (!due.has(r.subject)) due.set(r.subject, nextChapter(channelId, r.subject, block.target_date));
+      // The series may have run past its last part, in which case it wraps to the
+      // lowest remaining — mirror serialIterator's wrap rather than dropping it.
+      const target = due.get(r.subject);
+      return Number(r.chapter) === (parts.find((c) => c >= target) ?? parts[0]);
+    }
+    return Number(r.chapter) === parts[0];
   });
 }
 

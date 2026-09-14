@@ -334,6 +334,13 @@
           <h3 style="margin:0">🗓 Block templates</h3>
           <button id="btnNewTemplate" class="primary">+ New template</button>
         </div>
+        <!-- A network of six channels runs to dozens of templates; finding the
+             one to edit by eye is the slow part of a schedule change. -->
+        <div class="be-filters">
+          <input id="tplTableSearch" type="search" placeholder="Search templates, days, times or series…" aria-label="Search block templates" />
+          <select id="tplTableChannel" aria-label="Filter templates by channel"></select>
+          <span id="tplTableCount" class="muted"></span>
+        </div>
         <table id="templatesTable"><thead><tr><th>Channel</th><th>Name</th><th>Days</th><th>Airings</th><th>Series</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -359,6 +366,24 @@
             <input id="libSearch" type="search" placeholder="Search clips or shows…" aria-label="Search the library" />
             <select id="libType" aria-label="Filter by show type"></select>
             <select id="libSubject" aria-label="Filter by show"></select>
+          </div>
+          <!-- Duration filter. A block is a hole of a known size, so "what do I
+               have between 8 and 12 minutes?" is the question an operator
+               fixing a block actually asks. Blank fields mean no bound. -->
+          <div class="be-filters be-duration">
+            <span class="muted">Length</span>
+            <span class="hms">
+              <input id="libDurMinH" type="number" min="0" step="1" placeholder="h" aria-label="Minimum hours" />
+              <input id="libDurMinM" type="number" min="0" max="59" step="1" placeholder="m" aria-label="Minimum minutes" />
+              <input id="libDurMinS" type="number" min="0" max="59" step="1" placeholder="s" aria-label="Minimum seconds" />
+            </span>
+            <span class="muted">to</span>
+            <span class="hms">
+              <input id="libDurMaxH" type="number" min="0" step="1" placeholder="h" aria-label="Maximum hours" />
+              <input id="libDurMaxM" type="number" min="0" max="59" step="1" placeholder="m" aria-label="Maximum minutes" />
+              <input id="libDurMaxS" type="number" min="0" max="59" step="1" placeholder="s" aria-label="Maximum seconds" />
+            </span>
+            <button id="btnLibDurClear" class="mini ghost" type="button">Clear</button>
           </div>
           <div class="be-stride">
             <span class="muted">Pick every</span>

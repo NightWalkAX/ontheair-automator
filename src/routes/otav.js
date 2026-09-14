@@ -5,6 +5,7 @@ import {
   pushApprovedBlocks, pushApprovedRange, checkChannel, diagnoseChannel, isPushRunning,
 } from '../services/otavClient.js';
 import { cancelJob, finishJob, getJob, startJob, subscribe } from '../services/pushProgress.js';
+import { unfitBlocksInRange } from '../services/blockValidation.js';
 import { loadConfig } from '../config.js';
 
 export const router = Router();
@@ -38,6 +39,25 @@ router.post('/push', async (req, res) => {
   // 10-minute run, which the browser can only show as another dead spinner.
   if (isPushRunning()) {
     return res.status(409).json({ ok: false, error: 'a push is already running — watch or cancel that one first' });
+  }
+
+  // Nothing that no longer validates reaches air. The range is re-checked HERE,
+  // before the job starts and before OTAV is touched, so the operator gets one
+  // list of what to fix instead of a half-pushed week.
+  const range = DATE.test(week)
+    ? [week, (() => { const e = new Date(`${week}T00:00:00Z`); e.setUTCDate(e.getUTCDate() + 6); return e.toISOString().slice(0, 10); })()]
+    : DATE.test(from) && DATE.test(to) ? [from, to]
+    : DATE.test(date) ? [date, date]
+    : null;
+  if (range) {
+    const unfit = unfitBlocksInRange(range[0], range[1], channelIds);
+    if (unfit.length) {
+      return res.status(409).json({
+        ok: false,
+        error: `${unfit.length} block(s) in this range cannot go to air — fix them first`,
+        blocks: unfit,
+      });
+    }
   }
 
   const deadlineMs = Math.max(60, Number(loadConfig().otav?.pushTimeoutSeconds) || 900) * 1000;

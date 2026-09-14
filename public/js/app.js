@@ -236,7 +236,13 @@ async function loadSchedule() {
       card.append(el('div', { className: 'b-title', textContent: `${b.channel_name}: ${b.template_name}` }));
       card.append(el('div', { className: 'b-meta', textContent: `${b.start_time}–${b.end_time} · ${b.content_type}` }));
       const badges = el('div', { className: 'b-badges' });
-      badges.append(el('span', { className: `badge ${b.fits ? 'ok' : 'bad'}`, textContent: b.fits ? 'fits' : `off ${fmt(b.diff)}` }));
+      // One badge, but the reason matters: "off 0:00" on a block whose duration
+      // is perfect and whose filler run is half an hour reads as a bug.
+      const why = b.fits ? 'fits'
+        : !b.durationFits ? `off ${fmt(b.diff)}`
+        : b.fillerFits === false ? `filler ${fmt(b.fillerRun)}`
+        : `${b.offTypeCount} not movies`;
+      badges.append(el('span', { className: `badge ${b.fits ? 'ok' : 'bad'}`, textContent: why }));
       badges.append(el('span', { className: 'badge status', textContent: b.status }));
       if (b.is_mirror) badges.append(el('span', { className: 'badge', textContent: '🔁 repeat' }));
       card.append(badges);
@@ -521,6 +527,8 @@ let currentMirror = false;  // true when the open block is a mirrored airing (re
 let libSearch = '';
 let libType = '';           // show_type_code
 let libSubject = '';        // Resource.subject
+let libDurMin = null;       // seconds, null = no lower bound
+let libDurMax = null;       // seconds, null = no upper bound
 const libSel = new Set();   // selected resource ids
 let libAnchorId = null;     // last-clicked row — anchor for shift-range selection
 let blkDrag = null;         // { kind: 'lib', ids: [...] } | { kind: 'item', idx }
@@ -542,6 +550,8 @@ function libFiltered() {
   return allResources.filter((r) => {
     if (libType && (r.show_type_code || '') !== libType) return false;
     if (libSubject && (r.subject || '') !== libSubject) return false;
+    if (libDurMin != null && r.duration < libDurMin) return false;
+    if (libDurMax != null && r.duration > libDurMax) return false;
     if (!q) return true;
     return (r.label || '').toLowerCase().includes(q)
       || (r.display_name || '').toLowerCase().includes(q)
@@ -571,6 +581,7 @@ async function openBlock(id) {
   libSearch = ''; libType = ''; libSubject = '';
   libSel.clear(); libAnchorId = null;
   $('#libSearch').value = '';
+  clearLibDuration();
   renderLibrary();
   renderBlockControls();
   renderItems();
@@ -775,22 +786,76 @@ function renderItems() {
   renderValidation();
 }
 
-// Live client-side recompute mirroring the server's validateBlock().
+// Longest unbroken run of fillers in the block, in seconds. Mirrors
+// maxFillerRunSeconds() in services/scheduling.js.
+function fillerRunSeconds(items) {
+  let run = 0;
+  let max = 0;
+  for (const i of items) {
+    if (i.is_filler) { run += i.duration; if (run > max) max = run; }
+    else run = 0;
+  }
+  return max;
+}
+
+// Live client-side recompute mirroring the server's validateBlock(): duration
+// inside tolerance, no filler run over the cap, and no mixed content types in a
+// movie block. All three gate the Approve button — and the push behind it.
 function renderValidation() {
   const total = currentItems.reduce((s, i) => s + i.duration, 0);
   const diff = currentBlock.blockSeconds - total;
   const maxUnderrun = currentBlock.maxUnderrun ?? 5;
   const maxOverrun = currentBlock.maxOverrun ?? 0;
-  const fits = diff <= maxUnderrun && diff >= -maxOverrun;
+  const maxFillerRun = currentBlock.maxFillerRun ?? 1200;
+  const durationFits = diff <= maxUnderrun && diff >= -maxOverrun;
+  const fillerRun = fillerRunSeconds(currentItems);
+  const fillerFits = fillerRun <= maxFillerRun;
+  const offType = currentBlock.block?.is_movie_block
+    ? currentItems.filter((i) => !i.is_filler && i.show_type_code !== 'movies')
+    : [];
+  const fits = durationFits && fillerFits && offType.length === 0;
+
   const box = $('#modalValidation');
   box.className = `validation ${fits ? 'ok' : 'bad'}`;
+  const problems = [];
+  if (!durationFits) {
+    problems.push(diff < 0
+      ? `OVERRUN by ${fmt(-diff)} — exceeds ${maxOverrun}s tolerance`
+      : `UNDERRUN ${fmt(diff)} — exceeds ${maxUnderrun}s tolerance`);
+  }
+  if (!fillerFits) {
+    problems.push(`${fmt(fillerRun)} of filler back to back — max ${fmt(maxFillerRun)}. `
+      + 'Add content or remove fillers.');
+  }
+  if (offType.length) {
+    problems.push(`${offType.length} clip(s) in this movie block are not movies`);
+  }
   box.textContent = fits
     ? (diff >= 0
-        ? `Fits — total ${fmt(total)}, ${fmt(diff)} under (≤ ${maxUnderrun}s)`
-        : `Fits — total ${fmt(total)}, ${fmt(-diff)} over (≤ ${maxOverrun}s)`)
-    : (diff < 0
-        ? `OVERRUN by ${fmt(-diff)} — exceeds ${maxOverrun}s tolerance`
-        : `UNDERRUN ${fmt(diff)} — exceeds ${maxUnderrun}s tolerance`);
+        ? `Fits — total ${fmt(total)}, ${fmt(diff)} under (≤ ${maxUnderrun}s) · longest filler run ${fmt(fillerRun)}`
+        : `Fits — total ${fmt(total)}, ${fmt(-diff)} over (≤ ${maxOverrun}s) · longest filler run ${fmt(fillerRun)}`)
+    : problems.join(' · ');
+
+  // Mark the offending clips so the operator sees WHERE to cut, not just that
+  // something is wrong.
+  const rows = [...$('#itemList').children];
+  let run = 0;
+  const runRows = [];
+  const flagRun = () => {
+    if (run > maxFillerRun) for (const r of runRows) r.classList.add('overfill');
+    run = 0; runRows.length = 0;
+  };
+  currentItems.forEach((i, idx) => {
+    const row = rows[idx];
+    if (row) row.classList.remove('overfill', 'offtype');
+    if (i.is_filler) { run += i.duration; if (row) runRows.push(row); }
+    else {
+      flagRun();
+      if (row && offType.includes(i)) row.classList.add('offtype');
+    }
+  });
+  flagRun();
+
   $('#btnApproveBlock').disabled = !fits;
   return fits;
 }
@@ -821,7 +886,11 @@ function renderLibrary() {
   const rows = libFiltered();
   const list = $('#libList');
   list.innerHTML = '';
-  $('#libCount').textContent = `${rows.length} clip(s)${libSel.size ? ` · ${libSel.size} selected` : ''}`;
+  const durNote = libDurMin != null || libDurMax != null
+    ? ` · ${fmt(libDurMin ?? 0)}–${libDurMax != null ? fmt(libDurMax) : '∞'}`
+    : '';
+  $('#libCount').textContent = `${rows.length} clip(s)${durNote}`
+    + `${libSel.size ? ` · ${libSel.size} selected` : ''}`;
 
   if (!rows.length) {
     list.append(el('li', { className: 'muted', textContent: 'Nothing matches this filter.' }));
@@ -890,6 +959,27 @@ async function addResourcesToBlock(ids, idx) {
   renderItems();
   renderLibrary();
 }
+
+// Duration filter: three boxes per bound, so an operator types a length the way
+// they read one (1 h 45 m 00 s) instead of converting it to seconds.
+const DUR_IDS = ['libDurMinH', 'libDurMinM', 'libDurMinS', 'libDurMaxH', 'libDurMaxM', 'libDurMaxS'];
+function hmsSeconds(h, m, sec) {
+  const parts = [h, m, sec].map((id) => $('#' + id).value.trim());
+  if (parts.every((v) => v === '')) return null; // all blank = no bound
+  const [hh, mm, ss] = parts.map((v) => Math.max(0, Number(v) || 0));
+  return hh * 3600 + mm * 60 + ss;
+}
+function readLibDuration() {
+  libDurMin = hmsSeconds('libDurMinH', 'libDurMinM', 'libDurMinS');
+  libDurMax = hmsSeconds('libDurMaxH', 'libDurMaxM', 'libDurMaxS');
+  renderLibrary();
+}
+function clearLibDuration() {
+  for (const id of DUR_IDS) $('#' + id).value = '';
+  libDurMin = null; libDurMax = null;
+}
+for (const id of DUR_IDS) $('#' + id).addEventListener('input', readLibDuration);
+$('#btnLibDurClear').addEventListener('click', () => { clearLibDuration(); renderLibrary(); });
 
 $('#libSearch').addEventListener('input', (e) => { libSearch = e.currentTarget.value; renderLibrary(); });
 $('#libType').addEventListener('change', (e) => { libType = e.currentTarget.value; renderLibrary(); });
@@ -2351,30 +2441,80 @@ async function loadSetupTab() {
       el('td', { textContent: s.is_educational ? 'yes' : 'no' }),
       el('td', { textContent: s.is_filler ? 'yes' : 'no' })));
 
-    const tpls = await api.get('/api/blocks/templates');
-    const tt = $('#templatesTable tbody'); tt.innerHTML = '';
-    if (!tpls.length) tt.append(el('tr', {}, el('td', { colSpan: 6, className: 'muted', style: 'text-align:center;padding:18px', textContent: 'No block templates yet — click “New template”.' })));
-    for (const t of tpls) {
-      const airings = (t.slots || []).map((s) => `${s.start_time}–${s.end_time}`).join(', ') || `${t.start_time}–${t.end_time}`;
-      const series = (t.series || []).map((s) => s.subject).join(', ') || (t.target_subject || '—');
-      const edit = el('button', { className: 'mini ghost', textContent: 'edit' });
-      edit.onclick = () => openTemplate(t);
-      const del = el('button', { className: 'mini danger', textContent: 'delete' });
-      del.onclick = async () => {
-        if (!await confirmDialog('Delete template', `Delete “${t.name}”? Existing generated blocks are unaffected until regenerated.`, { confirmLabel: 'Delete', danger: true })) return;
-        await withBusy(del, async () => { await api.send('DELETE', `/api/blocks/templates/${t.id}`); toast('Template deleted', 'ok'); await loadSetupTab(); });
-      };
-      const td = el('td'); td.style.textAlign = 'right'; td.append(edit, document.createTextNode(' '), del);
-      tt.append(el('tr', {},
-        el('td', { textContent: chName[t.channel_id] || t.channel_id }),
-        el('td', { textContent: t.name }),
-        el('td', { textContent: (t.weekdays || t.weekday || '').replaceAll(',', ' ') }),
-        el('td', { textContent: airings }),
-        el('td', { textContent: series }),
-        td));
-    }
+    setupTemplates = await api.get('/api/blocks/templates');
+    setupChannelNames = chName;
+    renderTemplatesTable();
   } catch (e) { toast(e.message, 'bad', 'Setup'); }
 }
+
+// ---- Block template table --------------------------------------------------
+// Held in module state and re-rendered from there, so the search box filters
+// without another round trip.
+let setupTemplates = [];
+let setupChannelNames = {};
+let tplTableSearch = '';
+let tplTableChannel = '';
+
+/** One template as the flat text the search box matches against. */
+function templateHaystack(t) {
+  const airings = (t.slots || []).map((s) => `${s.start_time}–${s.end_time}`).join(' ') || `${t.start_time}–${t.end_time}`;
+  const series = (t.series || []).map((s) => s.subject).join(' ') || (t.target_subject || '');
+  return [
+    setupChannelNames[t.channel_id] || t.channel_id,
+    t.name, (t.weekdays || t.weekday || '').replaceAll(',', ' '), airings, series,
+  ].join(' ').toLowerCase();
+}
+
+function renderTemplatesTable() {
+  const chName = setupChannelNames;
+  const chSel = $('#tplTableChannel');
+  if (chSel) {
+    const ids = [...new Set(setupTemplates.map((t) => t.channel_id))];
+    chSel.innerHTML = '';
+    chSel.append(el('option', { value: '', textContent: 'All channels' }));
+    for (const id of ids) {
+      chSel.append(el('option', {
+        value: String(id), textContent: chName[id] || id, selected: String(id) === tplTableChannel,
+      }));
+    }
+  }
+  const q = tplTableSearch.trim().toLowerCase();
+  const tpls = setupTemplates
+    .filter((t) => !tplTableChannel || String(t.channel_id) === tplTableChannel)
+    .filter((t) => !q || templateHaystack(t).includes(q));
+  const count = $('#tplTableCount');
+  if (count) {
+    count.textContent = tpls.length === setupTemplates.length
+      ? `${tpls.length} template(s)`
+      : `${tpls.length} of ${setupTemplates.length}`;
+  }
+
+  const tt = $('#templatesTable tbody'); tt.innerHTML = '';
+  if (!setupTemplates.length) tt.append(el('tr', {}, el('td', { colSpan: 6, className: 'muted', style: 'text-align:center;padding:18px', textContent: 'No block templates yet — click “New template”.' })));
+  else if (!tpls.length) tt.append(el('tr', {}, el('td', { colSpan: 6, className: 'muted', style: 'text-align:center;padding:18px', textContent: 'Nothing matches this filter.' })));
+  for (const t of tpls) {
+    const airings = (t.slots || []).map((s) => `${s.start_time}–${s.end_time}`).join(', ') || `${t.start_time}–${t.end_time}`;
+    const series = (t.series || []).map((s) => s.subject).join(', ') || (t.target_subject || '—');
+    const edit = el('button', { className: 'mini ghost', textContent: 'edit' });
+    edit.onclick = () => openTemplate(t);
+    const del = el('button', { className: 'mini danger', textContent: 'delete' });
+    del.onclick = async () => {
+      if (!await confirmDialog('Delete template', `Delete “${t.name}”? Existing generated blocks are unaffected until regenerated.`, { confirmLabel: 'Delete', danger: true })) return;
+      await withBusy(del, async () => { await api.send('DELETE', `/api/blocks/templates/${t.id}`); toast('Template deleted', 'ok'); await loadSetupTab(); });
+    };
+    const td = el('td'); td.style.textAlign = 'right'; td.append(edit, document.createTextNode(' '), del);
+    tt.append(el('tr', {},
+      el('td', { textContent: chName[t.channel_id] || t.channel_id }),
+      el('td', { textContent: t.name }),
+      el('td', { textContent: (t.weekdays || t.weekday || '').replaceAll(',', ' ') }),
+      el('td', { textContent: airings }),
+      el('td', { textContent: series }),
+      td));
+  }
+}
+
+$('#tplTableSearch').addEventListener('input', (e) => { tplTableSearch = e.currentTarget.value; renderTemplatesTable(); });
+$('#tplTableChannel').addEventListener('change', (e) => { tplTableChannel = e.currentTarget.value; renderTemplatesTable(); });
 
 // ---- Series manager modal --------------------------------------------------
 let seriesChannel = null;

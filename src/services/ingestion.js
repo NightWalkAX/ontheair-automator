@@ -357,7 +357,24 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
     VALUES (?, ?, ?, ?)
   `);
 
+  // Which show type each cloned file gets. The root being added covers the whole
+  // subtree, but the destination channel may already have DEEPER roots inside it
+  // with a type of their own — forcing the new root's type over everything is
+  // how 971 lesson files ended up catalogued as Movies on two channels, and from
+  // there into movie blocks. Deepest containing root wins; the new root is the
+  // fallback for anything no deeper root claims.
+  const roots = db.prepare(
+    'SELECT path, show_type_id FROM MediaRoot WHERE channel_id = ? ORDER BY LENGTH(path) DESC'
+  ).all(newChannelId);
+  const typeFor = (filePath) => {
+    for (const r of roots) {
+      if (filePath === r.path || filePath.startsWith(r.path + '/')) return r.show_type_id;
+    }
+    return showTypeId ?? null;
+  };
+
   const subjects = new Set();
+  const byType = new Map(); // show_type_id -> subjects, so ChannelSeries is typed right too
   let cloned = 0;
   withTx(() => {
     for (const d of donors) {
@@ -365,7 +382,7 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
         name: d.name, file_path: d.file_path, duration: d.duration,
         subject: d.subject, season: d.season ?? null, chapter: d.chapter, is_filler: d.is_filler,
         audience_rating: d.audience_rating, channel_id: newChannelId,
-        show_type_id: showTypeId ?? d.show_type_id, added_at: d.added_at,
+        show_type_id: typeFor(d.file_path) ?? d.show_type_id, added_at: d.added_at,
         last_used_at: d.last_used_at ?? null, sort_order: d.sort_order ?? null,
         // Carry the donor's review state: these are the same physical files the
         // operator already vetted, so a shared folder is schedulable on arrival
@@ -374,7 +391,12 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
       });
       if (!info.changes) continue; // already present for this channel
       cloned++;
-      if (d.subject) subjects.add(d.subject);
+      if (d.subject) {
+        subjects.add(d.subject);
+        const t = typeFor(d.file_path) ?? d.show_type_id;
+        if (!byType.has(t)) byType.set(t, new Set());
+        byType.get(t).add(d.subject);
+      }
       const ov = getOverride.get(d.id);
       if (ov) {
         const newId = idFor.get(newChannelId, d.file_path)?.id;
@@ -383,9 +405,14 @@ export function cloneScannedResources(newChannelId, showTypeId, path) {
     }
   });
 
-  const showType = db.prepare('SELECT code FROM ShowType WHERE id = ?').get(showTypeId);
-  const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
-  registerSeries(newChannelId, subjects, showTypeId, isSerialDefault);
+  // Register each subject under the show type its files actually got, not the
+  // new root's — otherwise a lesson series lands in ChannelSeries as a movie
+  // franchise and a movie block will happily cycle it.
+  for (const [typeId, subs] of byType) {
+    const showType = db.prepare('SELECT code FROM ShowType WHERE id = ?').get(typeId);
+    const isSerialDefault = showType ? SERIAL_DEFAULT_CODES.has(showType.code) : false;
+    registerSeries(newChannelId, subs, typeId, isSerialDefault);
+  }
   return cloned;
 }
 
