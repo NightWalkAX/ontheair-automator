@@ -8,7 +8,7 @@
 
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
-import { nextChapter, randomWithCooldown, cooldownEligible, latestEpisode } from './playHistory.js';
+import { nextChapter, cooldownEligible } from './playHistory.js';
 import { log } from '../logger.js';
 
 const l = log('scheduling');
@@ -218,15 +218,6 @@ function seriesParts(channelId, subject, showCode = null) {
   `).all(...params);
 }
 
-/** Single-pick iterator: yields one resource then is exhausted. */
-function singleIterator(resource) {
-  let used = false;
-  return {
-    peek: () => (used || !resource ? null : resource),
-    consume: () => { used = true; },
-  };
-}
-
 /** Sequence iterator: yields a pre-chosen list of resources in order. */
 function sequenceIterator(list) {
   let i = 0;
@@ -328,7 +319,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
  * see services/movieSaga.js.) Standalone films carry chapter 0, i.e. no ordinal, so
  * the constraint does not apply between them.
  */
-export function chooseMovies(pool, startSecs, blockSecs, limit) {
+export function chooseMovies(pool, startSecs, blockSecs, limit, placed = 0) {
   if (!pool.length || limit <= 0) return [];
   const cands = pool.slice().sort((a, b) => b.duration - a.duration || a.id - b.id);
   const NODE_CAP = 200_000;
@@ -355,7 +346,7 @@ export function chooseMovies(pool, startSecs, blockSecs, limit) {
           c.subject !== r.subject || Number(c.chapter) >= Number(r.chapter)
         )
       )) continue;
-      const end = Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
+      const end = pos + alignGap(pos, placed + chosen.length) + r.duration;
       if (end - startSecs > blockSecs) continue; // would run past the slot
       chosen.push(r);
       walk(chosen, end);
@@ -391,19 +382,6 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
   if (limit <= 0) return [];
   const series = moviesOnly(templateSeries(template, channelId), template);
 
-  const items = [];
-  const used = new Set();
-  let pos = startSecs; // running clock, so fit is measured the way the block lays out
-  const endIfPlaced = (r) => Math.ceil(pos / QUARTER_SECS) * QUARTER_SECS + r.duration;
-  const fits = (r) => endIfPlaced(r) - startSecs <= blockSecs;
-  const place = (r) => { pos = endIfPlaced(r); items.push(r); used.add(r.id); };
-
-  // 1. Franchises, in the template's series order, each at its next part.
-  //
-  // A franchise may double-bill (parts 1 and 2 the same night) only when it is the
-  // block's only source. With a standalone folder also assigned, each franchise
-  // takes one slot per block so the other series still gets one — the same
-  // one-pick-per-series-per-round cycling a normal block uses.
   // ONE franchise at a time. A saga that has started airs to its end — over as
   // many blocks as it takes — before another saga begins, so the block's serial
   // slots all belong to a single franchise: the one already mid-run on this
@@ -411,41 +389,69 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
   const serialSubjects = series.filter((sr) => sr.rule === 'serial').map((sr) => sr.subject);
   const activeSubject = activeFranchise(channelId, serialSubjects, block)
     ?? (serialSubjects.length ? serialSubjects[0] : activeFranchise(channelId, null, block));
-  if (activeSubject) {
-    // How many parts it may take in ONE block is unchanged: a double bill only
-    // when the saga is the block's sole source, otherwise one part per block so
-    // an unordered folder still gets its slot. A saga therefore spans as many
-    // blocks as it has parts — which is the point, it just may not be
-    // interrupted by a different saga on the way.
-    const hasStandalone = series.some((sr) => sr.rule !== 'serial');
-    const maxParts = hasStandalone ? 1 : limit;
-    const it = serialIterator(channelId, activeSubject, block, MOVIES_CODE);
-    for (let n = 0; n < maxParts && items.length < limit; n++) {
-      const r = it.peek();
-      if (!r || used.has(r.id) || !fits(r)) break;
-      place(r);
-      it.consume();
-    }
-  }
 
-  // 2. Remaining slots: best-fit films for the time still open.
-  if (items.length < limit) {
-    const standalone = series.filter((sr) => sr.rule !== 'serial').map((sr) => sr.subject);
-    const scope = series.length ? standalone : null; // null = every movie on the channel
-    let pool = moviePool(template, block, blockSecs, channelId, scope)
-      .filter((r) => !used.has(r.id));
-    // The pool sweeps in franchise members too, and picking those purely by fit
-    // would air "Narnia 2" with no "Narnia 1" before it — or start a second saga
-    // while the first is half aired. Standalone films always pass; an ordered
-    // part only when it belongs to the saga this block is already airing (at the
-    // part it is due), or, when no saga is in progress anywhere, when it is that
-    // franchise's opening part.
-    pool = franchiseFilter(pool, channelId, block, activeSubject);
-    for (const r of chooseMovies(pool, pos, blockSecs - (pos - startSecs), limit - items.length)) {
-      place(r);
+  /** Build the run, with or without the franchise that is mid-run. */
+  const build = (saga) => {
+    const items = [];
+    const used = new Set();
+    let pos = startSecs; // running clock, so fit is measured the way the block lays out
+    const endIfPlaced = (r) => pos + alignGap(pos, items.length) + r.duration;
+    const fits = (r) => endIfPlaced(r) - startSecs <= blockSecs;
+    const place = (r) => { pos = endIfPlaced(r); items.push(r); used.add(r.id); };
+
+    // 1. The saga in progress, at the part it is due.
+    if (saga) {
+      // How many parts it may take in ONE block: a double bill only when the
+      // saga is the block's sole source, otherwise one part per block so an
+      // unordered folder still gets its slot. A saga spans as many blocks as it
+      // has parts — that is the point; it just may not be interrupted.
+      const hasStandalone = series.some((sr) => sr.rule !== 'serial');
+      const maxParts = hasStandalone ? 1 : limit;
+      const it = serialIterator(channelId, saga, block, MOVIES_CODE);
+      for (let n = 0; n < maxParts && items.length < limit; n++) {
+        const r = it.peek();
+        if (!r || used.has(r.id) || !fits(r)) break;
+        place(r);
+        it.consume();
+      }
+    }
+
+    // 2. Remaining slots: best-fit films for the time still open.
+    if (items.length < limit) {
+      const standalone = series.filter((sr) => sr.rule !== 'serial').map((sr) => sr.subject);
+      const scope = series.length ? standalone : null; // null = every movie on the channel
+      let pool = moviePool(template, block, blockSecs, channelId, scope)
+        .filter((r) => !used.has(r.id));
+      // The pool sweeps in franchise members too, and picking those purely by fit
+      // would air "Narnia 2" with no "Narnia 1" before it — or start a second saga
+      // while the first is half aired. Standalone films always pass; an ordered
+      // part only when it belongs to the saga this block is already airing (at the
+      // part it is due), or, when no saga is in progress anywhere, when it is that
+      // franchise's opening part. Without the saga, only standalone films.
+      pool = saga
+        ? franchiseFilter(pool, channelId, block, saga)
+        : pool.filter((r) => !r.subject || Number(r.chapter) <= 0);
+      const room = blockSecs - (pos - startSecs);
+      for (const r of chooseMovies(pool, pos, room, limit - items.length, items.length)) place(r);
+    }
+    return { items, hole: blockSecs - (pos - startSecs) };
+  };
+
+  const run = build(activeSubject);
+  // Order comes first, but not at any price: when leading with the saga's next
+  // part leaves more dead air than a block is allowed to hold back to back, and
+  // the films alone close the slot better, the saga waits for the next movie
+  // block. It is a DELAY, never a skip — the cursor doesn't move, so the same
+  // part is due next time.
+  if (activeSubject && run.hole > fillerRunLimit()) {
+    const without = build(null);
+    if (without.hole < run.hole) {
+      l.info(`block ${block.id}: holding "${activeSubject}" for the next movie block`
+        + ` — leading with it leaves ${run.hole}s of filler against ${without.hole}s without it`);
+      return without.items;
     }
   }
-  return items;
+  return run.items;
 }
 
 /**
@@ -528,21 +534,44 @@ function franchiseFilter(pool, channelId, block, activeSubject) {
   });
 }
 
+/**
+ * Cooldown-ordered candidates: everything outside its cooldown window first,
+ * then the rest, each rotated by day-of-month so successive days start in a
+ * different place without needing Math.random. This is randomWithCooldown()
+ * widened from "one pick" to "the whole run, best first" — a non-serial series
+ * used to hand a block exactly ONE clip however long the slot was, which is
+ * where hours of filler came from.
+ */
+function cooldownOrder(channelId, pool, asOfDate) {
+  if (!pool.length) return [];
+  const eligible = cooldownEligible(channelId, pool, asOfDate);
+  const eligibleIds = new Set(eligible.map((r) => r.id));
+  const cooling = pool.filter((r) => !eligibleIds.has(r.id));
+  const rotate = (list) => {
+    if (list.length < 2) return list;
+    const i = new Date(asOfDate + 'T00:00:00').getDate() % list.length;
+    return [...list.slice(i), ...list.slice(0, i)];
+  };
+  return [...rotate(eligible), ...rotate(cooling)];
+}
+
 function iteratorForSeries(series, channelId, block, blockSecs) {
   switch (series.rule) {
     case 'serial':
       return serialIterator(channelId, series.subject, block);
     case 'tv': {
       const weekday = WEEKDAYS[new Date(block.target_date + 'T00:00:00').getDay()];
-      const pick = weekday === 'Sun'
-        ? latestEpisode(channelId, series.subject)
-        : randomWithCooldown(channelId, candidates(channelId, series.subject, blockSecs), block.target_date);
-      return singleIterator(pick);
+      const pool = candidates(channelId, series.subject, blockSecs);
+      // Sunday still leads with the latest-added episode (SEED §4); it just
+      // carries on down the list instead of stopping there.
+      return sequenceIterator(weekday === 'Sun'
+        ? pool.slice().sort((a, b) => String(b.added_at ?? '').localeCompare(String(a.added_at ?? '')) || b.id - a.id)
+        : cooldownOrder(channelId, pool, block.target_date));
     }
     case 'cooldown':
     default:
-      return singleIterator(
-        randomWithCooldown(channelId, candidates(channelId, series.subject, blockSecs), block.target_date)
+      return sequenceIterator(
+        cooldownOrder(channelId, candidates(channelId, series.subject, blockSecs), block.target_date)
       );
   }
 }
@@ -747,8 +776,26 @@ export function fitFillers(channelId, remaining) {
   return { items, total, fits: fitsTolerance(remaining - total, tol) };
 }
 
-// Quarter-hour boundary, in seconds. Main content is aligned to :00/:15/:30/:45.
+// Quarter-hour boundary, in seconds. The block's FIRST main item starts on a
+// :00/:15/:30/:45 mark; everything after it runs straight on.
 const QUARTER_SECS = 15 * 60;
+
+/**
+ * Filler seconds needed before the next main item, given the absolute clock
+ * position and how many main items are already placed.
+ *
+ * Only the first one is aligned. Aligning EVERY item quantised the whole
+ * schedule to 15 minutes and was the single biggest source of filler: an
+ * 8.5-minute episode in a 30-minute slot left 6.5 minutes of filler and then
+ * pushed the next episode past the block end, so the slot aired one programme
+ * and 21 minutes of filler where two programmes fit with four minutes to spare.
+ * What an operator (and a viewer with a printed guide) actually needs is the
+ * block STARTING when it says it does.
+ */
+function alignGap(abs, placed) {
+  if (placed > 0) return 0;
+  return (Math.ceil(abs / QUARTER_SECS) * QUARTER_SECS) - abs;
+}
 
 /** Seconds-of-day for an 'HH:MM' clock time. */
 function timeOfDaySeconds(hhmm) {
@@ -790,6 +837,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
 
   const items = [];
   const usedIds = new Set();
+  let mainCount = 0; // main items placed — only the first is quarter-hour aligned
   let total = 0; // placed seconds so far (main + fillers), i.e. offset from block start
   let active = iters.map((it) => ({ it, count: 0 }));
 
@@ -797,12 +845,25 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
     let progressed = false;
     const stillActive = [];
     for (const a of active) {
-      const r = a.it.peek();
-      if (!r || usedIds.has(r.id)) continue;
-      // Filler gap needed to push this item's start onto the next quarter mark.
+      // Walk this series forward past what it cannot contribute here. Two cases
+      // are safe to skip: a clip already placed in this block, and a clip LONGER
+      // THAN THE WHOLE SLOT — an episode that outgrew its own programme (ep 15
+      // of "La Escuelita" runs 31:21 in a 30:00 block) used to stall its series
+      // outright and leave the block 100% filler, every single week.
+      let r = a.it.peek();
+      while (r && (usedIds.has(r.id) || r.duration > blockSecs)) {
+        if (r.duration > blockSecs) {
+          l.warn(`block ${block.id}: "${r.name}" (${r.duration}s) does not fit a ${blockSecs}s slot — skipped`);
+        }
+        a.it.consume();
+        r = a.it.peek();
+      }
+      if (!r) continue;
+      // Filler gap needed to put the block's first item on a quarter mark.
       const abs = startSecs + total;
-      const gap = (Math.ceil(abs / QUARTER_SECS) * QUARTER_SECS) - abs;
-      // Skip if the item can't fit even once aligned (gap upper-bounds the fill).
+      const gap = alignGap(abs, mainCount);
+      // Doesn't fit the room LEFT: hold it for a later block rather than
+      // skipping ahead in the series — order is the guarantee here.
       if (total + gap + r.duration > blockSecs) continue;
       if (gap > 0) {
         const fill = packer.pack(gap);
@@ -811,6 +872,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
       }
       items.push(r);
       total += r.duration;
+      mainCount++;
       usedIds.add(r.id);
       a.it.consume();
       a.count++;
@@ -819,6 +881,33 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
     }
     active = stillActive;
     if (!progressed) break;
+  }
+
+  // Closing pick. The cycle above takes each series in its own order, so it
+  // stops as soon as the NEXT clip of every series is too long for the room
+  // left — even when the same series holds a shorter one that would fit. When
+  // that leaves more dead air than a block may hold back to back, look across
+  // the unordered series for the longest clip that actually fits the hole.
+  // Ordered series are left out: their order is the guarantee, and picking a
+  // later part for its length is exactly what a serial must never do.
+  if (!movie) {
+    const openSeries = templateSeries(template, channelId).filter((sr) => sr.rule !== 'serial');
+    let guard = 0;
+    while (blockSecs - total > fillerRunLimit() && guard++ < 20) {
+      const hole = blockSecs - total;
+      let best = null;
+      for (const sr of openSeries) {
+        for (const r of candidates(channelId, sr.subject, hole)) {
+          if (usedIds.has(r.id)) continue;
+          if (!best || r.duration > best.duration) best = r;
+        }
+      }
+      if (!best) break;
+      items.push(best);
+      total += best.duration;
+      mainCount++;
+      usedIds.add(best.id);
+    }
   }
 
   // Trailing fillers fill to the block end and carry the tolerance guarantee.
