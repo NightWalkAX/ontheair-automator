@@ -8,7 +8,7 @@
 
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
-import { nextChapter, randomWithCooldown, cooldownEligible, latestEpisode } from './playHistory.js';
+import { nextChapter, cooldownEligible } from './playHistory.js';
 import { log } from '../logger.js';
 
 const l = log('scheduling');
@@ -216,15 +216,6 @@ function seriesParts(channelId, subject, showCode = null) {
     WHERE ${clauses.join(' AND ')}
     ORDER BY r.chapter ASC, r.id ASC
   `).all(...params);
-}
-
-/** Single-pick iterator: yields one resource then is exhausted. */
-function singleIterator(resource) {
-  let used = false;
-  return {
-    peek: () => (used || !resource ? null : resource),
-    consume: () => { used = true; },
-  };
 }
 
 /** Sequence iterator: yields a pre-chosen list of resources in order. */
@@ -528,21 +519,44 @@ function franchiseFilter(pool, channelId, block, activeSubject) {
   });
 }
 
+/**
+ * Cooldown-ordered candidates: everything outside its cooldown window first,
+ * then the rest, each rotated by day-of-month so successive days start in a
+ * different place without needing Math.random. This is randomWithCooldown()
+ * widened from "one pick" to "the whole run, best first" — a non-serial series
+ * used to hand a block exactly ONE clip however long the slot was, which is
+ * where hours of filler came from.
+ */
+function cooldownOrder(channelId, pool, asOfDate) {
+  if (!pool.length) return [];
+  const eligible = cooldownEligible(channelId, pool, asOfDate);
+  const eligibleIds = new Set(eligible.map((r) => r.id));
+  const cooling = pool.filter((r) => !eligibleIds.has(r.id));
+  const rotate = (list) => {
+    if (list.length < 2) return list;
+    const i = new Date(asOfDate + 'T00:00:00').getDate() % list.length;
+    return [...list.slice(i), ...list.slice(0, i)];
+  };
+  return [...rotate(eligible), ...rotate(cooling)];
+}
+
 function iteratorForSeries(series, channelId, block, blockSecs) {
   switch (series.rule) {
     case 'serial':
       return serialIterator(channelId, series.subject, block);
     case 'tv': {
       const weekday = WEEKDAYS[new Date(block.target_date + 'T00:00:00').getDay()];
-      const pick = weekday === 'Sun'
-        ? latestEpisode(channelId, series.subject)
-        : randomWithCooldown(channelId, candidates(channelId, series.subject, blockSecs), block.target_date);
-      return singleIterator(pick);
+      const pool = candidates(channelId, series.subject, blockSecs);
+      // Sunday still leads with the latest-added episode (SEED §4); it just
+      // carries on down the list instead of stopping there.
+      return sequenceIterator(weekday === 'Sun'
+        ? pool.slice().sort((a, b) => String(b.added_at ?? '').localeCompare(String(a.added_at ?? '')) || b.id - a.id)
+        : cooldownOrder(channelId, pool, block.target_date));
     }
     case 'cooldown':
     default:
-      return singleIterator(
-        randomWithCooldown(channelId, candidates(channelId, series.subject, blockSecs), block.target_date)
+      return sequenceIterator(
+        cooldownOrder(channelId, candidates(channelId, series.subject, blockSecs), block.target_date)
       );
   }
 }
@@ -797,12 +811,25 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
     let progressed = false;
     const stillActive = [];
     for (const a of active) {
-      const r = a.it.peek();
-      if (!r || usedIds.has(r.id)) continue;
+      // Walk this series forward past what it cannot contribute here. Two cases
+      // are safe to skip: a clip already placed in this block, and a clip LONGER
+      // THAN THE WHOLE SLOT — an episode that outgrew its own programme (ep 15
+      // of "La Escuelita" runs 31:21 in a 30:00 block) used to stall its series
+      // outright and leave the block 100% filler, every single week.
+      let r = a.it.peek();
+      while (r && (usedIds.has(r.id) || r.duration > blockSecs)) {
+        if (r.duration > blockSecs) {
+          l.warn(`block ${block.id}: "${r.name}" (${r.duration}s) does not fit a ${blockSecs}s slot — skipped`);
+        }
+        a.it.consume();
+        r = a.it.peek();
+      }
+      if (!r) continue;
       // Filler gap needed to push this item's start onto the next quarter mark.
       const abs = startSecs + total;
       const gap = (Math.ceil(abs / QUARTER_SECS) * QUARTER_SECS) - abs;
-      // Skip if the item can't fit even once aligned (gap upper-bounds the fill).
+      // Doesn't fit the room LEFT: hold it for a later block rather than
+      // skipping ahead in the series — order is the guarantee here.
       if (total + gap + r.duration > blockSecs) continue;
       if (gap > 0) {
         const fill = packer.pack(gap);

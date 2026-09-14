@@ -1162,13 +1162,14 @@ test('a movie block fills a long slot with two features instead of one plus hour
   const START = 20 * 3600;
   const block = { id: -1, channel_id: ch, target_date: '2026-12-07' };
 
-  // Baseline: the same channel and slot WITHOUT the flag gets one feature, and
-  // everything left over has to be papered over with fillers.
+  // Baseline: the same channel and slot WITHOUT the flag. A plain block now keeps
+  // drawing from its series until the slot is full too, but it takes them in
+  // cooldown order rather than searching for the combination that fits — so it
+  // still leaves a hole the movie block does not.
   const plain = makeMovieTemplate(ch, { is_movie_block: 0 });
   const one = buildAlignedBlock(plain, block, BLOCK, START, ch, makeFillerPacker(ch));
-  assert.equal(one.items.filter((r) => !r.is_filler).length, 1, 'without the flag: a single movie');
+  assert.ok(one.items.filter((r) => !r.is_filler).length >= 1, 'without the flag: fills by cooldown order');
   const oneFillerSecs = one.items.filter((r) => r.is_filler).reduce((n, r) => n + r.duration, 0);
-  assert.ok(oneFillerSecs > BLOCK / 3, 'without the flag: fillers cover a third of the slot or more');
 
   const tpl = makeMovieTemplate(ch, { movie_limit: 2 });
   const { items, total } = buildAlignedBlock(tpl, block, BLOCK, START, ch, makeFillerPacker(ch));
@@ -1178,7 +1179,7 @@ test('a movie block fills a long slot with two features instead of one plus hour
   assert.equal(mains.length, 2, 'the movie block placed two features');
   assert.ok(fitsTolerance(BLOCK - total), `block closed to ${total}/${BLOCK}s, within tolerance`);
   assert.ok(fillerSecs * 20 < BLOCK, `fillers cover ${fillerSecs}s — a sliver of the slot, not a third of it`);
-  assert.ok(fillerSecs < oneFillerSecs / 5, 'far less filler than the one-feature build it replaces');
+  assert.ok(fillerSecs < oneFillerSecs, 'less filler than the cooldown-order build it replaces');
 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
@@ -1582,7 +1583,8 @@ test('PUT /blocks/:id/movie-block flags the template and refills the block', asy
                               VALUES (?, ?, ?, '2026-12-14', 'draft') RETURNING id`).get(tpl.id, slot, ch).id;
 
   const off = await j('POST', `/api/blocks/${blockId}/regenerate`);
-  assert.equal(off.data.mainCount, 1, 'unflagged: a single feature');
+  const plainMains = off.data.mainCount;
+  assert.ok(plainMains >= 1, 'unflagged: the per-series cycle fills by cooldown order');
 
   const on = await j('PUT', `/api/blocks/${blockId}/movie-block`, { enabled: true, limit: 2 });
   assert.equal(on.status, 200);
@@ -1595,7 +1597,8 @@ test('PUT /blocks/:id/movie-block flags the template and refills the block', asy
   const back = await j('PUT', `/api/blocks/${blockId}/movie-block`, { enabled: false, limit: 0 });
   assert.equal(back.data.block.is_movie_block, 0);
   assert.equal(back.data.block.movie_limit, null);
-  assert.equal(back.data.items.filter((i) => !i.is_filler).length, 1);
+  assert.equal(back.data.items.filter((i) => !i.is_filler).length, plainMains,
+    'the per-series cycle is restored');
 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
