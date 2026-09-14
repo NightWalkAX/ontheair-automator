@@ -2044,7 +2044,7 @@ test('series delete refuses while clips still use the subject', async () => {
   assert.ok(reg.includes('History'), 'in-use series untouched');
 });
 
-test('quarter-hour alignment: the block\'s first item starts on a :00/:15/:30/:45 mark', async () => {
+test('a block opens with programme content and spreads its filler between the rest', async () => {
   const c1 = db.prepare("SELECT id FROM ChannelType WHERE name='Channel 1'").get().id;
   const gen = await j('POST', '/api/blocks/generate?weekStart=2026-12-07'); // Monday
   assert.equal(gen.status, 200);
@@ -2062,15 +2062,20 @@ test('quarter-hour alignment: the block\'s first item starts on a :00/:15/:30/:4
     offset += it.duration;
   }
   assert.ok(mainOffsets.length >= 2, 'block has multiple main items');
-  // Only the FIRST one is aligned. Aligning every item quantised the schedule to
-  // 15 minutes and paid for it in filler — an 8-minute episode cost 7 minutes of
-  // filler and then pushed its successor out of the block entirely.
-  assert.equal(mainOffsets[0] % 900, 0, `the first item at offset ${mainOffsets[0]}s lands on a quarter-hour mark`);
-  const after = items.slice(items.findIndex((it) => !it.is_filler) + 1);
-  assert.ok(
-    after.filter((it) => !it.is_filler).length >= 1,
-    'and the rest of the block runs on from there'
-  );
+  // There is no clock alignment inside a block any more: it quantised the whole
+  // schedule to 15 minutes and paid for it in filler. What survives is that the
+  // block OPENS with programme content at the time the slot promises...
+  assert.equal(mainOffsets[0], 0, 'the first item starts at the block start');
+  assert.ok(!items[0].is_filler, 'and it is programme content, not filler');
+
+  // ...and that the filler is spread between the programmes rather than left in
+  // one lump at the end, which is dead air and would breach the filler-run cap
+  // on its own.
+  const fillerIdx = items.map((it, i) => (it.is_filler ? i : -1)).filter((i) => i >= 0);
+  if (fillerIdx.length > 1) {
+    const lastMain = items.map((it, i) => (!it.is_filler ? i : -1)).filter((i) => i >= 0).pop();
+    assert.ok(fillerIdx.some((f) => f < lastMain), 'fillers sit between the programmes');
+  }
 });
 
 test('regenerate always wipes drafts and rebuilds from scratch', async () => {

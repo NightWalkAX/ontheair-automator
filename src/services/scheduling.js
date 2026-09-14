@@ -307,9 +307,9 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
 /**
  * Pick the best-fitting ordered run of up to `limit` movies from `pool`.
  *
- * Scoring mirrors how buildAlignedBlock will actually lay them out: every item
- * starts on the next quarter-hour mark, so the span a run consumes depends on
- * its order as well as its durations. The search is a depth-first walk over runs
+ * Scoring mirrors how buildAlignedBlock will actually lay them out: items play
+ * back to back from the block start, so a run's span is simply its durations.
+ * The search is a depth-first walk over runs
  * (longest titles first, so strong fits surface early), bounded by a node cap and
  * short-circuited on an exact fill. Returns the run with the smallest leftover.
  *
@@ -319,7 +319,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
  * see services/movieSaga.js.) Standalone films carry chapter 0, i.e. no ordinal, so
  * the constraint does not apply between them.
  */
-export function chooseMovies(pool, startSecs, blockSecs, limit, placed = 0) {
+export function chooseMovies(pool, startSecs, blockSecs, limit) {
   if (!pool.length || limit <= 0) return [];
   const cands = pool.slice().sort((a, b) => b.duration - a.duration || a.id - b.id);
   const NODE_CAP = 200_000;
@@ -346,7 +346,7 @@ export function chooseMovies(pool, startSecs, blockSecs, limit, placed = 0) {
           c.subject !== r.subject || Number(c.chapter) >= Number(r.chapter)
         )
       )) continue;
-      const end = pos + alignGap(pos, placed + chosen.length) + r.duration;
+      const end = pos + r.duration;
       if (end - startSecs > blockSecs) continue; // would run past the slot
       chosen.push(r);
       walk(chosen, end);
@@ -395,7 +395,7 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
     const items = [];
     const used = new Set();
     let pos = startSecs; // running clock, so fit is measured the way the block lays out
-    const endIfPlaced = (r) => pos + alignGap(pos, items.length) + r.duration;
+    const endIfPlaced = (r) => pos + r.duration;
     const fits = (r) => endIfPlaced(r) - startSecs <= blockSecs;
     const place = (r) => { pos = endIfPlaced(r); items.push(r); used.add(r.id); };
 
@@ -432,7 +432,7 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
         ? franchiseFilter(pool, channelId, block, saga)
         : pool.filter((r) => !r.subject || Number(r.chapter) <= 0);
       const room = blockSecs - (pos - startSecs);
-      for (const r of chooseMovies(pool, pos, room, limit - items.length, items.length)) place(r);
+      for (const r of chooseMovies(pool, pos, room, limit - items.length)) place(r);
     }
     return { items, hole: blockSecs - (pos - startSecs) };
   };
@@ -639,9 +639,8 @@ export function pickMainContent(template, block, blockSecs) {
  * `pack(target, { overrun: true })` relaxes the ceiling: if no reachable total
  * lands within maxUnderrun of the target, it takes the SMALLEST total above the
  * target instead (up to maxOverrun over). Used for the fill that closes a block,
- * where a few seconds long beats a bigger hole. Alignment gaps inside a block
- * keep the strict <= target ceiling, since overshooting one would push the next
- * main item off its quarter-hour mark.
+ * where a few seconds long beats a bigger hole. A gap asked for anywhere else
+ * keeps the strict <= target ceiling.
  */
 export function makeFillerPacker(channelId) {
   const fillers = db.prepare(
@@ -745,9 +744,7 @@ export function makeFillerPacker(channelId) {
     // for 1800s lands 13s short this way, where 600+600+600 is exact), so bulk
     // clips are handed back one at a time until the exact pass can finish the job.
     // Worst case the whole bulk is returned and this is the old exact-only search.
-    // Only the closing fill carries the tolerance, so only it pays for this: an
-    // alignment gap mid-block is allowed to come up short and self-corrects at the
-    // next quarter mark.
+    // Only the closing fill carries the tolerance, so only it pays for this.
     if (opts.overrun) {
       while (bulk.length && !fitsTolerance(target - bulkTotal - tail.total)) {
         const r = bulk.pop();
@@ -776,27 +773,6 @@ export function fitFillers(channelId, remaining) {
   return { items, total, fits: fitsTolerance(remaining - total, tol) };
 }
 
-// Quarter-hour boundary, in seconds. The block's FIRST main item starts on a
-// :00/:15/:30/:45 mark; everything after it runs straight on.
-const QUARTER_SECS = 15 * 60;
-
-/**
- * Filler seconds needed before the next main item, given the absolute clock
- * position and how many main items are already placed.
- *
- * Only the first one is aligned. Aligning EVERY item quantised the whole
- * schedule to 15 minutes and was the single biggest source of filler: an
- * 8.5-minute episode in a 30-minute slot left 6.5 minutes of filler and then
- * pushed the next episode past the block end, so the slot aired one programme
- * and 21 minutes of filler where two programmes fit with four minutes to spare.
- * What an operator (and a viewer with a printed guide) actually needs is the
- * block STARTING when it says it does.
- */
-function alignGap(abs, placed) {
-  if (placed > 0) return 0;
-  return (Math.ceil(abs / QUARTER_SECS) * QUARTER_SECS) - abs;
-}
-
 /** Seconds-of-day for an 'HH:MM' clock time. */
 function timeOfDaySeconds(hhmm) {
   const [h, m] = String(hhmm || '00:00').split(':').map(Number);
@@ -804,18 +780,17 @@ function timeOfDaySeconds(hhmm) {
 }
 
 /**
- * Quarter-hour aligned block builder. Places the block's main content so each
- * main item STARTS on the next :00/:15/:30/:45 clock boundary at or after the
- * running position, padding the gap before it with fillers ("use fillers to get
- * there"). Fillers therefore land before the first item (only when the block
- * doesn't start on a boundary), between items (alignment gaps), and after the
- * last item (trailing gap) — bookends plus in-between, driven by alignment.
+ * Block builder. Main content plays back to back from the block start; fillers
+ * cover only what is left at the END, which is where the tolerance guarantee
+ * lives (see fitTolerance).
  *
- * Alignment is best-effort ("if possible"): a gap the coarse filler pool can't
- * hit exactly just leaves the next item slightly early, and the running clock
- * self-corrects at the following boundary. The TRAILING gap does the precise
- * fill, and is the only one allowed to overshoot (see fitTolerance), so the
- * block lands inside the maxUnderrun / maxOverrun window.
+ * There is deliberately NO clock alignment inside a block. Main items used to
+ * start on the next :00/:15/:30/:45 mark, with fillers padding the way there,
+ * and it cost far more than it bought: it quantised the whole schedule to 15
+ * minutes, so an 8.5-minute episode in a 30-minute slot left 6.5 minutes of
+ * filler and then pushed the next episode past the block end — one programme
+ * and 21 minutes of filler where two fit with four minutes to spare. The clock
+ * promise that matters is when the BLOCK starts, and that comes from the slot.
  *
  * Returns { items, total } — the ordered resource sequence and its duration.
  */
@@ -837,7 +812,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
 
   const items = [];
   const usedIds = new Set();
-  let mainCount = 0; // main items placed — only the first is quarter-hour aligned
+  let mainCount = 0; // main items placed
   let total = 0; // placed seconds so far (main + fillers), i.e. offset from block start
   let active = iters.map((it) => ({ it, count: 0 }));
 
@@ -859,17 +834,9 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
         r = a.it.peek();
       }
       if (!r) continue;
-      // Filler gap needed to put the block's first item on a quarter mark.
-      const abs = startSecs + total;
-      const gap = alignGap(abs, mainCount);
       // Doesn't fit the room LEFT: hold it for a later block rather than
       // skipping ahead in the series — order is the guarantee here.
-      if (total + gap + r.duration > blockSecs) continue;
-      if (gap > 0) {
-        const fill = packer.pack(gap);
-        for (const f of fill.items) items.push(f);
-        total += fill.total; // actual filler secs (<= gap; drift self-corrects next mark)
-      }
+      if (total + r.duration > blockSecs) continue;
       items.push(r);
       total += r.duration;
       mainCount++;
@@ -918,9 +885,8 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
     // the pool simply has no clip that small, so pack() returns nothing and the
     // hole survives. Give the pack more room by taking back fillers already
     // placed in the block and re-packing the widened span at the end: a span of
-    // gap + a released filler is coarse enough to hit the target. The main item
-    // that followed a released filler loses its quarter-hour alignment, which is
-    // best-effort anyway; the block-end tolerance is the hard guarantee.
+    // gap + a released filler is coarse enough to hit the target. The block-end
+    // tolerance is the hard guarantee.
     while (!fitsTolerance(trailing - fill.total)) {
       const i = items.findLastIndex((r) => r.is_filler);
       if (i < 0) break; // no filler to release — leave the hole, validation flags it
@@ -932,7 +898,19 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
     for (const f of fill.items) items.push(f);
     total += fill.total;
   }
-  return { items, total };
+
+  // Fillers were all appended at the end; spread them BETWEEN the programmes
+  // instead. Nothing about the fit changes — only the order — but half an hour
+  // of filler in one lump at the end of a six-hour block is dead air, and it is
+  // also the one shape guaranteed to breach the filler-run cap. The first main
+  // item stays first, so the block still opens with programme content at the
+  // time the slot promises.
+  const mains = items.filter((r) => !r.is_filler);
+  const pad = items.filter((r) => r.is_filler);
+  const ordered = mains.length
+    ? [mains[0], ...spreadFillers(mains.slice(1), pad)]
+    : pad;
+  return { items: ordered, total };
 }
 
 // --- Block population -------------------------------------------------------
@@ -1059,8 +1037,8 @@ export function populateBlock(block) {
     fillerCount = fillers.length;
     placedSecs = keptSecs + fillers.reduce((s, r) => s + r.duration, 0);
   } else {
-    // Fresh build: place main content on quarter-hour marks, packing fillers
-    // before/between/after to hit each mark and the block end.
+    // Fresh build: main content back to back from the block start, fillers
+    // closing whatever is left at the end.
     const startSecs = timeOfDaySeconds(start);
     const packer = makeFillerPacker(channelId);
     const { items: seq, total } = buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer);
