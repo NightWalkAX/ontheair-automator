@@ -235,14 +235,33 @@ router.post('/generate', (req, res) => {
   }
 });
 
+/**
+ * The other airings of the same block on the same day: same template, same
+ * channel, same date, different slot. They strict-mirror each other's content
+ * (see populateBlock), so whatever is true of one is true of all of them.
+ */
+function siblingAirings(block) {
+  return db.prepare(`
+    SELECT sb.id FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    WHERE sb.template_id = ? AND sb.target_date = ? AND sb.id != ?
+      AND COALESCE(sb.channel_id, bt.channel_id) = ?
+  `).all(block.template_id, block.target_date, block.id, block.channel_id);
+}
+
 // POST /api/blocks/:id/regenerate — repopulate one block (keeps manual items).
 router.post('/:id/regenerate', (req, res) => {
   const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(Number(req.params.id));
   if (!block) return res.status(404).json({ error: 'not found' });
   // An override is a judgement about the content that was in the block. Rebuild
-  // it and that judgement no longer describes anything, so it goes with it.
-  db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?')
-    .run(block.id);
+  // it and that judgement no longer describes anything, so it goes with it —
+  // and with the other airings of that day, whose content came from this one.
+  const clear = db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?');
+  clear.run(block.id);
+  for (const sib of siblingAirings({ ...block, channel_id: block.channel_id
+    ?? db.prepare('SELECT channel_id FROM BlockTemplate WHERE id = ?').get(block.template_id)?.channel_id })) {
+    clear.run(sib.id);
+  }
   res.json(populateBlock(block));
 });
 
@@ -708,24 +727,44 @@ router.post('/:id/approve', (req, res) => {
 //
 // Refused on a block that already passes: there would be nothing to force, and
 // a stale override sitting on a healthy block would hide a real problem later.
+//
+// It carries to THE OTHER AIRINGS OF THAT DAY. A template that airs the same
+// content at 11:00 and again at 00:00 strict-mirrors it, so every airing holds
+// the identical clips and therefore the identical problem — forcing one and
+// leaving the repeat refused would just mean doing the same click again at
+// midnight. Each sibling records its OWN validation line (a slot can be a
+// different length, so the hole can read differently) with the same note.
 router.post('/:id/override', (req, res) => {
   const id = Number(req.params.id);
   const v = validateBlock(id);
   if (!v) return res.status(404).json({ error: 'not found' });
   const enabled = req.body?.enabled !== false;
 
+  const clear = db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?');
+  const siblings = siblingAirings(v.block);
+
   if (!enabled) {
-    db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?').run(id);
-    return res.json(validateBlock(id));
+    clear.run(id);
+    for (const sib of siblings) clear.run(sib.id);
+    return res.json({ ...validateBlock(id), siblings: siblings.length });
   }
   if (v.fits) {
     return res.status(409).json({ error: 'this block already passes — there is nothing to override' });
   }
   const note = String(req.body?.reason ?? '').trim().slice(0, 500);
-  const reason = note ? `${blockProblem(v)} — ${note}` : blockProblem(v);
-  db.prepare('UPDATE ScheduledBlock SET override_reason = ?, override_at = ? WHERE id = ?')
-    .run(reason, new Date().toISOString(), id);
-  res.json(validateBlock(id));
+  const at = new Date().toISOString();
+  const set = db.prepare('UPDATE ScheduledBlock SET override_reason = ?, override_at = ? WHERE id = ?');
+  const line = (val) => (note ? `${blockProblem(val)} — ${note}` : blockProblem(val));
+
+  set.run(line(v), at, id);
+  let carried = 0;
+  for (const sib of siblings) {
+    const sv = validateBlock(sib.id);
+    if (!sv || sv.fits) continue; // a sibling that passes on its own needs no force
+    set.run(line(sv), at, sib.id);
+    carried++;
+  }
+  res.json({ ...validateBlock(id), siblings: carried });
 });
 
 // POST /api/blocks/approve-week?week=YYYY-MM-DD — approve every fitting draft.

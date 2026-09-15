@@ -1066,13 +1066,18 @@ $('#btnSaveItems').addEventListener('click', (e) => withBusy(e.currentTarget, as
   currentBlock = v; currentItems = v.items.map((i) => ({ ...i })); renderItems();
   toast('Order saved', 'ok');
 }));
+// A template can air the same content several times a day, and the repeats
+// mirror it clip for clip — so a force applies to all of them and the toast
+// says so, or the operator goes looking for the midnight repeat by hand.
+const alsoAirings = (n) => (n > 0 ? ` (and ${n} more airing${n > 1 ? 's' : ''} that day)` : '');
+
 $('#btnOverrideBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const id = currentBlock.block.id;
   if (currentBlock.overridden) {
     currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: false });
     currentItems = currentBlock.items.map((i) => ({ ...i }));
     renderItems();
-    toast('Force removed — this block is refused again until it passes', 'ok');
+    toast(`Force removed${alsoAirings(currentBlock.siblings)} — refused again until it passes`, 'ok');
     return;
   }
   // Save what is on screen first: the recorded reason must describe the block
@@ -1089,7 +1094,7 @@ $('#btnOverrideBlock').addEventListener('click', (e) => withBusy(e.currentTarget
   currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: true, reason: note });
   currentItems = currentBlock.items.map((i) => ({ ...i }));
   renderItems();
-  toast('Block forced — it can now be approved', 'ok');
+  toast(`Block forced${alsoAirings(currentBlock.siblings)} — it can now be approved`, 'ok');
 }));
 $('#btnApproveBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   // Persist current edits first, then approve.

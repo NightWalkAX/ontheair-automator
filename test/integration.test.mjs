@@ -1541,6 +1541,31 @@ test('a block with more than the allowed filler back to back cannot be approved'
   db.prepare("UPDATE ScheduledBlock SET status = 'draft' WHERE id = ?").run(blockId);
   assert.equal((await j('POST', `/api/blocks/${blockId}/approve`)).status, 409);
 
+  // The force carries to the other airings of that day. A repeat holds the very
+  // same clips, so forcing one and leaving the midnight repeat refused would
+  // just mean doing this again at midnight.
+  const slot2 = db.prepare(`INSERT INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order)
+                            VALUES (?, '23:00', '02:00', 1) RETURNING id`).get(tpl.id).id;
+  const mirrorId = db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                               VALUES (?, ?, ?, '2026-12-28', 'draft') RETURNING id`).get(tpl.id, slot2, ch).id;
+  for (const it of db.prepare('SELECT resource_id, play_order FROM ScheduleItem WHERE block_id = ?').all(blockId)) {
+    ins.run(mirrorId, it.resource_id, it.play_order);
+  }
+  const both = await j('POST', `/api/blocks/${blockId}/override`, { enabled: true, reason: 'repeat too' });
+  assert.equal(both.data.siblings, 1, 'the other airing was forced as well');
+  const mirror = validateBlock(mirrorId);
+  assert.equal(mirror.overridden, true, 'the repeat is forced');
+  assert.equal(mirror.approvable, true);
+  assert.match(mirror.overrideReason, /repeat too/);
+  assert.ok(mirror.overrideReason.startsWith('has'), 'with its own validation line, not a copy of the other one');
+
+  // And taking it back clears the repeat with it.
+  const cleared = await j('POST', `/api/blocks/${blockId}/override`, { enabled: false });
+  assert.equal(cleared.data.siblings, 1);
+  assert.equal(validateBlock(mirrorId).overridden, false);
+  db.prepare('DELETE FROM ScheduledBlock WHERE id = ?').run(mirrorId);
+  db.prepare('DELETE FROM BlockTemplateSlot WHERE id = ?').run(slot2);
+
   // Rebuilding the block drops the force with it: it was a judgement about the
   // content that was in there, and that content is gone.
   await j('POST', `/api/blocks/${blockId}/override`, { enabled: true });
