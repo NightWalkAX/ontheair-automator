@@ -76,6 +76,29 @@ function confirmDialog(title, message, { confirmLabel = 'Confirm', danger = fals
   });
 }
 
+// Confirm that also collects a short note. Used by the block override, where
+// "why did somebody force this?" is worth more later than the click itself.
+function confirmWithNote(title, message, { confirmLabel = 'Confirm', placeholder = '' } = {}) {
+  return new Promise((resolve) => {
+    $('#dialogTitle').textContent = title;
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    content.append(el('p', { className: 'dialog-msg', textContent: message }));
+    const input = el('input', { type: 'text', className: 'dialog-note', placeholder, maxLength: 200 });
+    content.append(input);
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: 'primary', textContent: confirmLabel });
+    cancel.onclick = () => { closeDialog(); resolve({ ok: false, note: '' }); };
+    ok.onclick = () => { closeDialog(); resolve({ ok: true, note: input.value.trim() }); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
+    actions.append(cancel, ok);
+    $('#dialog').classList.remove('hidden');
+    input.focus();
+  });
+}
+
 function reportDialog(title, rows) {
   // rows: [{ name, ok, detail }]
   $('#dialogTitle').textContent = title;
@@ -232,7 +255,10 @@ async function loadSchedule() {
       col.append(el('div', { className: 'muted', style: 'font-size:11.5px;padding:6px', textContent: '—' }));
     }
     for (const b of dayBlocks) {
-      const card = el('div', { className: `block-card ${b.fits ? 'fits' : 'misfit'} ${b.status}`, tabIndex: 0 });
+      const card = el('div', {
+        className: `block-card ${b.fits ? 'fits' : 'misfit'}${b.overridden ? ' forced' : ''} ${b.status}`,
+        tabIndex: 0,
+      });
       card.append(el('div', { className: 'b-title', textContent: `${b.channel_name}: ${b.template_name}` }));
       card.append(el('div', { className: 'b-meta', textContent: `${b.start_time}–${b.end_time} · ${b.content_type}` }));
       const badges = el('div', { className: 'b-badges' });
@@ -242,7 +268,10 @@ async function loadSchedule() {
         : !b.durationFits ? `off ${fmt(b.diff)}`
         : b.fillerFits === false ? `filler ${fmt(b.fillerRun)}`
         : `${b.offTypeCount} not movies`;
-      badges.append(el('span', { className: `badge ${b.fits ? 'ok' : 'bad'}`, textContent: why }));
+      badges.append(el('span', {
+        className: `badge ${b.fits ? 'ok' : b.overridden ? 'warn' : 'bad'}`,
+        textContent: b.overridden ? `forced · ${why}` : why,
+      }));
       badges.append(el('span', { className: 'badge status', textContent: b.status }));
       if (b.is_mirror) badges.append(el('span', { className: 'badge', textContent: '🔁 repeat' }));
       card.append(badges);
@@ -815,8 +844,14 @@ function renderValidation() {
     : [];
   const fits = durationFits && fillerFits && offType.length === 0;
 
+  // A block the catalogue simply cannot satisfy can be FORCED by the operator.
+  // It still does not "fit" — nothing about it is green — but it may be approved
+  // and pushed, and the reason travels with the block.
+  const overridden = !!currentBlock.overridden;
+  const approvable = fits || overridden;
+
   const box = $('#modalValidation');
-  box.className = `validation ${fits ? 'ok' : 'bad'}`;
+  box.className = `validation ${fits ? 'ok' : overridden ? 'warn' : 'bad'}`;
   const problems = [];
   if (!durationFits) {
     problems.push(diff < 0
@@ -834,7 +869,10 @@ function renderValidation() {
     ? (diff >= 0
         ? `Fits — total ${fmt(total)}, ${fmt(diff)} under (≤ ${maxUnderrun}s) · longest filler run ${fmt(fillerRun)}`
         : `Fits — total ${fmt(total)}, ${fmt(-diff)} over (≤ ${maxOverrun}s) · longest filler run ${fmt(fillerRun)}`)
-    : problems.join(' · ');
+    : `${overridden ? 'FORCED — ' : ''}${problems.join(' · ')}`;
+  if (overridden && currentBlock.overrideReason) {
+    box.append(el('div', { className: 'validation-note', textContent: `Forced: ${currentBlock.overrideReason}` }));
+  }
 
   // Mark the offending clips so the operator sees WHERE to cut, not just that
   // something is wrong.
@@ -856,8 +894,16 @@ function renderValidation() {
   });
   flagRun();
 
-  $('#btnApproveBlock').disabled = !fits;
-  return fits;
+  $('#btnApproveBlock').disabled = !approvable;
+  // Offer the force only where it means something: on a block that does not
+  // pass, or on one already forced (so it can be taken back).
+  const force = $('#btnOverrideBlock');
+  force.hidden = currentMirror || (fits && !overridden);
+  force.textContent = overridden ? '↩ Undo force' : '⚠ Force this block';
+  force.title = overridden
+    ? 'Stop forcing this block — it goes back to being refused until it passes'
+    : 'Approve and push it anyway, and record why';
+  return approvable;
 }
 
 // ---- Library pane ----------------------------------------------------------
@@ -1019,6 +1065,31 @@ $('#btnSaveItems').addEventListener('click', (e) => withBusy(e.currentTarget, as
   const v = await api.send('PUT', `/api/blocks/${currentBlock.block.id}/items`, { items });
   currentBlock = v; currentItems = v.items.map((i) => ({ ...i })); renderItems();
   toast('Order saved', 'ok');
+}));
+$('#btnOverrideBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const id = currentBlock.block.id;
+  if (currentBlock.overridden) {
+    currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: false });
+    currentItems = currentBlock.items.map((i) => ({ ...i }));
+    renderItems();
+    toast('Force removed — this block is refused again until it passes', 'ok');
+    return;
+  }
+  // Save what is on screen first: the recorded reason must describe the block
+  // as the operator is actually leaving it, not as the server last saw it.
+  const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
+  await api.send('PUT', `/api/blocks/${id}/items`, { items });
+  const { ok, note } = await confirmWithNote(
+    'Force this block',
+    'This block does not meet the rules and will be approved and pushed anyway. '
+    + 'Do this when the catalogue has nothing that fixes it — the problem is recorded with the block.',
+    { confirmLabel: 'Force it', placeholder: 'Why (optional) — e.g. no shorter documentary exists' }
+  );
+  if (!ok) return;
+  currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: true, reason: note });
+  currentItems = currentBlock.items.map((i) => ({ ...i }));
+  renderItems();
+  toast('Block forced — it can now be approved', 'ok');
 }));
 $('#btnApproveBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   // Persist current edits first, then approve.

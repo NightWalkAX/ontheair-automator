@@ -1,12 +1,20 @@
 // One validation rule set for a scheduled block, shared by the review API, the
 // week grid, the approval gate and the OTAV push.
 //
-// A block is approvable ("fits") when all three hold:
+// A block FITS when all three hold:
 //   1. its duration lands inside the fit tolerance (see fitTolerance),
 //   2. no unbroken run of fillers is longer than fillerRunLimit(), and
 //   3. a movie block holds nothing but movies.
 // Anything else is red in the UI, refused by POST /approve, and refused by the
 // push — the operator adds or removes content until it passes.
+//
+// Except that some blocks have no solution: a three-hour documentary slot whose
+// every remaining episode runs 50 minutes leaves a 30-minute hole no clip in the
+// catalogue can fill, and no amount of editing changes that. So a block carries
+// an OVERRIDE — `ScheduledBlock.override_reason`, set by the operator from the
+// modal — and `approvable` is what the approval and push gates ask about:
+// `fits || overridden`. `fits` keeps meaning "passes the rules", so a forced
+// block never reads as a healthy one anywhere in the UI.
 
 import { db } from '../db.js';
 import {
@@ -71,17 +79,27 @@ export function validateBlock(blockId) {
   const fillerFits = fillerRun <= maxFillerRun;
 
   const offType = offTypeItems(block, items);
+  const fits = durationFits && fillerFits && offType.length === 0;
+  const overridden = !!block.override_reason;
 
   return {
     block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, maxOverrun,
     durationFits, fillerRun, maxFillerRun, fillerFits,
     offTypeIds: offType.map((i) => i.id),
     typeFits: offType.length === 0,
-    fits: durationFits && fillerFits && offType.length === 0,
+    fits,
+    overridden,
+    overrideReason: block.override_reason ?? null,
+    overrideAt: block.override_at ?? null,
+    approvable: fits || overridden,
   };
 }
 
-/** Why a block can't be approved, as one operator-readable line (null if it can). */
+/**
+ * Why a block does not pass the rules, as one operator-readable line (null when
+ * it does). Reports the problem even for an overridden block — that line is what
+ * the override records — so callers that care about approval ask `approvable`.
+ */
 export function blockProblem(v) {
   if (!v) return 'block not found';
   const mmss = (s) => `${Math.floor(Math.abs(s) / 60)}:${String(Math.abs(s) % 60).padStart(2, '0')}`;
@@ -123,7 +141,9 @@ export function unfitBlocksInRange(from, to, channelIds = []) {
   const bad = [];
   for (const r of rows) {
     const v = validateBlock(r.id);
-    if (v && !v.fits) bad.push({ ...r, reason: blockProblem(v) });
+    // An overridden block goes to air: the operator has already looked at this
+    // exact problem and decided it is the best the catalogue can do.
+    if (v && !v.approvable) bad.push({ ...r, reason: blockProblem(v) });
   }
   return bad;
 }

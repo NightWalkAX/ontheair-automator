@@ -416,6 +416,10 @@
       <div id="modalValidation" class="validation"></div>
       <div class="modal-actions">
         <button id="btnSaveItems" class="ghost">Save order</button>
+        <!-- For a block with no solution: a hole no clip in the catalogue fills,
+             a filler run nothing shorter breaks up. Hidden while the block
+             passes on its own. -->
+        <button id="btnOverrideBlock" class="ghost warn" type="button" hidden>⚠ Force this block</button>
         <button id="btnApproveBlock" class="primary">Approve block</button>
       </div>
     </div>

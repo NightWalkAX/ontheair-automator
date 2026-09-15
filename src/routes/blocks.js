@@ -239,6 +239,10 @@ router.post('/generate', (req, res) => {
 router.post('/:id/regenerate', (req, res) => {
   const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(Number(req.params.id));
   if (!block) return res.status(404).json({ error: 'not found' });
+  // An override is a judgement about the content that was in the block. Rebuild
+  // it and that judgement no longer describes anything, so it goes with it.
+  db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?')
+    .run(block.id);
   res.json(populateBlock(block));
 });
 
@@ -322,7 +326,7 @@ router.get('/', (req, res) => {
   const params = [dates[0], dates[6]];
   if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
   const rows = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, sb.slot_id,
+    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, sb.override_reason,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
            bt.name AS template_name, bt.weekday, bt.content_type,
            COALESCE(s.start_time, bt.start_time) AS start_time,
@@ -406,13 +410,16 @@ router.get('/', (req, res) => {
     const diff = blockSeconds - totalSeconds;   // >0 underrun, <0 overrun
     const fillerRun = fillerRuns.get(r.id) || 0;
     const offTypeCount = offType.get(r.id) || 0;
+    const fits = fitsTolerance(diff, tol) && fillerRun <= maxFillerRun && offTypeCount === 0;
     return {
       ...r, is_mirror: r.slot_order > 0,
       blockSeconds, totalSeconds, diff,
       durationFits: fitsTolerance(diff, tol),
       fillerRun, maxFillerRun, fillerFits: fillerRun <= maxFillerRun,
       offTypeCount, typeFits: offTypeCount === 0,
-      fits: fitsTolerance(diff, tol) && fillerRun <= maxFillerRun && offTypeCount === 0,
+      fits,
+      overridden: !!r.override_reason,
+      approvable: fits || !!r.override_reason,
     };
   });
   res.json({ week: dates, blocks });
@@ -676,7 +683,7 @@ router.post('/:id/approve', (req, res) => {
   const id = Number(req.params.id);
   const v = validateBlock(id);
   if (!v) return res.status(404).json({ error: 'not found' });
-  if (!v.fits) {
+  if (!v.approvable) {
     return res.status(409).json({
       error: `block ${blockProblem(v)} and cannot be approved`,
       diff: v.diff, overrun: v.overrun, maxUnderrun: v.maxUnderrun, maxOverrun: v.maxOverrun,
@@ -687,6 +694,38 @@ router.post('/:id/approve', (req, res) => {
   if (v.block.status !== 'approved') recordBlockPlays(v); // record only on first approval
   db.prepare("UPDATE ScheduledBlock SET status = 'approved' WHERE id = ?").run(id);
   res.json({ ok: true, status: 'approved' });
+});
+
+// POST /api/blocks/:id/override { enabled, reason? } — force a block the rules
+// refuse, or take the force back.
+//
+// Some blocks have no solution. A three-hour documentary slot whose every
+// remaining episode runs 50 minutes leaves a 30-minute hole, and there is no
+// clip in the catalogue that fills it — the operator can only choose between
+// that hole and not airing the block at all. Forcing records WHICH problem was
+// accepted (the validation line as it reads right now), so the decision can be
+// read back off the block later instead of living in somebody's memory.
+//
+// Refused on a block that already passes: there would be nothing to force, and
+// a stale override sitting on a healthy block would hide a real problem later.
+router.post('/:id/override', (req, res) => {
+  const id = Number(req.params.id);
+  const v = validateBlock(id);
+  if (!v) return res.status(404).json({ error: 'not found' });
+  const enabled = req.body?.enabled !== false;
+
+  if (!enabled) {
+    db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?').run(id);
+    return res.json(validateBlock(id));
+  }
+  if (v.fits) {
+    return res.status(409).json({ error: 'this block already passes — there is nothing to override' });
+  }
+  const note = String(req.body?.reason ?? '').trim().slice(0, 500);
+  const reason = note ? `${blockProblem(v)} — ${note}` : blockProblem(v);
+  db.prepare('UPDATE ScheduledBlock SET override_reason = ?, override_at = ? WHERE id = ?')
+    .run(reason, new Date().toISOString(), id);
+  res.json(validateBlock(id));
 });
 
 // POST /api/blocks/approve-week?week=YYYY-MM-DD — approve every fitting draft.
@@ -700,7 +739,7 @@ router.post('/approve-week', (req, res) => {
   const approved = [], blocked = [];
   for (const { id } of drafts) {
     const v = validateBlock(id);
-    if (v.fits) {
+    if (v.approvable) {
       recordBlockPlays(v); // these are drafts, so always a first approval
       db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE id=?").run(id);
       approved.push(id);

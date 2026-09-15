@@ -1512,6 +1512,53 @@ test('a block with more than the allowed filler back to back cannot be approved'
   assert.equal(res.status, 409, 'the server refuses it too, not just the UI');
   assert.equal(res.data.fillerRun, 3600);
 
+  // Some blocks have no solution, so the operator can force one. It still does
+  // not fit — that is the point — but it becomes approvable, and the problem it
+  // was forced over is recorded on the block.
+  const forced = await j('POST', `/api/blocks/${blockId}/override`,
+    { enabled: true, reason: 'no shorter filler exists' });
+  assert.equal(forced.status, 200);
+  assert.equal(forced.data.fits, false, 'forcing does not make it fit');
+  assert.equal(forced.data.overridden, true);
+  assert.equal(forced.data.approvable, true);
+  assert.match(forced.data.overrideReason, /back to back .* no shorter filler exists/);
+  assert.ok(forced.data.overrideAt, 'and when it was forced');
+  assert.equal((await j('POST', `/api/blocks/${blockId}/approve`)).status, 200,
+    'a forced block can be approved');
+
+  // The push gate honours it too: this block is no longer in the way.
+  const { unfitBlocksInRange } = await import('../src/services/blockValidation.js');
+  assert.equal(
+    unfitBlocksInRange('2026-12-28', '2026-12-28').some((b) => b.id === blockId),
+    false,
+    'the push no longer refuses it'
+  );
+
+  // Taking the force back puts it straight back on the refused list.
+  const undone = await j('POST', `/api/blocks/${blockId}/override`, { enabled: false });
+  assert.equal(undone.data.overridden, false);
+  assert.equal(undone.data.approvable, false);
+  db.prepare("UPDATE ScheduledBlock SET status = 'draft' WHERE id = ?").run(blockId);
+  assert.equal((await j('POST', `/api/blocks/${blockId}/approve`)).status, 409);
+
+  // Rebuilding the block drops the force with it: it was a judgement about the
+  // content that was in there, and that content is gone.
+  await j('POST', `/api/blocks/${blockId}/override`, { enabled: true });
+  assert.equal(validateBlock(blockId).overridden, true);
+  await j('POST', `/api/blocks/${blockId}/regenerate`);
+  assert.equal(validateBlock(blockId).overridden, false, 'a regenerated block is judged afresh');
+
+  // Forcing a block that already passes is refused: there would be nothing to
+  // force, and a stale override would hide a real problem later.
+  const clean = db.prepare("SELECT id FROM ScheduledBlock WHERE override_reason IS NULL AND id != ? LIMIT 1")
+    .get(blockId)?.id;
+  if (clean) {
+    const v = validateBlock(clean);
+    if (v?.fits) {
+      assert.equal((await j('POST', `/api/blocks/${clean}/override`, { enabled: true })).status, 409);
+    }
+  }
+
   // Two 20-minute pads back to back are still one run, so that is refused too.
   db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(blockId);
   ins.run(blockId, pad.get('capA', '/tmp/FillerCap-padA.mov', ch).id, 0);

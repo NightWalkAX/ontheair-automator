@@ -323,6 +323,12 @@ export function initSchema() {
   // features instead of one feature plus hours of fillers.
   addColumnIfMissing('BlockTemplate', 'is_movie_block', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing('BlockTemplate', 'movie_limit', 'INTEGER');
+  // Operator override. A block the rules refuse — a hole no clip in the
+  // catalogue can fill, a filler run nothing shorter can break up — still has to
+  // be able to go to air, so the operator can force it and the reason is kept
+  // with the block rather than living in somebody's memory.
+  addColumnIfMissing('ScheduledBlock', 'override_reason', 'TEXT');
+  addColumnIfMissing('ScheduledBlock', 'override_at', 'TEXT');
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs
