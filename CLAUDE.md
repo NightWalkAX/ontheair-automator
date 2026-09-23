@@ -272,6 +272,11 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
 - `email.appPassword` must be a Google **App Password**; `GET /api/monitor/config` never returns
   it (`hasPassword`), and a PUT with it blank keeps the stored one. Tests swap the transport
   with `setTransportForTests()` and use `test/fake-ffmpeg-frames` — nothing leaves the machine.
+- **nodemailer is imported lazily, on first send** (`loadNodemailer()` in `mailer.js`). The
+  Macs are updated with `git pull`, which doesn't bring `node_modules`, and a static import made a
+  missing optional package stop the whole scheduler at boot (`ERR_MODULE_NOT_FOUND`). Keep any
+  optional feature's dependency out of the import graph of `src/app.js`. `setup.sh` now installs
+  whenever ANY package.json dependency is missing, not only when `node_modules` is absent.
 
 ## OnTheAir Video REST API (integration target)
 

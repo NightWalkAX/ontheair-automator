@@ -57,9 +57,21 @@ fi
 
 # --- 3. Dependencies --------------------------------------------------------
 step "3. Installing dependencies"
-if [ -d node_modules ] && [ -f node_modules/.package-lock.json ]; then
-  ok "node_modules already present — skipping npm install"
+# Skip only when EVERY dependency in package.json is actually there: a folder
+# updated with `git pull` keeps its old node_modules, and a package added since
+# (nodemailer, for the signal monitor) would otherwise never be installed.
+deps_complete() {
+  node -e "
+    const deps = Object.keys(require('./package.json').dependencies || {});
+    const fs = require('fs');
+    const missing = deps.filter((d) => !fs.existsSync('node_modules/' + d + '/package.json'));
+    if (missing.length) { console.log(missing.join(' ')); process.exit(1); }
+  "
+}
+if MISSING=$(deps_complete); then
+  ok "node_modules already complete — skipping npm install"
 else
+  [ -n "$MISSING" ] && warn "missing: $MISSING"
   if npm install; then
     ok "Dependencies installed"
   else

@@ -16,8 +16,25 @@
 //     "host": "smtp.gmail.com", "port": 465          // optional, other providers
 //   }
 
-import nodemailer from 'nodemailer';
 import { loadConfig } from '../config.js';
+
+// nodemailer is loaded on first use, not at import: e-mail is an optional
+// feature, and a folder updated with `git pull` but not `npm install` must
+// still start the scheduler — it used to die at boot on ERR_MODULE_NOT_FOUND.
+let nodemailerModule = null;
+let nodemailerMissing = false;
+async function loadNodemailer() {
+  if (nodemailerModule) return nodemailerModule;
+  try {
+    nodemailerModule = (await import('nodemailer')).default;
+    nodemailerMissing = false;
+    return nodemailerModule;
+  } catch (err) {
+    if (err.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+    nodemailerMissing = true;
+    throw new Error('the nodemailer package is not installed — run "npm install" in the app folder, then restart');
+  }
+}
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const isEmail = (s) => EMAIL_RE.test(String(s || '').trim());
@@ -37,6 +54,7 @@ export function emailConfig() {
 
 /** Why mail cannot be sent right now, or null when it can. */
 export function emailProblem(c = emailConfig()) {
+  if (nodemailerMissing && !transportOverride) return 'nodemailer not installed (run npm install)';
   if (!c.user) return 'no sender account configured';
   if (!c.appPassword) return 'no app password configured';
   if (!c.recipients.length) return 'no recipients configured';
@@ -47,8 +65,9 @@ export function emailProblem(c = emailConfig()) {
 let transportOverride = null;
 export function setTransportForTests(t) { transportOverride = t; }
 
-function transportFor(c) {
+async function transportFor(c) {
   if (transportOverride) return transportOverride;
+  const nodemailer = await loadNodemailer();
   return nodemailer.createTransport({
     host: c.host,
     port: c.port,
@@ -69,8 +88,9 @@ export async function sendMail({ subject, text, html, to = null }) {
   const recipients = to || c.recipients;
   const problem = emailProblem({ ...c, recipients });
   if (problem) throw new Error(`e-mail not sent: ${problem}`);
+  const transport = await transportFor(c);
   try {
-    return await transportFor(c).sendMail({
+    return await transport.sendMail({
       from: { name: c.fromName, address: c.user },
       to: { name: c.fromName, address: c.user },
       bcc: recipients,
