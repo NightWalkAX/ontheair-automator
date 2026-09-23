@@ -220,6 +220,24 @@ export function initSchema() {
     -- reset. Resource.name / file_path (server truth) are never written by the
     -- editor; Resource.subject/chapter (the scheduling/organization layer) are
     -- edited in place and the pre-edit values are snapshotted here once.
+    -- Signal monitor incidents (src/services/signalMonitor.js): a public feed
+    -- that went black / froze / disappeared. source_id is the monitor.sources id
+    -- in config.json, not a foreign key — feeds are configuration, not rows.
+    CREATE TABLE IF NOT EXISTS SignalEvent (
+      id          INTEGER PRIMARY KEY,
+      source_id   TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      kind        TEXT NOT NULL,               -- black | frozen | down
+      started_at  TEXT NOT NULL,               -- when the picture actually went
+      alerted_at  TEXT NOT NULL,               -- when the threshold was crossed
+      ended_at    TEXT,                        -- NULL while it is still going on
+      on_air      TEXT,                        -- what OTAV said was playing
+      note        TEXT,
+      emailed     INTEGER NOT NULL DEFAULT 0,  -- messages that went out for it
+      email_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_signalevent_source ON SignalEvent(source_id, id);
+
     CREATE TABLE IF NOT EXISTS ResourceOverride (
       resource_id      INTEGER PRIMARY KEY REFERENCES Resource(id) ON DELETE CASCADE,
       display_name     TEXT,        -- on-screen name; Resource.name stays untouched

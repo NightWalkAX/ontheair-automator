@@ -39,7 +39,8 @@ exFAT quirk. (Alternative: copy the folder *without* `node_modules` and run
 
 - **Node.js ≥ 22.5** (uses the built-in `node:sqlite` — no native module to
   rebuild after copying between Intel/Apple-Silicon Macs).
-- **ffmpeg/ffprobe** via Homebrew: `brew install ffmpeg` (used for ingestion).
+- **ffmpeg/ffprobe** via Homebrew: `brew install ffmpeg` (used for ingestion, Air Spec, and the signal monitor).
+- Internet access to the public HLS feeds and to `smtp.gmail.com:465`, if the signal monitor is on.
 - Network access to the SMB media server and to each OTAV instance.
 
 ## Setup
@@ -97,9 +98,11 @@ some PUT/DELETE CRUD branches.
 | `ffprobePath` | Path to `ffprobe` (default `ffprobe` on `PATH`). |
 | `cron.weeklyDraft` | Cron expr for auto draft generation (default Thu 06:00). |
 | `filler.maxUnderrunSeconds` / `maxOverrunSeconds` | Fit tolerance (default 5s under / 5s over). Exact is the target; a block may end up to `maxUnderrunSeconds` short, and when the filler pool is too coarse to land inside that window the fill goes up to `maxOverrunSeconds` PAST the block end instead of leaving a bigger hole. Set `maxOverrunSeconds` to 0 to forbid overrun entirely. |
+| `monitor.enabled` | Signal monitor on/off (also the switch on the **Signal Monitor** tab). Watches each feed in `monitor.sources` (default: the seven GLC public HLS feeds) and e-mails `email.recipients` when one stays black for `monitor.black.alertAfterSeconds` (default 10s) or sends nothing for `monitor.down.alertAfterSeconds` (default 60s). Every setting is editable from the tab. |
+| `email.{user,appPassword,fromName,recipients}` | Gmail account the alerts are sent from. `appPassword` is a Google **App Password** (needs 2-Step Verification on the account), not the account password. `host`/`port` override `smtp.gmail.com:465` for another provider. |
 | `pathMap` | Optional `{canonical-prefix: local-prefix}` map for running the app on a machine that mounts the media share somewhere other than the Mac paths stored in the DB (e.g. Linux + gvfs: `{"/Volumes/Public": "/run/user/1000/gvfs/smb-share:server=…,share=public"}`). Local filesystem access is translated; everything stored in SQLite or sent to OTAV stays canonical. |
 
-> **Security note:** SMB and OTAV credentials are stored in plaintext in
+> **Security note:** SMB, OTAV and Gmail app-password credentials are stored in plaintext in
 > `config/config.json` / the SQLite file. This is an accepted tradeoff for a
 > self-contained, offline, USB-copyable app. Do not commit the config or leave
 > the drive unattended.

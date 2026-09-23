@@ -242,6 +242,37 @@ started and left alone:
   re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
   panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.
 
+## Signal monitor ("Signal Monitor" tab)
+
+`src/services/signalMonitor.js` + `src/routes/monitor.js` + `src/services/mailer.js` watch the
+channels' PUBLIC HLS feeds (the seven GLC `live.dreamtv.gy` URLs from `glc-playout.html` are the
+defaults) and e-mail a list through Gmail when a feed goes black, freezes, or disappears. Off
+until `monitor.enabled` (the switch on the tab); started from `src/app.js` after `listen`.
+
+- **Headless, no browser.** One `ffmpeg` per feed reads the LOWEST rendition of the ladder
+  (`pickVariant()`, resolved against the CDN's 302 target) and writes 1 fps of 64x36 gray
+  frames to stdout (`-f rawvideo -pix_fmt gray`); all judgement is JavaScript on those 2304
+  bytes. A headless Chrome was rejected: 150MB, a download, and it does not travel on USB.
+  Measured on the real feeds: ~4% of one core per feed.
+- **Durations are counted in FRAMES, not wall-clock.** An HLS reader receives a 10s segment in
+  one burst and ~30s of backlog on connect, so arrival time says nothing about how long a
+  picture was black. N black frames at `sampleFps` = N/fps seconds. Only `down` (no frames at
+  all) uses the wall clock. `FeedWatch` is pure (frames + ticks in, events out) — test it that way.
+- **Black = few BRIGHT pixels, not a low mean.** The channel logo stays on screen over a black
+  programme, so a frame is black when ≤ `black.maxBrightPct` (2%) of pixels exceed
+  `black.maxLuma` (32). A dark scene or a mid-grey card is not black.
+- **Freeze is off by default** on purpose: a lesson slide legitimately holds still for minutes.
+- One incident per feed at a time (`SignalEvent`); `down` replaces an open black/frozen
+  incident rather than stacking. Open/close/reminder (`repeatMinutes`) events within
+  `batchSeconds` go out as ONE e-mail (BCC), so a network outage reads as one message, not seven.
+  A feed linked to a channel (`channelId`) names what OTAV had on air (`GET /playback/current_item`).
+- ffmpeg children are killed on process exit; after a hard crash each dies at its next write
+  into the broken pipe (seen: 10–20s). A reader that stops delivering for
+  `down.stallRestartSeconds` is killed and restarted with backoff.
+- `email.appPassword` must be a Google **App Password**; `GET /api/monitor/config` never returns
+  it (`hasPassword`), and a PUT with it blank keeps the stored one. Tests swap the transport
+  with `setTransportForTests()` and use `test/fake-ffmpeg-frames` — nothing leaves the machine.
+
 ## OnTheAir Video REST API (integration target)
 
 Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>/...` (per `ChannelType` row) — this project talks to 6 of them independently, not one shared instance.

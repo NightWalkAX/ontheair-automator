@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "nodemailer": "^10.0.10"
   }
 }

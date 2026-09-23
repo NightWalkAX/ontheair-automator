@@ -66,5 +66,30 @@
       "fpsToleranceHz": 0.01,
       "verifyToleranceSeconds": 1.5
     }
+  },
+  "monitor": {
+    "enabled": false,
+    "sampleFps": 1,
+    "black": {
+      "maxLuma": 32,
+      "maxBrightPct": 2,
+      "alertAfterSeconds": 10,
+      "recoverAfterSeconds": 5
+    },
+    "freeze": {
+      "enabled": false,
+      "alertAfterSeconds": 60
+    },
+    "down": {
+      "alertAfterSeconds": 60
+    },
+    "repeatMinutes": 30,
+    "batchSeconds": 15
+  },
+  "email": {
+    "user": "",
+    "appPassword": "",
+    "fromName": "GLC Signal Monitor",
+    "recipients": []
   }
 }

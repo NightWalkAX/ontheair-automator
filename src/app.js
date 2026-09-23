@@ -24,7 +24,9 @@ import { router as media } from './routes/media.js';
 import { router as blocks } from './routes/blocks.js';
 import { router as otav } from './routes/otav.js';
 import { router as transcode } from './routes/transcode.js';
+import { router as monitor } from './routes/monitor.js';
 import { resetStaleRunning } from './services/transcode.js';
+import { startMonitor } from './services/signalMonitor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -51,6 +53,7 @@ app.use('/api/media', media);
 app.use('/api/blocks', blocks);
 app.use('/api/otav', otav);
 app.use('/api/transcode', transcode);
+app.use('/api/monitor', monitor);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,
@@ -76,6 +79,8 @@ const PORT = server?.port || 8090;
 const httpServer = app.listen(PORT, () => {
   log('app').info(`listening on http://localhost:${PORT} · log ${logPath()}`);
   startWeeklyDraftCron();
+  // Public-feed black/no-signal watcher; off unless monitor.enabled is set.
+  try { startMonitor(); } catch (err) { log('monitor').error('signal monitor did not start', err); }
 });
 // A port already taken is the classic "it didn't start and I don't know why".
 httpServer.on('error', (err) => {

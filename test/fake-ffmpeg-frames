@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// Fake ffmpeg for the signal monitor tests. Emits raw 64x36 gray frames on
+// stdout, the way `-f rawvideo -pix_fmt gray pipe:1` does, following a script
+// named in the input URL:  .../feed.m3u8?script=bright:3,black:12,bright:8
+// Each part is `<kind>:<frames>`; "black" frames carry a small bright patch
+// standing in for the channel logo, which must NOT stop them counting as black.
+const argv = process.argv.slice(2);
+const input = argv[argv.indexOf('-i') + 1];
+const script = new URL(input).searchParams.get('script') || 'bright:5';
+
+const W = 64, H = 36;
+function frame(kind) {
+  const f = Buffer.alloc(W * H, kind === 'black' ? 16 : 150);
+  if (kind === 'black') for (let y = 1; y < 4; y++) for (let x = 55; x < 62; x++) f[y * W + x] = 235;
+  if (kind === 'bright') for (let i = 0; i < f.length; i += 7) f[i] = 90 + ((i * 13) % 120);
+  return f;
+}
+
+for (const part of script.split(',')) {
+  const [kind, n] = part.split(':');
+  for (let i = 0; i < Number(n); i++) process.stdout.write(frame(kind));
+}

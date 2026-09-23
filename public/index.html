@@ -18,6 +18,7 @@
       <button data-tab="media">Media &amp; Roots</button>
       <button data-tab="catalog">Catalog Editor</button>
       <button data-tab="transcode">Air Spec</button>
+      <button data-tab="monitor">Signal Monitor <span class="mon-nav-dot" id="monNavDot" hidden></span></button>
       <button data-tab="setup">Channels &amp; Templates</button>
     </nav>
     <div class="header-right">
@@ -299,6 +300,73 @@
         <thead><tr><th>Clip</th><th>Now</th><th>Off spec because</th><th>Length</th><th>Status</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ===== Signal Monitor ===== -->
+  <section id="tab-monitor" class="tab">
+    <div class="section-head">
+      <h2>Signal Monitor <span class="muted" style="font-size:13px;font-weight:500">· watch the public feeds, e-mail when one goes black</span></h2>
+      <p>Each feed is read in the background, with nobody watching: ffmpeg takes one small frame per second from the lowest-quality version of the stream, and the app checks how much of the picture is lit. When a feed stays <strong>black</strong> longer than the limit, or stops sending anything (<strong>no signal</strong>), everybody on the list gets an e-mail, and gets another when it comes back. Alerts that happen within a few seconds of each other go out as one message. If a feed is linked to a channel, the e-mail also says which clip OTAV had on air.</p>
+    </div>
+
+    <div class="mon-bar">
+      <label class="chk mon-switch"><input type="checkbox" id="monEnabled" /> <strong>Monitor on</strong></label>
+      <span id="monSummary" class="muted"></span>
+      <span class="spacer"></span>
+      <span id="monEmailState" class="tx-badge"></span>
+    </div>
+
+    <div class="mon-grid" id="monGrid"></div>
+
+    <div class="split" style="margin-top:22px">
+      <div class="panel">
+        <h3>✉️ Who gets the alerts</h3>
+        <form id="monEmailForm" class="stack" style="margin-top:0">
+          <label class="field"><span>Recipients: one address per line</span>
+            <textarea name="recipients" rows="4" placeholder="ops@example.gy&#10;engineer@example.gy"></textarea>
+          </label>
+          <label class="field"><span>Send from (Gmail account)</span>
+            <input name="user" type="email" placeholder="glc.monitor@gmail.com" autocomplete="off" />
+          </label>
+          <label class="field"><span>Gmail app password</span>
+            <input name="appPassword" type="password" autocomplete="new-password" placeholder="16 letters from Google" />
+          </label>
+          <p class="muted mon-hint">Use an <strong>app password</strong>, not the account password: Google account → Security → 2-Step Verification → App passwords. Leave it empty to keep the one already saved.</p>
+          <label class="field"><span>Sender name</span>
+            <input name="fromName" placeholder="GLC Signal Monitor" />
+          </label>
+          <div class="row-actions">
+            <button type="submit">Save</button>
+            <button type="button" class="ghost" id="monTestEmail">Send a test e-mail</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h3>⚙︎ When to raise an alert</h3>
+        <form id="monRulesForm" class="spec-grid mon-rules">
+          <label class="field"><span>Black for at least (s)</span><input name="blackAfter" type="number" min="1" max="3600" /></label>
+          <label class="field"><span>Back to normal after (s)</span><input name="blackRecover" type="number" min="1" max="600" /></label>
+          <label class="field" title="A pixel brighter than this counts as picture (0–255)"><span>Black means darker than</span><input name="maxLuma" type="number" min="1" max="128" /></label>
+          <label class="field" title="The channel logo stays on screen over a black programme; this is how much of the picture it may cover"><span>Logo may cover up to (%)</span><input name="maxBrightPct" type="number" min="0" max="50" step="0.5" /></label>
+          <label class="field"><span>No signal after (s)</span><input name="downAfter" type="number" min="10" max="3600" /></label>
+          <label class="field" title="0 = only on start and end"><span>Remind every (min)</span><input name="repeatMinutes" type="number" min="0" max="1440" /></label>
+          <label class="chk spec-grid-wide" title="Off by default: a lesson slide can hold still for minutes"><input type="checkbox" name="freezeEnabled" /> also alert when the picture freezes for <input name="freezeAfter" type="number" min="5" max="7200" class="mon-inline" /> s</label>
+          <div class="spec-grid-wide"><button type="submit">Save rules</button></div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <h3>📡 Feeds <span class="spacer"></span><button type="button" class="mini ghost" id="monAddFeed">+ Add feed</button></h3>
+      <table id="monFeedsTable"><thead><tr><th>On</th><th>Name</th><th>HLS URL (.m3u8)</th><th>OTAV channel</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="row-actions" style="margin-top:12px"><button type="button" id="monSaveFeeds">Save feeds</button></div>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <h3>🕘 Recent incidents</h3>
+      <table id="monEventsTable"><thead><tr><th>Feed</th><th>What</th><th>From</th><th>To</th><th>Lasted</th><th>On air</th><th>E-mail</th></tr></thead><tbody></tbody></table>
     </div>
   </section>
 
