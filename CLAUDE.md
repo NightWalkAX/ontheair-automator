@@ -262,6 +262,16 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   programme, so a frame is black when ≤ `black.maxBrightPct` (2%) of pixels exceed
   `black.maxLuma` (32). A dark scene or a mid-grey card is not black.
 - **Freeze is off by default** on purpose: a lesson slide legitimately holds still for minutes.
+- **Resync before alerting, for a channel we control.** A black/frozen incident on a feed with a
+  `channelId` first gets `GET /scheduler/resynchronize` on that OTAV and the alert is HELD
+  (`incident.held`, UI state `resyncing`) for `resync.waitSeconds` (60) — the public feed runs
+  30–40s behind the playout, so a fix can't show sooner. Picture back inside the window = closed
+  as `fixed by OTAV resync`, mailed only if `resync.emailWhenFixed`. Still black = the alert goes
+  out naming the resync; a refused resync (unreachable, 403 = API user below level 3) alerts at
+  once. One resync per channel per `resync.cooldownMinutes` (15): a resync CUTS AIR briefly, and
+  a programme that is genuinely black must not be cut on a loop. `down` never resyncs — a dead
+  public feed is the encoder/CDN, not OTAV. A resync that fails AFTER the picture came back must
+  not alert (`inc.closed`) — that race was real in testing.
 - One incident per feed at a time (`SignalEvent`); `down` replaces an open black/frozen
   incident rather than stacking. Open/close/reminder (`repeatMinutes`) events within
   `batchSeconds` go out as ONE e-mail (BCC), so a network outage reads as one message, not seven.

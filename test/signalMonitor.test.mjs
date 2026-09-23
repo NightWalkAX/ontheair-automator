@@ -185,9 +185,11 @@ before(async () => {
       res.writeHead(302, { Location: `/edge${req.url}` });
       return res.end();
     }
+    // The master's ?s= becomes the fake ffmpeg's script, so each test scripts its own feed.
+    const script = new URL(req.url, 'http://x').searchParams.get('s') || 'bright:3,black:12,bright:6';
     res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
     return res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1400000\nhi.m3u8?script=bright:1\n'
-      + '#EXT-X-STREAM-INF:BANDWIDTH=600000\nlo.m3u8?script=bright:3,black:12,bright:6\n');
+      + `#EXT-X-STREAM-INF:BANDWIDTH=600000\nlo.m3u8?script=${script}\n`);
   });
   await new Promise((r) => hls.listen(0, '127.0.0.1', r));
   const app = express();
@@ -262,4 +264,99 @@ test('end to end: black on the feed becomes a SignalEvent row and one e-mail', a
   assert.ok(mails.length >= 1);
   assert.match(mails.map((m) => m.text).join('\n'), /GLC Test Feed: BLACK since/);
   mon.stopMonitor();
+});
+
+// --- Resync before alerting ---------------------------------------------------
+
+const { startFakeOtav } = await import('./fake-otav.mjs');
+
+function channelFor(port, name) {
+  return Number(db.prepare(`INSERT INTO ChannelType (name, api_ip, api_port) VALUES (?, '127.0.0.1', ?)`)
+    .run(name, port).lastInsertRowid);
+}
+
+async function until(fn, ms = 6000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const v = fn();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return fn();
+}
+
+test('resync applies only to black/frozen on a feed linked to a channel', () => {
+  const c = cfg({ resync: { cooldownMinutes: 15 } });
+  const ev = (kind, channelId) => ({ kind, source: { ...SOURCE, channelId } });
+  assert.deepEqual(mon.resyncPlan(ev('black', null), c), { try: false, why: null });
+  assert.deepEqual(mon.resyncPlan(ev('down', 7), c), { try: false, why: null });
+  assert.deepEqual(mon.resyncPlan(ev('black', 7), c), { try: true });
+  assert.deepEqual(mon.resyncPlan(ev('black', 7), cfg({ resync: { enabled: false } })), { try: false, why: null });
+});
+
+test('black on a channel we control: resync first, and no e-mail when that fixes it', async () => {
+  const otav = await startFakeOtav({ onAirUrl: '/Volumes/Public/lesson.mov' });
+  try {
+    const channelId = channelFor(otav.port, 'Fixed Channel');
+    const before = sent.length;
+    const hlsUrl = `http://127.0.0.1:${hls.address().port}/live/fixed.m3u8?s=bright:3,black:12,bright:8`;
+    const r = await call('PUT', '/config', {
+      enabled: true, batchSeconds: 0, resync: { enabled: true, waitSeconds: 5, emailWhenFixed: false },
+      sources: [{ name: 'Fixed Feed', url: hlsUrl, channelId }],
+    });
+    assert.equal(r.status, 200);
+    // The picture returns before OTAV has even answered, so wait for both.
+    const row = await until(() => db.prepare(`SELECT * FROM SignalEvent WHERE source_id = 'fixed-feed'
+      AND ended_at IS NOT NULL AND resync IS NOT NULL`).get());
+    assert.ok(row, 'the incident closed');
+    assert.equal(otav.state.resynced, 1);
+    assert.equal(row.note, 'fixed by OTAV resync');
+    assert.match(row.resync, /^OTAV resync sent at/);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(sent.slice(before).filter((m) => /Fixed Feed/.test(m.subject)).length, 0, 'nobody was mailed');
+    // Inside the cooldown the same channel is not resynced again: the alert goes straight out.
+    const again = mon.resyncPlan({ kind: 'black', source: { ...SOURCE, channelId } }, cfg());
+    assert.equal(again.try, false);
+    assert.match(again.why, /^no resync: one was already sent at/);
+  } finally {
+    mon.stopMonitor();
+    await otav.close();
+  }
+});
+
+test('still black after the resync window: the alert goes out and says what was tried', async () => {
+  const otav = await startFakeOtav({ onAirUrl: '/Volumes/Public/film.mov' });
+  try {
+    const channelId = channelFor(otav.port, 'Stuck Channel');
+    const hlsUrl = `http://127.0.0.1:${hls.address().port}/live/stuck.m3u8?s=bright:2,black:40`;
+    await call('PUT', '/config', {
+      enabled: true, batchSeconds: 0, resync: { enabled: true, waitSeconds: 1 },
+      sources: [{ name: 'Stuck Feed', url: hlsUrl, channelId }],
+    });
+    const mail = await until(() => sent.find((m) => /Stuck Feed/.test(m.subject)));
+    assert.ok(mail, 'an alert was e-mailed');
+    assert.equal(otav.state.resynced, 1);
+    assert.match(mail.text, /Stuck Feed: BLACK since/);
+    assert.match(mail.text, /OTAV resync sent at .* did not come back within 1s/);
+    assert.match(mail.text, /On air: \/Volumes\/Public\/film\.mov/);
+    const status = (await call('GET', '/status')).body;
+    assert.equal(status.sources[0].state, 'black');
+  } finally {
+    mon.stopMonitor();
+    await otav.close();
+  }
+});
+
+test('a resync OTAV refuses sends the alert at once, with the reason', async () => {
+  const hlsUrl = `http://127.0.0.1:${hls.address().port}/live/refused.m3u8?s=bright:2,black:40`;
+  // Nothing listens on this port: the resync fails, the alert must not wait.
+  const channelId = channelFor(1, 'Unreachable Channel');
+  await call('PUT', '/config', {
+    enabled: true, batchSeconds: 0, resync: { enabled: true, waitSeconds: 60 },
+    sources: [{ name: 'Refused Feed', url: hlsUrl, channelId }],
+  });
+  const mail = await until(() => sent.find((m) => /Refused Feed/.test(m.subject)), 15000);
+  mon.stopMonitor();
+  assert.ok(mail);
+  assert.match(mail.text, /resync failed at/);
 });

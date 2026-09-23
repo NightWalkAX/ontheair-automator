@@ -25,6 +25,16 @@
 //            slide legitimately holds still for minutes).
 //   down   — no frame at all for ≥ alertAfterSeconds (feed unreachable, encoder
 //            stopped, or this Mac lost its connection).
+// Before alerting on black or frozen, a feed linked to a channel we control
+// (source.channelId) gets ONE OTAV scheduler resync (GET /scheduler/resynchronize
+// — "stop playing what it is currently playing and start playing what was
+// scheduled"), and the alert is HELD for resync.waitSeconds: the public feed
+// runs 30s+ behind the playout, so the fix can't be seen any sooner. Picture
+// back inside the window = fixed, recorded, and (by default) nobody is mailed.
+// Still black, or the resync refused = the alert goes out saying what was
+// tried. At most one resync per channel per resync.cooldownMinutes: a
+// programme that is genuinely black must not be interrupted on a loop.
+//
 // Opening and closing each send an e-mail; a long incident sends a reminder
 // every `repeatMinutes`. Alerts raised within `batchSeconds` of each other go
 // out as ONE message, so a network outage that takes all seven feeds reads as
@@ -100,6 +110,12 @@ export function monitorConfig(raw = loadConfig().monitor) {
     down: {
       alertAfterSeconds: clampNum(d.alertAfterSeconds, 10, 3600, 60),
       stallRestartSeconds: clampNum(d.stallRestartSeconds, 10, 600, 45),
+    },
+    resync: {
+      enabled: (m.resync || {}).enabled !== false,
+      waitSeconds: clampNum((m.resync || {}).waitSeconds, 1, 600, 60),
+      cooldownMinutes: clampNum((m.resync || {}).cooldownMinutes, 1, 1440, 15),
+      emailWhenFixed: (m.resync || {}).emailWhenFixed === true,
     },
     repeatMinutes: clampNum(m.repeatMinutes, 0, 1440, 30),
     batchSeconds: clampNum(m.batchSeconds, 0, 300, 15),
@@ -248,6 +264,7 @@ export class FeedWatch {
 
   get state() {
     if (!this.source.enabled) return 'disabled';
+    if (this.incident?.held) return 'resyncing';
     if (this.incident) return this.incident.kind;
     if (!this.lastFrameAt) return 'starting';
     if (this.blackRun > 0) return 'dimming';     // black, but not long enough to alert
@@ -264,6 +281,7 @@ export class FeedWatch {
       state: this.state,
       incident: this.incident && {
         kind: this.incident.kind, startedAt: this.incident.startedAt, alertedAt: this.incident.alertedAt,
+        resync: this.incident.resync || null,
       },
       lastFrameAt: this.lastFrameAt && nowIso(this.lastFrameAt),
       luma: this.last ? Math.round(this.last.luma * 10) / 10 : null,
@@ -324,6 +342,10 @@ function recordClose(ev) {
     .run(nowIso(ev.at), ev.note, ev.incident.eventId);
 }
 
+function recordResync(inc, text) {
+  if (inc.eventId) db.prepare('UPDATE SignalEvent SET resync = ? WHERE id = ?').run(text, inc.eventId);
+}
+
 function recordMail(ids, error) {
   const st = db.prepare('UPDATE SignalEvent SET emailed = emailed + ?, email_error = ? WHERE id = ?');
   for (const id of ids) if (id) st.run(error ? 0 : 1, error, id);
@@ -353,6 +375,88 @@ async function onAirFor(channelId) {
   }
 }
 
+// --- Resync before alerting ---------------------------------------------------
+
+const withTimeout = (p, ms, fallback) => Promise.race([
+  p, new Promise((resolve) => { setTimeout(() => resolve(fallback), ms).unref?.(); }),
+]);
+
+const lastResyncAt = new Map();   // channelId -> ms of the last resync this monitor sent
+const heldTimers = new Set();
+
+/**
+ * Should this incident get a resync first? Returns { try: true } or
+ * { try: false, why } — `why` is null when resync simply doesn't apply (no
+ * channel, feed down, feature off) and a sentence when it was skipped on purpose.
+ */
+export function resyncPlan(ev, cfg, now = Date.now()) {
+  if (!cfg.resync.enabled || !ev.source.channelId) return { try: false, why: null };
+  if (ev.kind !== 'black' && ev.kind !== 'frozen') return { try: false, why: null };
+  const last = lastResyncAt.get(ev.source.channelId);
+  if (last && now - last < cfg.resync.cooldownMinutes * 60_000) {
+    return { try: false, why: `no resync: one was already sent at ${localTime(nowIso(last))}` };
+  }
+  return { try: true };
+}
+
+async function resyncChannel(channelId) {
+  const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
+  if (!channel?.api_ip) throw new Error('the channel has no OTAV address');
+  const client = new OtavClient(channel);
+  await client.authorize();
+  try {
+    await client.resynchronize();
+  } catch (err) {
+    if (err.status === 403) {
+      throw new Error('OTAV refused: the API user needs access level 3 (control playback)');
+    }
+    throw err;
+  }
+}
+
+/** Resync, then hold the alert until the public feed has had time to show the result. */
+async function resyncThenDecide(ev, cfg) {
+  const inc = ev.incident;
+  inc.held = true;
+  lastResyncAt.set(ev.source.channelId, Date.now());
+  const at = localTime(new Date().toISOString());
+  try {
+    // OtavClient bounds each request at 10s; no extra timeout needed here.
+    await resyncChannel(ev.source.channelId);
+  } catch (err) {
+    inc.held = false;
+    inc.resync = `resync failed at ${at}: ${err.message}`;
+    recordResync(inc, inc.resync);
+    L.warn(`${ev.source.name}: ${inc.resync}`);
+    // The picture may have come back on its own while OTAV was being asked;
+    // an alert for an incident already over would be a false alarm.
+    return inc.closed ? undefined : alertNow(ev);
+  }
+  inc.resync = `OTAV resync sent at ${at}`;
+  recordResync(inc, inc.resync);
+  L.warn(`${ev.source.name}: ${KIND_LABEL[ev.kind]} — ${inc.resync}, waiting ${cfg.resync.waitSeconds}s before alerting`);
+  const timer = setTimeout(() => {
+    heldTimers.delete(timer);
+    if (!inc.held || inc.closed) return;
+    inc.held = false;
+    inc.resync = `${inc.resync} — the picture did not come back within ${cfg.resync.waitSeconds}s`;
+    recordResync(inc, inc.resync);
+    alertNow(ev);
+  }, cfg.resync.waitSeconds * 1000);
+  timer.unref?.();
+  heldTimers.add(timer);
+  return undefined;
+}
+
+async function alertNow(ev) {
+  ev.onAir = await withTimeout(onAirFor(ev.source.channelId), 8_000, '(OTAV did not answer in time)');
+  if (ev.onAir) {
+    db.prepare('UPDATE SignalEvent SET on_air = ? WHERE id = ?').run(ev.onAir, ev.incident.eventId);
+  }
+  L.warn(describeEvent(ev) + (ev.onAir ? ` · on air: ${ev.onAir}` : ''));
+  enqueueMail(ev);
+}
+
 // --- E-mail ------------------------------------------------------------------
 
 const KIND_LABEL = { black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL' };
@@ -373,6 +477,7 @@ export function describeEvent(ev) {
   const lasted = formatDuration(ev.at - Date.parse(ev.incident.startedAt));
   if (ev.type === 'open') return `${ev.source.name}: ${label} since ${since}`;
   if (ev.type === 'remind') return `${ev.source.name}: STILL ${label} — ${lasted} so far (since ${since})`;
+  if (ev.fixed) return `${ev.source.name}: was ${label.toLowerCase()} for ${lasted} — fixed by an automatic OTAV resync`;
   return `${ev.source.name}: back to normal — was ${label.toLowerCase()} for ${lasted}`
     + (ev.note ? ` (${ev.note})` : '');
 }
@@ -383,9 +488,13 @@ export function composeMail(events) {
   const subject = events.length === 1
     ? `[Signal ${tag}] ${describeEvent(events[0]).split(' since ')[0]}`
     : `[Signal ${tag}] ${events.length} changes: ${[...new Set(events.map((e) => e.source.name))].join(', ')}`;
-  const rows = events.map((e) => ({ line: describeEvent(e), onAir: e.onAir, url: e.source.url, type: e.type }));
+  const rows = events.map((e) => ({
+    line: describeEvent(e), onAir: e.onAir, url: e.source.url, type: e.type,
+    resync: e.type !== 'close' ? e.incident.resync || e.resyncSkipped || null : null,
+  }));
   const text = [
-    ...rows.map((r) => [`• ${r.line}`, r.onAir ? `  On air: ${r.onAir}` : null, `  Feed: ${r.url}`]
+    ...rows.map((r) => [`• ${r.line}`, r.resync ? `  ${r.resync}` : null,
+      r.onAir ? `  On air: ${r.onAir}` : null, `  Feed: ${r.url}`]
       .filter(Boolean).join('\n')),
     '',
     `Sent by the OTAV automator signal monitor at ${localTime(new Date().toISOString())}.`,
@@ -393,7 +502,7 @@ export function composeMail(events) {
   const color = { open: '#dc2626', remind: '#d97706', close: '#16a34a' };
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px">
 ${rows.map((r) => `<p style="margin:0 0 12px;padding:8px 12px;border-left:4px solid ${color[r.type]}">
-<strong>${escapeHtml(r.line)}</strong>${r.onAir ? `<br>On air: ${escapeHtml(r.onAir)}` : ''}
+<strong>${escapeHtml(r.line)}</strong>${r.resync ? `<br>${escapeHtml(r.resync)}` : ''}${r.onAir ? `<br>On air: ${escapeHtml(r.onAir)}` : ''}
 <br><span style="color:#666;font-size:12px">${escapeHtml(r.url)}</span></p>`).join('\n')}
 <p style="color:#888;font-size:12px">Sent by the OTAV automator signal monitor.</p></div>`;
   return { subject, text, html };
@@ -438,31 +547,46 @@ export async function flushMail() {
   }
 }
 
-const withTimeout = (p, ms, fallback) => Promise.race([
-  p, new Promise((resolve) => { setTimeout(() => resolve(fallback), ms).unref?.(); }),
-]);
-
 async function handleEvent(ev) {
+  const inc = ev.incident;
   try {
     if (ev.type === 'open') {
       // The row first, synchronously: a close that arrives while OTAV is still
-      // being asked what is on air must find it.
+      // being asked anything must find it.
       recordOpen(ev, null);
-      ev.onAir = await withTimeout(onAirFor(ev.source.channelId), 8_000,
-        '(OTAV did not answer in time)');
-      if (ev.onAir) {
-        db.prepare('UPDATE SignalEvent SET on_air = ? WHERE id = ?').run(ev.onAir, ev.incident.eventId);
+      const cfg = monitorConfig();
+      const plan = resyncPlan(ev, cfg);
+      if (plan.try) return await resyncThenDecide(ev, cfg);
+      if (plan.why) { ev.resyncSkipped = plan.why; recordResync(inc, plan.why); }
+      return await alertNow(ev);
+    }
+    if (ev.type === 'close') {
+      inc.closed = true;
+      if (inc.held) {
+        // Closed inside the resync window. Fixed — unless it only "closed"
+        // because the feed went down, in which case the down alert speaks.
+        inc.held = false;
+        const fixed = !ev.note;
+        if (fixed) {
+          ev.note = 'fixed by OTAV resync';
+          ev.fixed = true;
+        }
+        recordClose(ev);
+        L.info(describeEvent(ev));
+        if (fixed && monitorConfig().resync.emailWhenFixed) enqueueMail(ev);
+        return undefined;
       }
-      L.warn(describeEvent(ev) + (ev.onAir ? ` · on air: ${ev.onAir}` : ''));
-    } else if (ev.type === 'close') {
       recordClose(ev);
       L.info(describeEvent(ev));
-    } else {
-      L.warn(describeEvent(ev));
+      return enqueueMail(ev);
     }
-    enqueueMail(ev);
+    // A reminder for an alert nobody has been sent yet is noise.
+    if (inc.held) return undefined;
+    L.warn(describeEvent(ev));
+    return enqueueMail(ev);
   } catch (err) {
     L.error(`could not handle ${ev.type} ${ev.kind} for ${ev.source.name}`, err);
+    return undefined;
   }
 }
 
@@ -593,6 +717,8 @@ export function stopMonitor() {
   if (!running) return;
   running.controller.abort();
   clearInterval(running.ticker);
+  for (const t of heldTimers) clearTimeout(t);
+  heldTimers.clear();
   running = null;
   L.info('signal monitor stopped');
 }

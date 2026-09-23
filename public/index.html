@@ -307,7 +307,7 @@
   <section id="tab-monitor" class="tab">
     <div class="section-head">
       <h2>Signal Monitor <span class="muted" style="font-size:13px;font-weight:500">· watch the public feeds, e-mail when one goes black</span></h2>
-      <p>Each feed is read in the background, with nobody watching: ffmpeg takes one small frame per second from the lowest-quality version of the stream, and the app checks how much of the picture is lit. When a feed stays <strong>black</strong> longer than the limit, or stops sending anything (<strong>no signal</strong>), everybody on the list gets an e-mail, and gets another when it comes back. Alerts that happen within a few seconds of each other go out as one message. If a feed is linked to a channel, the e-mail also says which clip OTAV had on air.</p>
+      <p>Each feed is read in the background, with nobody watching: ffmpeg takes one small frame per second from the lowest-quality version of the stream, and the app checks how much of the picture is lit. For a feed linked to an OTAV channel, the app first tries a <strong>resync</strong> of that channel and only alerts if the picture doesn't come back. When a feed stays <strong>black</strong> longer than the limit, or stops sending anything (<strong>no signal</strong>), everybody on the list gets an e-mail, and gets another when it comes back. Alerts that happen within a few seconds of each other go out as one message. If a feed is linked to a channel, the e-mail also says which clip OTAV had on air.</p>
     </div>
 
     <div class="mon-bar">
@@ -353,6 +353,10 @@
           <label class="field"><span>No signal after (s)</span><input name="downAfter" type="number" min="10" max="3600" /></label>
           <label class="field" title="0 = only on start and end"><span>Remind every (min)</span><input name="repeatMinutes" type="number" min="0" max="1440" /></label>
           <label class="chk spec-grid-wide" title="Off by default: a lesson slide can hold still for minutes"><input type="checkbox" name="freezeEnabled" /> also alert when the picture freezes for <input name="freezeAfter" type="number" min="5" max="7200" class="mon-inline" /> s</label>
+          <label class="chk spec-grid-wide" title="Only for feeds linked to an OTAV channel below. A resync makes OTAV stop what it is playing and start what the schedule says — a brief cut on air."><input type="checkbox" name="resyncEnabled" /> <span>before alerting on black, <strong>resync that channel's OTAV</strong> and wait <input name="resyncWait" type="number" min="15" max="600" class="mon-inline" /> s to see if the picture comes back</span></label>
+          <label class="field" title="So a programme that is really black is not cut again and again"><span>At most one resync per (min)</span><input name="resyncCooldown" type="number" min="1" max="1440" /></label>
+          <label class="chk spec-grid-wide"><input type="checkbox" name="resyncEmailFixed" /> e-mail anyway when a resync fixed it</label>
+          <p class="muted mon-hint spec-grid-wide">The public feed runs about 30–40 s behind the playout, so the wait can't be much shorter than a minute. If the resync is refused (OTAV unreachable, or its API user is below access level 3) the alert goes out at once.</p>
           <div class="spec-grid-wide"><button type="submit">Save rules</button></div>
         </form>
       </div>
@@ -366,7 +370,7 @@
 
     <div class="panel" style="margin-top:22px">
       <h3>🕘 Recent incidents</h3>
-      <table id="monEventsTable"><thead><tr><th>Feed</th><th>What</th><th>From</th><th>To</th><th>Lasted</th><th>On air</th><th>E-mail</th></tr></thead><tbody></tbody></table>
+      <table id="monEventsTable"><thead><tr><th>Feed</th><th>What</th><th>From</th><th>To</th><th>Lasted</th><th>Resync</th><th>On air</th><th>E-mail</th></tr></thead><tbody></tbody></table>
     </div>
   </section>
 

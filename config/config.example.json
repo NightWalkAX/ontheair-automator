@@ -83,6 +83,12 @@
     "down": {
       "alertAfterSeconds": 60
     },
+    "resync": {
+      "enabled": true,
+      "waitSeconds": 60,
+      "cooldownMinutes": 15,
+      "emailWhenFixed": false
+    },
     "repeatMinutes": 30,
     "batchSeconds": 15
   },

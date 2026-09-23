@@ -3679,7 +3679,7 @@ $('#btnTxReload').addEventListener('click', (e) => withBusy(e.currentTarget, asy
 // fast as a frame arrives anyway.
 
 const MON_STATE = {
-  ok: 'OK', dimming: 'going dark', black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL',
+  ok: 'OK', dimming: 'going dark', black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', resyncing: 'resync sent…',
   starting: 'connecting…', disabled: 'off', off: 'monitor off',
 };
 const MON_KIND = { black: 'Black', frozen: 'Frozen', down: 'No signal' };
@@ -3708,7 +3708,7 @@ function monDrawFrame(canvas, b64, w, h) {
 
 function renderMonStatus(st) {
   $('#monEnabled').checked = st.enabled;
-  const bad = st.sources.filter((s) => ['black', 'down', 'frozen'].includes(s.state));
+  const bad = st.sources.filter((s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state));
   $('#monNavDot').hidden = !bad.length;
   const watching = st.sources.filter((s) => s.enabled).length;
   $('#monSummary').textContent = !st.enabled
@@ -3731,6 +3731,7 @@ function renderMonStatus(st) {
     body.append(name);
     if (s.incident) {
       body.append(el('div', { className: 'mon-meta', textContent: `since ${monTime(s.incident.startedAt)} (${monAgo(s.incident.startedAt)})` }));
+      if (s.incident.resync) body.append(el('div', { className: 'mon-meta', textContent: s.incident.resync }));
     }
     if (s.luma !== null && s.luma !== undefined) {
       body.append(el('div', {
@@ -3750,7 +3751,7 @@ function renderMonEvents(events) {
   const tb = $('#monEventsTable tbody');
   tb.innerHTML = '';
   if (!events.length) {
-    tb.append(el('tr', {}, el('td', { colSpan: 7, className: 'muted', textContent: 'Nothing yet.' })));
+    tb.append(el('tr', {}, el('td', { colSpan: 8, className: 'muted', textContent: 'Nothing yet.' })));
     return;
   }
   for (const e of events) {
@@ -3763,6 +3764,7 @@ function renderMonEvents(events) {
       el('td', { textContent: monTime(e.started_at) }),
       el('td', { textContent: e.ended_at ? monTime(e.ended_at) : 'still going' }),
       el('td', { textContent: lasted + (e.note ? ` (${e.note})` : '') }),
+      el('td', { className: 'muted', textContent: e.resync || '' }),
       el('td', { className: 'path-cell', textContent: e.on_air || '' }),
       el('td', { className: e.email_error ? 'tx-err' : 'muted', textContent: e.email_error || (e.emailed ? `sent ×${e.emailed}` : '') }),
     );
@@ -3819,6 +3821,10 @@ async function loadMonitorTab() {
   rf.repeatMinutes.value = monitor.repeatMinutes;
   rf.freezeEnabled.checked = monitor.freeze.enabled;
   rf.freezeAfter.value = monitor.freeze.alertAfterSeconds;
+  rf.resyncEnabled.checked = monitor.resync.enabled;
+  rf.resyncWait.value = monitor.resync.waitSeconds;
+  rf.resyncCooldown.value = monitor.resync.cooldownMinutes;
+  rf.resyncEmailFixed.checked = monitor.resync.emailWhenFixed;
   await refreshMonitor();
 }
 
@@ -3832,7 +3838,7 @@ function scheduleMonitorPoll() {
     else {
       try {
         const st = await api.get('/api/monitor/status');
-        $('#monNavDot').hidden = !st.sources.some((s) => ['black', 'down', 'frozen'].includes(s.state));
+        $('#monNavDot').hidden = !st.sources.some((s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state));
       } catch { /* ignore */ }
     }
     scheduleMonitorPoll();
@@ -3881,6 +3887,10 @@ $('#monRulesForm').addEventListener('submit', (e) => {
       },
       down: { alertAfterSeconds: Number(f.downAfter.value) },
       freeze: { enabled: f.freezeEnabled.checked, alertAfterSeconds: Number(f.freezeAfter.value) },
+      resync: {
+        enabled: f.resyncEnabled.checked, waitSeconds: Number(f.resyncWait.value),
+        cooldownMinutes: Number(f.resyncCooldown.value), emailWhenFixed: f.resyncEmailFixed.checked,
+      },
       repeatMinutes: Number(f.repeatMinutes.value),
     });
     toast('Rules saved — the feeds reconnect with them', 'ok');

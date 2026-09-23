@@ -233,6 +233,7 @@ export function initSchema() {
       ended_at    TEXT,                        -- NULL while it is still going on
       on_air      TEXT,                        -- what OTAV said was playing
       note        TEXT,
+      resync      TEXT,                        -- the OTAV resync tried first, and how it went
       emailed     INTEGER NOT NULL DEFAULT 0,  -- messages that went out for it
       email_error TEXT
     );
@@ -312,6 +313,8 @@ export function initSchema() {
   // Name template for the per-day playlist created on push. Tokens:
   // {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
   addColumnIfMissing('ChannelType', 'playlist_name_pattern', 'TEXT');
+  // Signal monitor: what resync was tried before the alert (added after the table shipped).
+  addColumnIfMissing('SignalEvent', 'resync', 'TEXT');
   // File-level scheduling for instances whose OTAV scheduler runs an EVENT-based
   // schedule (which REST cannot modify): the schedule JSON this app edits, the
   // folder day playlists are written to, and an empty playlist saved from OTAV
