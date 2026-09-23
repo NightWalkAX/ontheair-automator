@@ -246,7 +246,7 @@ started and left alone:
 
 `src/services/signalMonitor.js` + `src/routes/monitor.js` + `src/services/mailer.js` watch the
 channels' PUBLIC HLS feeds (the seven GLC `live.dreamtv.gy` URLs from `glc-playout.html` are the
-defaults) and e-mail a list through Gmail when a feed goes black, freezes, or disappears. Off
+defaults) and e-mail a list through Gmail when a feed goes black, goes silent, freezes, or disappears. Off
 until `monitor.enabled` (the switch on the tab); started from `src/app.js` after `listen`.
 
 - **Headless, no browser.** One `ffmpeg` per feed reads the LOWEST rendition of the ladder
@@ -262,6 +262,17 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   programme, so a frame is black when ≤ `black.maxBrightPct` (2%) of pixels exceed
   `black.maxLuma` (32). A dark scene or a mid-grey card is not black.
 - **Freeze is off by default** on purpose: a lesson slide legitimately holds still for minutes.
+- **Silence is a SECOND track, with its own ffmpeg and its own incident** (`audioIncident`,
+  kind `silent`). The GLC feeds carry audio as a separate HLS rendition (`EXT-X-MEDIA
+  TYPE=AUDIO`, 128k AAC — `pickAudio()`; muxed audio falls back to the video rendition), and a
+  separate reader means a broken audio stream can never stop black detection. 1s windows of 8kHz
+  mono s16le → RMS dBFS (`audioLevelDb()`); `silence.thresholdDb` -50 for
+  `silence.alertAfterSeconds` 30, counted in seconds of stream like frames. No audio data at all
+  while frames keep coming (`noAudioAfterSeconds`) is also `silent`, with a `detail`. A feed can be
+  black AND silent at once — two incidents. `down` closes the silent one ("feed lost").
+  **Silence never resyncs:** a clip with no sound has none after a resync either, and a resync
+  cuts air. Measured on the real feeds (2026-09-23): programme audio sits at -21…-37 dBFS; 7 feeds
+  × 2 readers ≈ 29% of one core. Loud-peak detection was considered and dropped by the operator.
 - **Resync before alerting, for a channel we control.** A black/frozen incident on a feed with a
   `channelId` first gets `GET /scheduler/resynchronize` on that OTAV and the alert is HELD
   (`incident.held`, UI state `resyncing`) for `resync.waitSeconds` (60) — the public feed runs

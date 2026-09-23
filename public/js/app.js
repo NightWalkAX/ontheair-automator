@@ -3682,7 +3682,9 @@ const MON_STATE = {
   ok: 'OK', dimming: 'going dark', black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', resyncing: 'resync sent…',
   starting: 'connecting…', disabled: 'off', off: 'monitor off',
 };
-const MON_KIND = { black: 'Black', frozen: 'Frozen', down: 'No signal' };
+const MON_KIND = { black: 'Black', frozen: 'Frozen', down: 'No signal', silent: 'Silent' };
+const MON_AUDIO = { ok: 'sound', quiet: 'going quiet', silent: 'SILENT', starting: 'connecting…', off: 'not watched', disabled: 'off' };
+const monTrouble = (s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state) || s.audio?.state === 'silent';
 let monFeeds = [];
 let monChannels = [];
 let monTimer = null;
@@ -3708,7 +3710,7 @@ function monDrawFrame(canvas, b64, w, h) {
 
 function renderMonStatus(st) {
   $('#monEnabled').checked = st.enabled;
-  const bad = st.sources.filter((s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state));
+  const bad = st.sources.filter(monTrouble);
   $('#monNavDot').hidden = !bad.length;
   const watching = st.sources.filter((s) => s.enabled).length;
   $('#monSummary').textContent = !st.enabled
@@ -3722,7 +3724,8 @@ function renderMonStatus(st) {
   const grid = $('#monGrid');
   grid.innerHTML = '';
   for (const s of st.sources) {
-    const card = el('div', { className: `mon-card st-${s.state}` });
+    const worst = s.state === 'ok' && s.audio?.state === 'silent' ? 'silent' : s.state;
+    const card = el('div', { className: `mon-card st-${worst}` });
     const canvas = el('canvas', { width: st.frame.width, height: st.frame.height });
     monDrawFrame(canvas, s.frame, st.frame.width, st.frame.height);
     const body = el('div', { className: 'mon-body' });
@@ -3738,6 +3741,14 @@ function renderMonStatus(st) {
         className: 'mon-meta',
         textContent: `brightness ${s.luma} · ${s.brightPct}% lit · last frame ${monAgo(s.lastFrameAt)}`,
       }));
+    }
+    if (s.audio && s.audio.state !== 'disabled') {
+      const a = el('div', { className: 'mon-meta mon-audio' });
+      a.append(el('span', { className: `tx-badge st-${s.audio.state === 'silent' ? 'black' : s.audio.state === 'quiet' ? 'dimming' : s.audio.state}`, textContent: `♪ ${MON_AUDIO[s.audio.state] || s.audio.state}` }));
+      if (s.audio.db !== null && s.audio.db !== undefined) a.append(` ${s.audio.db <= -120 ? 'digital silence' : `${s.audio.db} dB`}`);
+      if (s.audio.incident) a.append(` · since ${monTime(s.audio.incident.startedAt)}${s.audio.incident.detail ? ` (${s.audio.incident.detail})` : ''}`);
+      body.append(a);
+      if (s.audio.error) body.append(el('div', { className: 'mon-err', textContent: `audio: ${s.audio.error}` }));
     }
     const ch = monChannels.find((c) => c.id === s.channelId);
     if (ch) body.append(el('div', { className: 'mon-meta', textContent: `OTAV: ${ch.name}` }));
@@ -3820,6 +3831,9 @@ async function loadMonitorTab() {
   rf.downAfter.value = monitor.down.alertAfterSeconds;
   rf.repeatMinutes.value = monitor.repeatMinutes;
   rf.freezeEnabled.checked = monitor.freeze.enabled;
+  rf.silenceEnabled.checked = monitor.silence.enabled;
+  rf.silenceDb.value = monitor.silence.thresholdDb;
+  rf.silenceAfter.value = monitor.silence.alertAfterSeconds;
   rf.freezeAfter.value = monitor.freeze.alertAfterSeconds;
   rf.resyncEnabled.checked = monitor.resync.enabled;
   rf.resyncWait.value = monitor.resync.waitSeconds;
@@ -3838,7 +3852,7 @@ function scheduleMonitorPoll() {
     else {
       try {
         const st = await api.get('/api/monitor/status');
-        $('#monNavDot').hidden = !st.sources.some((s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state));
+        $('#monNavDot').hidden = !st.sources.some(monTrouble);
       } catch { /* ignore */ }
     }
     scheduleMonitorPoll();
@@ -3887,6 +3901,10 @@ $('#monRulesForm').addEventListener('submit', (e) => {
       },
       down: { alertAfterSeconds: Number(f.downAfter.value) },
       freeze: { enabled: f.freezeEnabled.checked, alertAfterSeconds: Number(f.freezeAfter.value) },
+      silence: {
+        enabled: f.silenceEnabled.checked, thresholdDb: Number(f.silenceDb.value),
+        alertAfterSeconds: Number(f.silenceAfter.value),
+      },
       resync: {
         enabled: f.resyncEnabled.checked, waitSeconds: Number(f.resyncWait.value),
         cooldownMinutes: Number(f.resyncCooldown.value), emailWhenFixed: f.resyncEmailFixed.checked,

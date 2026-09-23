@@ -186,9 +186,13 @@ before(async () => {
       return res.end();
     }
     // The master's ?s= becomes the fake ffmpeg's script, so each test scripts its own feed.
-    const script = new URL(req.url, 'http://x').searchParams.get('s') || 'bright:3,black:12,bright:6';
+    // ?a= adds a separate audio rendition scripted the same way; without it
+    // the audio is "muxed" and the fake ffmpeg plays a tone.
+    const q = new URL(req.url, 'http://x').searchParams;
+    const script = q.get('s') || 'bright:3,black:12,bright:6';
+    const audio = q.get('a') ? `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",DEFAULT=YES,URI="aud.m3u8?audio=${q.get('a')}"\n` : '';
     res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
-    return res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1400000\nhi.m3u8?script=bright:1\n'
+    return res.end(`#EXTM3U\n${audio}#EXT-X-STREAM-INF:BANDWIDTH=1400000\nhi.m3u8?script=bright:1\n`
       + `#EXT-X-STREAM-INF:BANDWIDTH=600000\nlo.m3u8?script=${script}\n`);
   });
   await new Promise((r) => hls.listen(0, '127.0.0.1', r));
@@ -359,4 +363,121 @@ test('a resync OTAV refuses sends the alert at once, with the reason', async () 
   mon.stopMonitor();
   assert.ok(mail);
   assert.match(mail.text, /resync failed at/);
+});
+
+// --- Silence ------------------------------------------------------------------
+
+// One second of picture AND one second of sound at the given level, per entry.
+function listener(over) {
+  const events = [];
+  let t = Date.parse('2026-09-23T10:00:00Z');
+  const w = new mon.FeedWatch(SOURCE, cfg(over), (e) => events.push(e), t);
+  const hear = (dbs) => {
+    for (const db of dbs) { t += 1000; w.onFrame(picture(), t); w.onAudioSecond(db, t); w.tick(t); }
+  };
+  const seeOnly = (n) => { for (let i = 0; i < n; i++) { t += 1000; w.onFrame(picture(), t); w.tick(t); } };
+  const wait = (n) => { for (let i = 0; i < n; i++) { t += 1000; w.tick(t); } };
+  return { w, events, hear, seeOnly, wait };
+}
+const kinds = (events) => events.map((e) => `${e.type}:${e.kind}`);
+
+test('audio level: digital silence, encoder hiss and a real tone', () => {
+  assert.equal(mon.audioLevelDb(Buffer.alloc(16000)), -Infinity);
+  const hiss = Buffer.alloc(16000);
+  for (let i = 0; i < 8000; i++) hiss.writeInt16LE((i * 7919) % 21 - 10, i * 2);
+  assert.ok(mon.audioLevelDb(hiss) < -60);
+  const tone = Buffer.alloc(16000);
+  for (let i = 0; i < 8000; i++) tone.writeInt16LE(Math.round(32767 * Math.sin((2 * Math.PI * 440 * i) / 8000)), i * 2);
+  assert.ok(Math.abs(mon.audioLevelDb(tone) - -3.01) < 0.1, 'a full-scale sine is -3 dBFS RMS');
+});
+
+test('the audio rendition is found in the master, resolved against the redirect', () => {
+  const master = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,URI="Feed-mp4a_64000=2.m3u8",GROUP-ID="a",NAME="Alt"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,URI="Feed-mp4a_128000=1.m3u8",GROUP-ID="a",DEFAULT=YES,NAME="Main"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=608607,AUDIO="a"',
+    'Feed-avc1_400000=5.m3u8',
+  ].join('\n');
+  const base = 'http://190.108.196.35/live/c2eds/Feed/HLS/Feed.m3u8';
+  assert.equal(mon.pickAudio(master, base), 'http://190.108.196.35/live/c2eds/Feed/HLS/Feed-mp4a_128000=1.m3u8');
+  assert.equal(mon.pickAudio('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n', base), null, 'muxed audio');
+});
+
+test('a quiet pause raises nothing; 30s of silence does, dated when the sound went', () => {
+  const { w, events, hear } = listener();
+  hear(times(5, -20));
+  hear(times(20, -70));
+  assert.equal(w.audioState, 'quiet');
+  hear(times(5, -20));
+  assert.deepEqual(events, []);
+  hear(times(30, -Infinity));
+  assert.deepEqual(kinds(events), ['open:silent']);
+  const inc = events[0].incident;
+  assert.equal(Date.parse(inc.alertedAt) - Date.parse(inc.startedAt), 30_000);
+  assert.equal(w.state, 'ok', 'the picture is fine: silence is its own track');
+  assert.equal(w.audioState, 'silent');
+  hear(times(2, -20));
+  assert.equal(events.length, 1);
+  hear(times(1, -20));
+  assert.deepEqual(kinds(events), ['open:silent', 'close:silent']);
+});
+
+test('black and silent at the same time are two incidents, not one', () => {
+  const events = [];
+  let t = Date.parse('2026-09-23T10:00:00Z');
+  const w = new mon.FeedWatch(SOURCE, cfg(), (e) => events.push(e), t);
+  for (let i = 0; i < 35; i++) { t += 1000; w.onFrame(withLogo(), t); w.onAudioSecond(-90, t); w.tick(t); }
+  assert.deepEqual(kinds(events), ['open:black', 'open:silent']);
+  assert.equal(w.state, 'black');
+  assert.equal(w.audioState, 'silent');
+});
+
+test('no audio at all while the picture keeps coming is SILENT, saying so', () => {
+  const { events, seeOnly } = listener({ silence: { noAudioAfterSeconds: 45 } });
+  seeOnly(44);
+  assert.deepEqual(events, []);
+  seeOnly(1);
+  assert.deepEqual(kinds(events), ['open:silent']);
+  assert.equal(events[0].incident.detail, 'no audio in the feed at all');
+  assert.match(mon.describeEvent(events[0]), /SILENT since .*\(no audio in the feed at all\)/);
+});
+
+test('when the whole feed is lost, the silence alert gives way to NO SIGNAL', () => {
+  const { events, hear, wait } = listener({ down: { alertAfterSeconds: 20 } });
+  hear(times(31, -90));
+  assert.deepEqual(kinds(events), ['open:silent']);
+  wait(20);
+  assert.deepEqual(kinds(events), ['open:silent', 'open:down', 'close:silent']);
+  assert.equal(events[2].note, 'feed lost');
+});
+
+test('silence detection can be switched off', () => {
+  const { events, hear, w } = listener({ silence: { enabled: false } });
+  hear(times(120, -Infinity));
+  assert.deepEqual(events, []);
+  assert.equal(w.audioState, 'off');
+});
+
+test('end to end: a silent audio rendition becomes a SILENT e-mail; silence never resyncs', async () => {
+  const otav = await startFakeOtav({ onAirUrl: '/Volumes/Public/mute.mov' });
+  try {
+    const channelId = channelFor(otav.port, 'Mute Channel');
+    const hlsUrl = `http://127.0.0.1:${hls.address().port}/live/mute.m3u8?s=bright:60&a=tone:2,hiss:40`;
+    await call('PUT', '/config', {
+      enabled: true, batchSeconds: 0, resync: { enabled: true, waitSeconds: 60 },
+      sources: [{ name: 'Mute Feed', url: hlsUrl, channelId }],
+    });
+    const mail = await until(() => sent.find((m) => /Mute Feed/.test(m.subject)), 8000);
+    assert.ok(mail, 'an alert was e-mailed');
+    assert.match(mail.text, /Mute Feed: SILENT since/);
+    assert.match(mail.text, /On air: \/Volumes\/Public\/mute\.mov/);
+    assert.equal(otav.state.resynced, 0, 'a resync would not bring sound to a clip that has none');
+    const st = (await call('GET', '/status')).body.sources[0];
+    assert.equal(st.audio.state, 'silent');
+    assert.match(st.audio.url, /\/edge\/live\/aud\.m3u8\?audio=/);
+  } finally {
+    mon.stopMonitor();
+    await otav.close();
+  }
 });

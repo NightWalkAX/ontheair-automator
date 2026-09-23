@@ -25,6 +25,13 @@
 //            slide legitimately holds still for minutes).
 //   down   — no frame at all for ≥ alertAfterSeconds (feed unreachable, encoder
 //            stopped, or this Mac lost its connection).
+//   silent — the AUDIO: ≥ silence.alertAfterSeconds below silence.thresholdDb, or
+//            no audio at all while the picture keeps coming. Tracked apart from
+//            the picture (a feed can be black AND silent, or silent with a
+//            perfect picture — a clip with no sound), by a second, independent
+//            ffmpeg on the feed's audio rendition, so a broken audio reader never
+//            stops the black detection. 1s windows of 8kHz mono s16 — RMS in
+//            dBFS per window, counted in stream time like the frames.
 // Before alerting on black or frozen, a feed linked to a channel we control
 // (source.channelId) gets ONE OTAV scheduler resync (GET /scheduler/resynchronize
 // — "stop playing what it is currently playing and start playing what was
@@ -107,6 +114,13 @@ export function monitorConfig(raw = loadConfig().monitor) {
       alertAfterSeconds: clampNum(f.alertAfterSeconds, 5, 7200, 60),
       recoverAfterSeconds: clampNum(f.recoverAfterSeconds, 1, 600, 3),
     },
+    silence: {
+      enabled: (m.silence || {}).enabled !== false,
+      thresholdDb: clampNum((m.silence || {}).thresholdDb, -90, -20, -50),
+      alertAfterSeconds: clampNum((m.silence || {}).alertAfterSeconds, 5, 3600, 30),
+      recoverAfterSeconds: clampNum((m.silence || {}).recoverAfterSeconds, 1, 600, 3),
+      noAudioAfterSeconds: clampNum((m.silence || {}).noAudioAfterSeconds, 10, 3600, 60),
+    },
     down: {
       alertAfterSeconds: clampNum(d.alertAfterSeconds, 10, 3600, 60),
       stallRestartSeconds: clampNum(d.stallRestartSeconds, 10, 600, 45),
@@ -149,6 +163,22 @@ export function analyzeFrame(frame, prev, cfg) {
   };
 }
 
+export const AUDIO_RATE = 8000;
+export const AUDIO_WINDOW_BYTES = AUDIO_RATE * 2;   // 1s of mono s16le
+
+/** RMS level of one window of s16le samples, in dBFS (-Infinity for digital silence). Pure. */
+export function audioLevelDb(buf) {
+  const n = Math.floor(buf.length / 2);
+  if (!n) return -Infinity;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = buf.readInt16LE(i * 2) / 32768;
+    sum += v * v;
+  }
+  const rms = Math.sqrt(sum / n);
+  return rms > 0 ? 20 * Math.log10(rms) : -Infinity;
+}
+
 // --- Per-feed state machine -------------------------------------------------
 //
 // Deliberately free of I/O and timers: frames and ticks come in, events come
@@ -174,6 +204,46 @@ export class FeedWatch {
     this.incident = null;        // { kind, startedAt, alertedAt, remindedAt }
     this.error = null;
     this.frames = 0;
+    // Audio, a separate track with its own incident.
+    this.audioIncident = null;
+    this.lastAudioAt = null;
+    this.lastDb = null;
+    this.quietRun = 0;           // consecutive seconds below the silence threshold
+    this.soundRun = 0;
+    this.audioSeconds = 0;
+    this.audioError = null;
+  }
+
+  onAudioSecond(db, now = Date.now()) {
+    this.lastDb = db;
+    this.lastAudioAt = now;
+    this.audioSeconds++;
+    this.audioError = null;
+    if (db <= this.cfg.silence.thresholdDb) { this.quietRun++; this.soundRun = 0; } else { this.soundRun++; this.quietRun = 0; }
+    this.evaluateAudio(now);
+  }
+
+  evaluateAudio(now) {
+    const s = this.cfg.silence;
+    const inc = this.audioIncident;
+    // No picture at all is already its own alert; silence on top of it is noise.
+    if (!s.enabled || this.incident?.kind === 'down') {
+      if (inc) this.close(now, s.enabled ? 'feed lost' : null, 'audioIncident');
+      return;
+    }
+    if (inc) {
+      if (this.soundRun >= s.recoverAfterSeconds) this.close(now, null, 'audioIncident');
+      else this.remind(now, 'audioIncident');
+      return;
+    }
+    const noAudioFor = (now - (this.lastAudioAt ?? this.startedAt)) / 1000;
+    if (noAudioFor >= s.noAudioAfterSeconds) {
+      this.soundRun = 0;
+      this.open('silent', now, this.lastAudioAt ?? this.startedAt, 'audioIncident',
+        { detail: 'no audio in the feed at all' });
+    } else if (this.quietRun >= s.alertAfterSeconds) {
+      this.open('silent', now, now - this.quietRun * 1000, 'audioIncident');
+    }
   }
 
   frameSeconds(n) { return n / this.cfg.sampleFps; }
@@ -195,16 +265,19 @@ export class FeedWatch {
     this.evaluate(now);
   }
 
-  /** Wall-clock checks (feed down, reminders). Called every second. */
-  tick(now = Date.now()) { this.evaluate(now); }
+  /** Wall-clock checks (feed down, no audio, reminders). Called every second. */
+  tick(now = Date.now()) {
+    this.evaluate(now);
+    this.evaluateAudio(now);
+  }
 
   evaluate(now) {
     const { black, freeze, down } = this.cfg;
-    const silentFor = (now - (this.lastFrameAt ?? this.startedAt)) / 1000;
+    const noFrameFor = (now - (this.lastFrameAt ?? this.startedAt)) / 1000;
     const inc = this.incident;
 
     // 1. The feed itself.
-    if (silentFor >= down.alertAfterSeconds) {
+    if (noFrameFor >= down.alertAfterSeconds) {
       if (inc?.kind !== 'down') {
         if (inc) this.close(now, 'feed lost');
         this.framesSinceDown = 0;
@@ -242,20 +315,22 @@ export class FeedWatch {
     return this.remind(now);
   }
 
-  open(kind, now, startedAtMs) {
-    this.incident = { kind, startedAt: nowIso(startedAtMs), alertedAt: nowIso(now), remindedAt: now };
-    this.emit({ type: 'open', kind, source: this.source, incident: this.incident, at: now });
+  // `slot` is 'incident' (the picture / the feed) or 'audioIncident' (the sound).
+  open(kind, now, startedAtMs, slot = 'incident', extra = {}) {
+    const inc = { kind, startedAt: nowIso(startedAtMs), alertedAt: nowIso(now), remindedAt: now, ...extra };
+    this[slot] = inc;
+    this.emit({ type: 'open', kind, source: this.source, incident: inc, at: now });
   }
 
-  close(now, note = null) {
-    const inc = this.incident;
+  close(now, note = null, slot = 'incident') {
+    const inc = this[slot];
     if (!inc) return;
-    this.incident = null;
+    this[slot] = null;
     this.emit({ type: 'close', kind: inc.kind, source: this.source, incident: inc, at: now, note });
   }
 
-  remind(now) {
-    const inc = this.incident;
+  remind(now, slot = 'incident') {
+    const inc = this[slot];
     const every = this.cfg.repeatMinutes * 60_000;
     if (!inc || !every || now - inc.remindedAt < every) return;
     inc.remindedAt = now;
@@ -268,6 +343,15 @@ export class FeedWatch {
     if (this.incident) return this.incident.kind;
     if (!this.lastFrameAt) return 'starting';
     if (this.blackRun > 0) return 'dimming';     // black, but not long enough to alert
+    return 'ok';
+  }
+
+  get audioState() {
+    if (!this.source.enabled) return 'disabled';
+    if (!this.cfg.silence.enabled) return 'off';
+    if (this.audioIncident) return 'silent';
+    if (!this.lastAudioAt) return 'starting';
+    if (this.quietRun > 0) return 'quiet';       // silent, but not long enough to alert
     return 'ok';
   }
 
@@ -287,6 +371,17 @@ export class FeedWatch {
       luma: this.last ? Math.round(this.last.luma * 10) / 10 : null,
       brightPct: this.last ? Math.round(this.last.brightPct * 10) / 10 : null,
       blackSeconds: Math.round(this.frameSeconds(this.blackRun)),
+      audio: {
+        state: this.audioState,
+        db: Number.isFinite(this.lastDb) ? Math.round(this.lastDb * 10) / 10 : (this.lastDb === null ? null : -120),
+        quietSeconds: this.quietRun,
+        lastAt: this.lastAudioAt && nowIso(this.lastAudioAt),
+        incident: this.audioIncident && {
+          kind: 'silent', startedAt: this.audioIncident.startedAt, detail: this.audioIncident.detail || null,
+        },
+        error: this.audioError,
+        url: this.audioUrl || null,
+      },
       frames: this.frames,
       error: this.error,
       variantUrl: this.variantUrl || null,
@@ -304,12 +399,28 @@ export class FeedWatch {
  * Follows the CDN's redirect first, so relative URIs resolve against where the
  * playlist really lives. A media playlist is returned as is.
  */
-export async function resolveVariant(url, variant = 'lowest', { timeoutMs = 10_000 } = {}) {
+export async function resolveFeed(url, variant = 'lowest', { timeoutMs = 10_000 } = {}) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' });
   if (!res.ok) throw new Error(`playlist answered HTTP ${res.status}`);
   const text = await res.text();
   if (!text.startsWith('#EXTM3U')) throw new Error('not an HLS playlist');
-  return pickVariant(text, res.url || url, variant);
+  const base = res.url || url;
+  const video = pickVariant(text, base, variant);
+  // No separate audio rendition = the sound is muxed into the video one.
+  return { video, audio: pickAudio(text, base) || video };
+}
+
+/**
+ * The audio rendition of a master playlist (EXT-X-MEDIA TYPE=AUDIO, the
+ * DEFAULT=YES one if there are several), or null when audio is muxed.
+ */
+export function pickAudio(text, baseUrl) {
+  const tracks = text.split(/\r?\n/)
+    .filter((l) => l.startsWith('#EXT-X-MEDIA:') && /TYPE=AUDIO/.test(l))
+    .map((l) => ({ uri: (l.match(/URI="([^"]+)"/) || [])[1], dflt: /DEFAULT=YES/.test(l) }))
+    .filter((t) => t.uri);
+  const t = tracks.find((x) => x.dflt) || tracks[0];
+  return t ? new URL(t.uri, baseUrl).toString() : null;
 }
 
 export function pickVariant(text, baseUrl, variant = 'lowest') {
@@ -459,7 +570,7 @@ async function alertNow(ev) {
 
 // --- E-mail ------------------------------------------------------------------
 
-const KIND_LABEL = { black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL' };
+const KIND_LABEL = { black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', silent: 'SILENT' };
 
 export function formatDuration(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -475,7 +586,8 @@ export function describeEvent(ev) {
   const label = KIND_LABEL[ev.kind] || ev.kind.toUpperCase();
   const since = localTime(ev.incident.startedAt);
   const lasted = formatDuration(ev.at - Date.parse(ev.incident.startedAt));
-  if (ev.type === 'open') return `${ev.source.name}: ${label} since ${since}`;
+  const detail = ev.incident.detail ? ` (${ev.incident.detail})` : '';
+  if (ev.type === 'open') return `${ev.source.name}: ${label} since ${since}${detail}`;
   if (ev.type === 'remind') return `${ev.source.name}: STILL ${label} — ${lasted} so far (since ${since})`;
   if (ev.fixed) return `${ev.source.name}: was ${label.toLowerCase()} for ${lasted} — fixed by an automatic OTAV resync`;
   return `${ev.source.name}: back to normal — was ${label.toLowerCase()} for ${lasted}`
@@ -609,16 +721,46 @@ export function ffmpegArgs(url, cfg) {
   ];
 }
 
+export function ffmpegAudioArgs(url) {
+  return [
+    '-hide_banner', '-nostdin', '-loglevel', 'error',
+    '-rw_timeout', '15000000',
+    '-i', url,
+    '-map', '0:a:0', '-vn', '-sn', '-dn',
+    '-ac', '1', '-ar', String(AUDIO_RATE),
+    '-f', 's16le', 'pipe:1',
+  ];
+}
+
 // Every ffmpeg alive right now. They are not detached, but a child does not
 // die with its parent either: on a clean exit they are killed here; after a
 // hard crash each one dies on its own at its next write into the broken pipe.
 const children = new Set();
 process.on('exit', () => { for (const c of children) c.kill('SIGKILL'); });
 
+// The two readers of a feed differ only in what they ask ffmpeg for, how big
+// one unit of output is, and where a problem is reported.
+const TRACKS = {
+  video: {
+    args: (url, cfg) => ffmpegArgs(url, cfg),
+    unit: FRAME_BYTES,
+    feed: (watch, buf) => watch.onFrame(buf),
+    setError: (watch, msg) => { watch.error = msg; },
+    what: 'picture',
+  },
+  audio: {
+    args: (url) => ffmpegAudioArgs(url),
+    unit: AUDIO_WINDOW_BYTES,
+    feed: (watch, buf) => watch.onAudioSecond(audioLevelDb(buf)),
+    setError: (watch, msg) => { watch.audioError = msg; },
+    what: 'audio',
+  },
+};
+
 /** Run one ffmpeg until it exits (or stalls, or the monitor stops). */
-function runOnce(watch, url, cfg, signal) {
+function runOnce(watch, url, cfg, signal, track) {
   return new Promise((resolve) => {
-    const child = spawn(ffmpegPath(), ffmpegArgs(url, cfg), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(ffmpegPath(), track.args(url, cfg), { stdio: ['ignore', 'pipe', 'pipe'] });
     children.add(child);
     let pending = Buffer.alloc(0);
     let lastData = Date.now();
@@ -627,9 +769,9 @@ function runOnce(watch, url, cfg, signal) {
     child.stdout.on('data', (chunk) => {
       lastData = Date.now();
       pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
-      while (pending.length >= FRAME_BYTES) {
-        watch.onFrame(pending.subarray(0, FRAME_BYTES));
-        pending = pending.subarray(FRAME_BYTES);
+      while (pending.length >= track.unit) {
+        track.feed(watch, pending.subarray(0, track.unit));
+        pending = pending.subarray(track.unit);
       }
     });
     child.stderr.on('data', (d) => {
@@ -641,7 +783,7 @@ function runOnce(watch, url, cfg, signal) {
     // ffmpeg waits politely forever. No bytes for a while = start over.
     const stall = setInterval(() => {
       if ((Date.now() - lastData) / 1000 >= cfg.down.stallRestartSeconds) {
-        watch.error = `no picture for ${cfg.down.stallRestartSeconds}s — reconnecting`;
+        track.setError(watch, `no ${track.what} for ${cfg.down.stallRestartSeconds}s — reconnecting`);
         child.kill('SIGKILL');
       }
     }, 1000);
@@ -649,29 +791,32 @@ function runOnce(watch, url, cfg, signal) {
     signal.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', (err) => {
-      watch.error = err.code === 'ENOENT'
+      track.setError(watch, err.code === 'ENOENT'
         ? `ffmpeg not found at "${ffmpegPath()}" — install it (brew install ffmpeg) or set ffmpegPath`
-        : err.message;
+        : err.message);
     });
     child.on('close', (code) => {
       children.delete(child);
       clearInterval(stall);
       signal.removeEventListener('abort', onAbort);
-      if (!signal.aborted && code !== 0 && stderr.length) watch.error = stderr.at(-1);
+      if (!signal.aborted && code !== 0 && stderr.length) track.setError(watch, stderr.at(-1));
       resolve(code);
     });
   });
 }
 
-async function runFeed(watch, cfg, signal) {
+async function runTrack(watch, cfg, signal, kind) {
+  const track = TRACKS[kind];
   let backoff = 5_000;
   while (!signal.aborted) {
     const started = Date.now();
     try {
-      watch.variantUrl = await resolveVariant(watch.source.url, cfg.variant);
-      await runOnce(watch, watch.variantUrl, cfg, signal);
+      const { video, audio } = await resolveFeed(watch.source.url, cfg.variant);
+      watch.variantUrl = video;
+      watch.audioUrl = audio;
+      await runOnce(watch, kind === 'video' ? video : audio, cfg, signal, track);
     } catch (err) {
-      watch.error = `could not open the feed: ${err.cause?.code || err.message}`;
+      track.setError(watch, `could not open the feed: ${err.cause?.code || err.message}`);
     }
     if (signal.aborted) break;
     // A run that lasted a while was a healthy feed that dropped: retry soon.
@@ -703,7 +848,10 @@ export function startMonitor() {
   for (const source of cfg.sources) {
     const watch = new FeedWatch(source, cfg, handleEvent);
     watches.set(source.id, watch);
-    if (source.enabled && source.url) runFeed(watch, cfg, controller.signal);
+    if (source.enabled && source.url) {
+      runTrack(watch, cfg, controller.signal, 'video');
+      if (cfg.silence.enabled) runTrack(watch, cfg, controller.signal, 'audio');
+    }
   }
   const ticker = setInterval(() => {
     for (const w of watches.values()) if (w.source.enabled) w.tick();

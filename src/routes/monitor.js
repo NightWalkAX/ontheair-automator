@@ -70,7 +70,7 @@ router.put('/config', (req, res) => {
     }
     // Partial groups merge onto what is stored: sending { black: { maxLuma } }
     // must not reset the rest of the black settings to their defaults.
-    for (const k of ['black', 'freeze', 'down', 'resync']) {
+    for (const k of ['black', 'freeze', 'down', 'resync', 'silence']) {
       if (b[k] && typeof b[k] === 'object') next[k] = { ...current[k], ...b[k] };
     }
     if ('sources' in b) next.sources = cleanSources(b.sources);

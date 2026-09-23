@@ -80,6 +80,13 @@
       "enabled": false,
       "alertAfterSeconds": 60
     },
+    "silence": {
+      "enabled": true,
+      "thresholdDb": -50,
+      "alertAfterSeconds": 30,
+      "recoverAfterSeconds": 3,
+      "noAudioAfterSeconds": 60
+    },
     "down": {
       "alertAfterSeconds": 60
     },

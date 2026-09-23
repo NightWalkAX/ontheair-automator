@@ -8,15 +8,38 @@ const argv = process.argv.slice(2);
 const input = argv[argv.indexOf('-i') + 1];
 const script = new URL(input).searchParams.get('script') || 'bright:5';
 
-const W = 64, H = 36;
-function frame(kind) {
-  const f = Buffer.alloc(W * H, kind === 'black' ? 16 : 150);
-  if (kind === 'black') for (let y = 1; y < 4; y++) for (let x = 55; x < 62; x++) f[y * W + x] = 235;
-  if (kind === 'bright') for (let i = 0; i < f.length; i += 7) f[i] = 90 + ((i * 13) % 120);
-  return f;
+// Asked for audio (`-f s16le`)? Then the script is ?audio=tone:5,silence:40 in
+// SECONDS of 8kHz mono s16le; the default is sound, so a test that scripts only
+// the picture never trips the silence detector.
+if (argv.includes('s16le')) {
+  const audio = new URL(input).searchParams.get('audio') || 'tone:20';
+  for (const part of audio.split(',')) {
+    const [kind, n] = part.split(':');
+    const sec = Buffer.alloc(8000 * 2);
+    if (kind === 'tone') {
+      for (let i = 0; i < 8000; i++) sec.writeInt16LE(Math.round(8000 * Math.sin((2 * Math.PI * 440 * i) / 8000)), i * 2);
+    } else if (kind === 'hiss') {
+      // Encoder noise under a silent programme: well below -50 dBFS, not zero.
+      for (let i = 0; i < 8000; i++) sec.writeInt16LE((i * 7919) % 21 - 10, i * 2);
+    }
+    for (let i = 0; i < Number(n); i++) process.stdout.write(sec);
+  }
+} else {
+  video();
 }
 
-for (const part of script.split(',')) {
-  const [kind, n] = part.split(':');
-  for (let i = 0; i < Number(n); i++) process.stdout.write(frame(kind));
+// Not process.exit(): that can drop output still queued for the pipe.
+function video() {
+  const W = 64, H = 36;
+  function frame(kind) {
+    const f = Buffer.alloc(W * H, kind === 'black' ? 16 : 150);
+    if (kind === 'black') for (let y = 1; y < 4; y++) for (let x = 55; x < 62; x++) f[y * W + x] = 235;
+    if (kind === 'bright') for (let i = 0; i < f.length; i += 7) f[i] = 90 + ((i * 13) % 120);
+    return f;
+  }
+
+  for (const part of script.split(',')) {
+    const [kind, n] = part.split(':');
+    for (let i = 0; i < Number(n); i++) process.stdout.write(frame(kind));
+  }
 }
