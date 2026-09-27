@@ -665,7 +665,6 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
   }
   const blockSecs = blockDurationSeconds(block.start_time, block.end_time);
 
-  let pinned = false;
   try {
   withTx(() => {
     // (1) set the series cursor (ensure a row exists, mark it serial), so this
@@ -712,7 +711,6 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
         'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, 0, 1)'
       ).run(id, target.id);
       populate(id); // tops up around the pinned episode (nothing, if it overruns)
-      pinned = true;
     }
     for (const b of scope) if (b.id !== id) populate(b.id);
   });
@@ -721,7 +719,8 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
   }
 
   const v = validateBlock(id);
-  if (pinned && target.duration > blockSecs) {
+  const inBlock = v.items.some((i) => i.resource_id === target.id);
+  if (inBlock && target.duration > blockSecs) {
     const mmss = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
     v.warning = `“${target.name}” runs ${mmss(target.duration)}, ${target.duration - blockSecs}s longer `
       + `than this ${mmss(blockSecs)} slot. It is placed as you asked, but the block will not pass `

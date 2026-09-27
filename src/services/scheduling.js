@@ -798,9 +798,10 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   // A movie block places its own run: franchises at their next part, then
   // best-fitting standalone films for whatever time is left. See pickMovieRun.
   const movie = isMovieBlock(template);
+  const seriesList = movie ? [] : templateSeries(template, channelId);
   const iters = movie
     ? [sequenceIterator(pickMovieRun(template, block, blockSecs, startSecs, channelId))]
-    : templateSeries(template, channelId).map((s) => iteratorForSeries(s, channelId, block, blockSecs));
+    : seriesList.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
 
   // max_per_show caps how many episodes one series may contribute to a block
   // (NULL/0 = unlimited). Tracked per iterator so a series drops out of the
@@ -814,7 +815,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   const usedIds = new Set();
   let mainCount = 0; // main items placed
   let total = 0; // placed seconds so far (main + fillers), i.e. offset from block start
-  let active = iters.map((it) => ({ it, count: 0 }));
+  let active = iters.map((it, i) => ({ it, count: 0, serial: seriesList[i]?.rule === 'serial' }));
 
   while (active.length) {
     let progressed = false;
@@ -826,6 +827,25 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
       // of "La Escuelita" runs 31:21 in a 30:00 block) used to stall its series
       // outright and leave the block 100% filler, every single week.
       let r = a.it.peek();
+      // …except for a SERIAL show's due episode in a block that is still empty.
+      // Skipping it there broke the one promise a serial makes: EDYOU PULSE
+      // S02E02 (30:21) and S02E03 (32:10) in a 30:00 slot were both skipped, the
+      // series wrapped, and every rebuild put S01E01 back over the operator's
+      // pick. It is placed with its overrun instead; the block goes red and the
+      // operator forces it (or lengthens the slot) — visible, never silent, and
+      // the series still advances once the forced block is approved.
+      if (r && a.serial && !items.length && !usedIds.has(r.id) && r.duration > blockSecs) {
+        l.warn(`block ${block.id}: "${r.name}" (${r.duration}s) is longer than the ${blockSecs}s slot — `
+          + 'placed anyway to keep the series in order; force the block or lengthen the slot');
+        items.push(r);
+        total += r.duration;
+        mainCount++;
+        usedIds.add(r.id);
+        a.it.consume();
+        a.count++;
+        progressed = true;
+        continue; // the block is full: nothing else fits after it
+      }
       while (r && (usedIds.has(r.id) || r.duration > blockSecs)) {
         if (r.duration > blockSecs) {
           l.warn(`block ${block.id}: "${r.name}" (${r.duration}s) does not fit a ${blockSecs}s slot — skipped`);

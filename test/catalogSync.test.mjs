@@ -149,6 +149,12 @@ test('set-episode honours a pick longer than the slot, and refuses an unapproved
   assert.deepEqual(main.map((i) => i.resource_id), [long], 'the chosen episode is in the block, not the next one');
   assert.match(r.data.warning, /21s longer/);
   assert.equal(r.data.fits, false, 'and the block honestly does not pass');
+  // A rebuild must keep it: the serial's due episode is placed with its
+  // overrun instead of skipped (which wrapped the series back to episode 1).
+  const again = await j('POST', `/api/blocks/${blockId}/regenerate`);
+  assert.equal(again.status, 200, JSON.stringify(again.data));
+  const rebuilt = (await j('GET', `/api/blocks/${blockId}`)).data.items.filter((i) => !i.is_filler);
+  assert.deepEqual(rebuilt.map((i) => i.resource_id), [long], 'regenerating does not fall back to S01E01');
 
   // The operator accepts the overrun: forcing makes it approvable, still not "fits".
   const forced = await j('POST', `/api/blocks/${blockId}/override`, { enabled: true, reason: 'episode runs long' });
