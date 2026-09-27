@@ -46,6 +46,23 @@ function recordBlockPlays(v) {
   }
 }
 
+/**
+ * Take back what recordBlockPlays wrote for a block, one PlayHistory row per
+ * item, so a block returned to draft doesn't leave its old content counted as
+ * aired (cooldowns, and the progression of a series with no cursor). Filler
+ * last_used_at stamps are left alone — they only steer rotation.
+ */
+function unrecordBlockPlays(v) {
+  const { block, items } = v;
+  if (block.channel_id == null) return;
+  const playedAt = `${block.target_date}T${(block.start_time || '00:00')}:00`;
+  const del = db.prepare(`
+    DELETE FROM PlayHistory WHERE id = (
+      SELECT id FROM PlayHistory WHERE resource_id = ? AND channel_id = ? AND played_at = ? LIMIT 1
+    )`);
+  for (const it of items) del.run(it.resource_id, block.channel_id, playedAt);
+}
+
 // ---- BlockTemplate CRUD ----------------------------------------------------
 
 // Normalize weekdays to a CSV string from an array or a string.
@@ -663,10 +680,34 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
       error: `“${target.name}” is not approved yet — approve it in the Catalog Editor first`,
     });
   }
+  // Only drafts are rebuilt. An approved block used to be skipped SILENTLY: the
+  // cursor moved, the answer was 200 and the UI said "rebuilt", and the block
+  // kept the episode it had — which is how a block forced and approved on
+  // S01E01 stayed S01E01 whatever episode was picked. An exported day is on the
+  // playout Mac already, so it is refused; an approved one goes back to draft
+  // below (the operator is changing its content, so it has to be approved again).
+  if (block.status === 'exported') {
+    return res.status(409).json({
+      error: 'this block is already pushed to OTAV — change the episode on a day that has not been exported',
+    });
+  }
   const blockSecs = blockDurationSeconds(block.start_time, block.end_time);
+  let reopened = 0;
 
   try {
   withTx(() => {
+    // (0) an approved block and its other airings that day return to draft,
+    // taking back the plays their approval recorded.
+    if (block.status === 'approved') {
+      for (const b of [{ id }, ...siblingAirings(block)]) {
+        const v = validateBlock(b.id);
+        if (v?.block.status !== 'approved') continue;
+        unrecordBlockPlays(v);
+        db.prepare("UPDATE ScheduledBlock SET status = 'draft' WHERE id = ?").run(b.id);
+        reopened++;
+      }
+    }
+
     // (1) set the series cursor (ensure a row exists, mark it serial), so this
     // block and future generations start from the corrected episode.
     db.prepare(`
@@ -692,7 +733,12 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
         AND sb.target_date >= ? AND sb.target_date <= date(?, '+6 days')
       ORDER BY sb.target_date, sb.template_id, slot_order
     `).all(block.channel_id, block.target_date, block.target_date);
-    for (const b of scope) db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(b.id);
+    // A force is a judgement about the content that was there (see regenerate):
+    // rebuilt, it describes nothing, and a stale one would hide the new verdict.
+    for (const b of scope) {
+      db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(b.id);
+      db.prepare('UPDATE ScheduledBlock SET override_reason = NULL, override_at = NULL WHERE id = ?').run(b.id);
+    }
     const populate = (bid) => populateBlock(db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(bid));
 
     // (3) this block first, so the later ones roll on from what it now holds.
@@ -719,6 +765,7 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
   }
 
   const v = validateBlock(id);
+  v.reopened = reopened;
   const inBlock = v.items.some((i) => i.resource_id === target.id);
   if (inBlock && target.duration > blockSecs) {
     const mmss = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;

@@ -776,6 +776,8 @@ function renderItems() {
           // hunting for the button: an overrun the operator accepts is exactly
           // what forcing is for. Cancel keeps the episode and leaves it red.
           const blockId = currentBlock.block.id;
+          // An approved block is returned to draft by the pick (its content changed).
+          if (r?.reopened) toast('The block was approved — it is back to draft and needs approving again', 'bad', it.subject);
           if (r?.warning) {
             const { ok, note } = await confirmWithNote(
               'Episode longer than the slot',

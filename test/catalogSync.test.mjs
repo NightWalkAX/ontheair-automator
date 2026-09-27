@@ -163,6 +163,25 @@ test('set-episode honours a pick longer than the slot, and refuses an unapproved
   assert.equal(forced.data.approvable, true);
   const approved = await j('POST', `/api/blocks/${blockId}/approve`);
   assert.equal(approved.status, 200, JSON.stringify(approved.data));
+
+  // Picking another episode on that forced + approved block must change it. It
+  // used to answer 200 "rebuilt" and leave the block exactly as it was, because
+  // only drafts are rebuilt.
+  const plays = () => db.prepare('SELECT COUNT(*) AS n FROM PlayHistory WHERE channel_id = ?').get(ch).n;
+  assert.ok(plays() > 0, 'approval recorded the plays');
+  const ep1 = db.prepare("SELECT id FROM Resource WHERE channel_id = ? AND chapter = 1").get(ch).id;
+  const onApproved = (await j('GET', `/api/blocks/${blockId}`)).data.items.find((i) => i.resource_id === long);
+  const back = await j('POST', `/api/blocks/${blockId}/items/${onApproved.id}/set-episode`, { chapter: 1 });
+  assert.equal(back.status, 200, JSON.stringify(back.data));
+  assert.equal(back.data.reopened, 1);
+  assert.equal(back.data.block.status, 'draft', 'the approved block went back to draft');
+  assert.equal(back.data.block.override_reason ?? null, null, 'the old force went with the old content');
+  assert.deepEqual(back.data.items.filter((i) => !i.is_filler).map((i) => i.resource_id), [ep1]);
+  assert.equal(plays(), 0, 'the plays its approval recorded were taken back');
+
+  db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?").run(blockId);
+  const exported = await j('POST', `/api/blocks/${blockId}/items/${back.data.items[0].id}/set-episode`, { chapter: 2003 });
+  assert.equal(exported.status, 409, 'an exported day is refused, not silently ignored');
   db.prepare("UPDATE ScheduledBlock SET status = 'draft', override_reason = NULL, override_at = NULL WHERE id = ?").run(blockId);
 
   const item = r.data.items[0];
