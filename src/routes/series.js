@@ -6,7 +6,8 @@
 // alongside the channels router at /api/channels.
 
 import { Router } from 'express';
-import { db } from '../db.js';
+import { db, withTx } from '../db.js';
+import { syncSiblings } from '../services/catalogSync.js';
 import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
@@ -66,10 +67,21 @@ router.put('/:id/series', (req, res) => {
       is_active    = excluded.is_active,
       play_order   = excluded.play_order
   `);
+  // The registry's show type follows the clips when they agree on one. The UI
+  // echoes back whatever type the row had before, so a rename used to carry a
+  // stale type onto the new name — which is how "EDYOU PULSE" came to be a TV
+  // show in the catalogue and a Movie in the series registry at the same time.
+  const clipType = db.prepare(`
+    SELECT MIN(show_type_id) AS st, COUNT(DISTINCT show_type_id) AS n FROM Resource
+    WHERE channel_id = ? AND subject = ? AND is_filler = 0 AND show_type_id IS NOT NULL
+  `);
   list.forEach((s, idx) => upsert.run({
     channel_id: channelId,
     subject: String(s.subject),
-    show_type_id: s.show_type_id ?? null,
+    show_type_id: (() => {
+      const t = clipType.get(channelId, String(s.subject));
+      return t?.n === 1 ? t.st : (s.show_type_id ?? null);
+    })(),
     is_serial: s.is_serial ? 1 : 0,
     is_active: s.is_active === undefined ? 1 : (s.is_active ? 1 : 0),
     play_order: s.play_order ?? idx,
@@ -202,7 +214,10 @@ router.put('/:id/series/:subject/chapters', (req, res) => {
   const upd = db.prepare(
     'UPDATE Resource SET chapter = ? WHERE id = ? AND channel_id = ? AND subject = ?'
   );
-  order.forEach((rid, idx) => upd.run(idx + 1, Number(rid), channelId, subject));
+  withTx(() => {
+    order.forEach((rid, idx) => upd.run(idx + 1, Number(rid), channelId, subject));
+    syncSiblings(order.map(Number)); // same order on every channel carrying these files
+  });
   res.json({ ok: true });
 });
 

@@ -26,8 +26,10 @@ import { log } from '../logger.js';
 import * as retagShowTypes from './001-retag-show-types.js';
 import * as pruneOrphanSeries from './002-prune-orphan-series.js';
 import * as lessonRoots from './003-lesson-roots-in-local-shows.js';
+import * as edyouPulse from './004-unify-edyou-pulse.js';
+import * as syncSharedCatalog from './005-sync-shared-catalog.js';
 
-const MIGRATIONS = [retagShowTypes, pruneOrphanSeries, lessonRoots];
+const MIGRATIONS = [retagShowTypes, pruneOrphanSeries, lessonRoots, edyouPulse, syncSharedCatalog];
 
 /** Where the record of what has already run lives, next to the database. */
 export function lockPath() {

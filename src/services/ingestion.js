@@ -13,6 +13,7 @@ import { db, withTx } from '../db.js';
 import { loadConfig, localizePath, delocalizePath } from '../config.js';
 import { parseEpisode, encodeChapter } from './episodeParse.js';
 import { groupSagas, sagaSubjectName } from './movieSaga.js';
+import { adoptFromSiblings } from './catalogSync.js';
 import { log, progressLogger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -83,8 +84,17 @@ function detectSubject(filePath, rootPath) {
  * null season and its plain episode number as the chapter.
  */
 function detectEpisode(fileName) {
-  const { season, episode } = parseEpisode(basename(fileName, extname(fileName)));
-  return { season, chapter: encodeChapter(season, episode) };
+  const parsed = parseEpisode(basename(fileName, extname(fileName)));
+  // A filename with no season of its own takes it from a "Season 2" / "Temporada
+  // 2" folder it sits in. Without this, "SEASON 2/EDYOU PULSE  EP 3.mp4" was
+  // catalogued as episode 3 with no season — the same chapter as season 1's
+  // episode 3, so the two collided and the episode picker could not tell them apart.
+  let season = parsed.season;
+  if (season == null) {
+    const folder = parseEpisode(basename(dirname(fileName)));
+    if (/(?:season|temporada)\s*\d/i.test(basename(dirname(fileName)))) season = folder.season;
+  }
+  return { season, chapter: encodeChapter(season, parsed.episode) };
 }
 
 /**
@@ -557,12 +567,20 @@ export async function scanMediaRoot(mediaRoot, { force = false } = {}) {
   // worth timing, because thousands of rows is where "the whole app froze for a
   // moment" comes from and the watchdog will name it.
   const writeStart = Date.now();
+  const had = new Set(db.prepare('SELECT file_path FROM Resource WHERE channel_id = ?')
+    .all(mediaRoot.channel_id).map((r) => r.file_path));
   let ingested = 0;
   for (const row of rows) {
     upsert(row);
     ingested++;
   }
   registerSeries(mediaRoot.channel_id, subjects, mediaRoot.show_type_id, isSerialDefault, sagaSubjects);
+  // A file new to THIS channel that another channel already catalogues takes the
+  // organisation the operator gave it there, not a fresh filename guess — so a
+  // shared folder scanned channel by channel can't come out filed six ways.
+  const adopted = adoptFromSiblings(mediaRoot.channel_id,
+    rows.filter((r) => !had.has(r.file_path)).map((r) => r.file_path));
+  if (adopted) l.info(`root ${mediaRoot.path}: ${adopted} new file(s) filed as the other channels have them`);
   l.info(`root ${mediaRoot.path} done · ${ingested} row(s) written in `
     + `${Math.round((Date.now() - writeStart) / 1000)}s · ${subjects.size} subject(s) · ${errors.length} error(s)`);
   return { scanned: files.length, ingested, probed, reused, errors };

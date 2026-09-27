@@ -7,12 +7,18 @@
 // order) are edited in place — they are DB-only and survive re-scans — and the
 // pre-edit values are snapshotted into ResourceOverride once so edits can be
 // reset. display_name is a pure on-screen label layered over Resource.name.
+//
+// Every edit is a decision about the FILE, not about one channel's copy of it:
+// it is applied to the row the operator touched and then copied onto every other
+// channel that catalogues the same file (services/catalogSync.js). Editing one
+// channel's copy only is what let the catalogues drift apart.
 
 import { Router } from 'express';
 import { dirname } from 'node:path';
 import { db, withTx } from '../db.js';
 import { parseEpisode, encodeChapter } from '../services/episodeParse.js';
 import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
+import { syncSiblings, syncShowType, siblingIds } from '../services/catalogSync.js';
 
 export const router = Router();
 
@@ -128,6 +134,7 @@ router.put('/resource/:id', (req, res) => {
       db.prepare('UPDATE ResourceOverride SET display_name = ? WHERE resource_id = ?')
         .run(b.display_name || null, id);
     }
+    syncSiblings([id]);
   });
   res.json({ ok: true });
 });
@@ -244,18 +251,25 @@ router.post('/bulk', (req, res) => {
       }
       case 'set-showtype': {
         const stId = req.body.show_type_id != null ? Number(req.body.show_type_id) : null;
-        const affected = new Map(); // subject -> channel_id, for registry realignment
+        const affected = new Map(); // "channel\0subject" -> [subject, channel_id], for registry realignment
         for (const id of ids) {
           const r = rowFor.get(id);
-          if (r?.subject) affected.set(r.subject, r.channel_id);
+          if (!r) continue;
           db.prepare('UPDATE Resource SET show_type_id = ? WHERE id = ?').run(stId, id);
+          syncShowType(r.file_path, r.show_type_id, stId, id);
+          // Realign the registry on every channel the file lives on, not just this one.
+          if (r.subject) {
+            for (const c of db.prepare('SELECT DISTINCT channel_id FROM Resource WHERE file_path = ?').all(r.file_path)) {
+              affected.set(`${c.channel_id}\u0000${r.subject}`, [r.subject, c.channel_id]);
+            }
+          }
         }
         // Keep each affected series' registry row pointing at the show type its
         // clips actually live under now. Without this, moving a whole show to
         // another type leaves the ChannelSeries row on the old type, so the show
         // lingers as an empty folder there. Only realign when the series' clips
         // now all sit under a single type (a partial move stays ambiguous).
-        for (const [subject, channelId] of affected) {
+        for (const [subject, channelId] of affected.values()) {
           const types = db.prepare(
             'SELECT DISTINCT show_type_id AS st FROM Resource WHERE channel_id = ? AND subject = ? AND is_filler = 0'
           ).all(channelId, subject);
@@ -321,6 +335,9 @@ router.post('/bulk', (req, res) => {
       default:
         throw new Error(`unknown op: ${op}`);
     }
+    // The fix-order editors address rows through `entries`, not `ids`.
+    const entryIds = Array.isArray(req.body.entries) ? req.body.entries.map((e) => Number(e.id)) : [];
+    if (op !== 'set-showtype') syncSiblings([...ids, ...entryIds]);
   };
   try { withTx(run); } catch (err) { return res.status(400).json({ error: String(err.message || err) }); }
   res.json({ ok: true, count: ids.length });
@@ -339,17 +356,22 @@ router.post('/reset', (req, res) => {
       db.prepare('UPDATE Resource SET subject = ?, chapter = ?, season = ? WHERE id = ?')
         .run(o.detected_subject, o.detected_chapter ?? 0, o.detected_season ?? null, id);
       db.prepare('DELETE FROM ResourceOverride WHERE resource_id = ?').run(id);
+      syncSiblings([id], { reset: true });
     }
   });
   res.json({ ok: true, count: ids.length });
 });
 
-// DELETE /api/catalog/resource/:id — remove a catalog row (e.g. a duplicate).
-// Only drops the DB row (and its ScheduleItem/PlayHistory/override via cascade);
-// the file on disk is untouched. A re-scan of the folder would re-add it.
+// DELETE /api/catalog/resource/:id — remove a catalog entry (e.g. a duplicate)
+// from every channel that catalogues that file, so a stale row can't survive on
+// the channels nobody happened to be looking at. Only drops DB rows (and their
+// ScheduleItem/PlayHistory/override via cascade); the file on disk is untouched.
+// A re-scan of the folder would re-add it.
 router.delete('/resource/:id', (req, res) => {
   const id = Number(req.params.id);
-  const info = db.prepare('DELETE FROM Resource WHERE id = ?').run(id);
-  if (!info.changes) return res.status(404).json({ error: 'not found' });
-  res.json({ ok: true });
+  const ids = siblingIds(id);
+  if (!ids.length) return res.status(404).json({ error: 'not found' });
+  const del = db.prepare('DELETE FROM Resource WHERE id = ?');
+  withTx(() => { for (const x of ids) del.run(x); });
+  res.json({ ok: true, deleted: ids.length });
 });

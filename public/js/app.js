@@ -770,8 +770,11 @@ function renderItems() {
         }
         epSel.onchange = () => withBusy(null, async () => {
           const picked = chapters.find((c) => c.chapter === Number(epSel.value));
-          await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
-          toast(`Starting at ${picked?.episode_code || 'that episode'} — this block and later drafts rebuilt`, 'ok', it.subject);
+          const r = await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
+          // An episode longer than the slot is placed anyway (the operator chose
+          // it) and the server says why the block is now red.
+          if (r?.warning) toast(r.warning, 'bad', `${it.subject} · ${picked?.episode_code || ''}`);
+          else toast(`Starting at ${picked?.episode_code || 'that episode'} — this block and later drafts rebuilt`, 'ok', it.subject);
           await openBlock(currentBlock.block.id);
           await loadSchedule();
         });
@@ -1278,15 +1281,38 @@ async function loadRoots() {
     return;
   }
   // The same folder assigned to N channels is N MediaRoot rows; collapse them to
-  // one row per (path, show type) with the channels shown as badges. scan/delete
-  // fan out across every underlying row id.
+  // one row per (path, show type) with the channels shown as badges. scan/edit/
+  // delete fan out across every underlying row, so a shared root is managed as
+  // ONE thing and its channels can't drift apart.
   const groups = new Map();
   for (const r of rows) {
     const key = `${r.path} ${r.show_type_id}`;
-    if (!groups.has(key)) groups.set(key, { path: r.path, show_type_name: r.show_type_name, channels: [] });
+    if (!groups.has(key)) groups.set(key, { path: r.path, show_type_id: r.show_type_id, show_type_name: r.show_type_name, channels: [] });
     groups.get(key).channels.push(r); // each carries id + channel_name + channel_id
   }
-  for (const g of groups.values()) {
+  // View: every shared root, or the roots ONE channel has to itself. A channel's
+  // exclusive roots are not shown anywhere else, so they can't be mistaken for
+  // (or edited as) part of the shared library.
+  const view = $('#rootsView');
+  const pick = view.value || (() => { try { return localStorage.getItem('rootsView') || ''; } catch { return ''; } })() || 'shared';
+  const shared = [...groups.values()].filter((g) => g.channels.length > 1);
+  const only = (cid) => [...groups.values()].filter((g) => g.channels.length === 1 && g.channels[0].channel_id === cid);
+  view.innerHTML = '';
+  view.append(el('option', { value: 'shared', textContent: `Shared across channels (${shared.length})` }));
+  for (const c of mediaChannels) {
+    view.append(el('option', { value: String(c.id), textContent: `Only on ${c.name} (${only(c.id).length})` }));
+  }
+  view.value = [...view.options].some((o) => o.value === pick) ? pick : 'shared';
+  view.onchange = () => {
+    try { localStorage.setItem('rootsView', view.value); } catch { /* per-viewer nicety only */ }
+    loadRoots();
+  };
+  const visible = view.value === 'shared' ? shared : only(Number(view.value));
+  if (!visible.length) {
+    tb.append(el('tr', {}, el('td', { colSpan: 4, className: 'muted', style: 'text-align:center;padding:22px',
+      textContent: view.value === 'shared' ? 'No folder is shared by more than one channel.' : 'This channel has no roots of its own — everything it carries is shared.' })));
+  }
+  for (const g of visible) {
     const tr = el('tr');
     const chCell = el('td');
     for (const c of g.channels) chCell.append(el('span', { className: 'badge', textContent: c.channel_name }));
@@ -1333,8 +1359,8 @@ async function loadRoots() {
       });
     };
     const btnEdit = el('button', { className: 'mini ghost', textContent: 'edit' });
-    // Edit stays per-channel; when shared, edit the first assignment.
-    btnEdit.onclick = () => editRoot({ ...g.channels[0], path: g.path, show_type_name: g.show_type_name });
+    // One edit for every channel carrying the folder (type + which channels).
+    btnEdit.onclick = () => editRootGroup(g);
     const btnDel = el('button', { className: 'mini danger', textContent: 'delete' });
     btnDel.onclick = async () => {
       const names = g.channels.map((c) => c.channel_name).join(', ');
@@ -1357,34 +1383,58 @@ async function loadRoots() {
   }
 }
 
-// Edit a media root's channel / show type (folder type). Uses the generic dialog
-// with two selects. A re-scan afterwards re-catalogs under the new assignment.
-async function editRoot(r) {
+// Edit a media root as ONE thing across every channel that carries it: its
+// folder type and the set of channels. The catalogue is re-tagged on save; a
+// channel ticked on gets the already-scanned clips cloned, a channel ticked off
+// loses the root and the clips it catalogued there (asked first).
+async function editRootGroup(g) {
   const showTypes = await api.get('/api/showtypes');
   $('#dialogTitle').textContent = 'Edit media root';
   const content = $('#dialogContent');
   content.innerHTML = '';
-  content.append(el('p', { className: 'dialog-msg', textContent: r.path }));
-  const chSel = el('select');
-  for (const c of mediaChannels) chSel.append(el('option', { value: c.id, textContent: c.name, selected: c.id === r.channel_id }));
+  content.append(el('p', { className: 'dialog-msg', textContent: g.path }));
+  const have = new Set(g.channels.map((c) => c.channel_id));
+  const box = el('div', { className: 'weekday-row' });
+  const boxes = mediaChannels.map((c) => {
+    const input = el('input', { type: 'checkbox', value: c.id, checked: have.has(c.id) });
+    box.append(el('label', { className: 'chk' }, input, document.createTextNode(' ' + c.name)));
+    return input;
+  });
   const stSel = el('select');
-  for (const s of showTypes) stSel.append(el('option', { value: s.id, textContent: s.name, selected: s.id === r.show_type_id }));
+  for (const s of showTypes) stSel.append(el('option', { value: s.id, textContent: s.name, selected: s.id === g.show_type_id }));
   content.append(
-    el('label', { className: 'field' }, document.createTextNode('Channel'), chSel),
+    el('span', { className: 'form-title' }, document.createTextNode('Channels that carry this folder')),
+    box,
     el('label', { className: 'field' }, document.createTextNode('Folder type'), stSel),
-    el('p', { className: 'hint muted', textContent: 'Re-scan this root afterwards to re-catalog under the new assignment.' }),
+    el('p', { className: 'hint muted', textContent: 'Applies to every ticked channel at once. Clips already catalogued are re-tagged immediately — no re-scan needed.' }),
   );
   const actions = $('#dialogActions');
   actions.innerHTML = '';
   const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
   const save = el('button', { className: 'primary', textContent: 'Save' });
   cancel.onclick = closeDialog;
-  save.onclick = () => withBusy(save, async () => {
-    await api.send('PUT', `/api/media/roots/${r.id}`, { channel_id: Number(chSel.value), show_type_id: Number(stSel.value) });
+  save.onclick = async () => {
+    const channel_ids = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+    if (!channel_ids.length) return toast('Tick at least one channel — or delete the root', 'bad');
+    const dropping = g.channels.filter((c) => !channel_ids.includes(c.channel_id));
     closeDialog();
-    toast('Root updated — re-scan to apply', 'ok');
-    await loadRoots();
-  });
+    if (dropping.length && !await confirmDialog('Remove channels from root',
+      `${dropping.map((c) => c.channel_name).join(', ')} will stop carrying “${g.path}”, and the clips it catalogued there are dropped from those channels (and from their draft blocks).`,
+      { confirmLabel: 'Remove', danger: true })) return;
+    await withBusy(null, async () => {
+      const r = await api.send('PUT', '/api/media/roots/group', {
+        path: g.path, show_type_id: g.show_type_id,
+        next_show_type_id: Number(stSel.value), channel_ids,
+      });
+      const bits = [];
+      if (r.retagged) bits.push(`${r.retagged} clip(s) re-tagged`);
+      if (r.added) bits.push(`added to ${r.added} channel(s)${r.clonedResources ? `, ${r.clonedResources} clip(s) reused` : ''}`);
+      if (r.removed) bits.push(`removed from ${r.removed} channel(s), ${r.droppedResources} clip(s) dropped`);
+      toast(bits.join(' · ') || 'Nothing changed', 'ok', g.path.split('/').pop());
+      await loadRoots();
+      await loadResources();
+    });
+  };
   actions.append(cancel, save);
   $('#dialog').classList.remove('hidden');
 }

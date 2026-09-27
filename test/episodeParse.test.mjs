@@ -36,3 +36,19 @@ test('encodeChapter keeps single-season plain and encodes season >= 2', () => {
   assert.equal(encodeChapter(2, 5), 2005);
   assert.equal(encodeChapter(3, 12), 3012);
 });
+
+test('parseEpisode reads episode-first "EP3SE2" markers', () => {
+  // The real EDYOU PULSE season 2 names.
+  assert.deepEqual(parseEpisode('EDYOU PULSE  EP3SE2'), { season: 2, episode: 3 });
+  assert.deepEqual(parseEpisode('EDYOU PULSE  EP4SE2'), { season: 2, episode: 4 });
+  assert.deepEqual(parseEpisode('EDYOUPULSE_EP1SE2'), { season: 2, episode: 1 });
+  assert.deepEqual(parseEpisode('Show EP 12 SE 3'), { season: 3, episode: 12 });
+  // Season 1's plain names are unchanged.
+  assert.deepEqual(parseEpisode('EDYOU PULSE EP 7'), { season: null, episode: 7 });
+});
+
+test('parseEpisode finds "EP" after an underscore', () => {
+  assert.deepEqual(parseEpisode('Show_EP5'), { season: null, episode: 5 });
+  // …but not inside a word.
+  assert.deepEqual(parseEpisode('Deep 5'), { season: null, episode: 5 });
+});

@@ -3,7 +3,8 @@
 // infer, and list/filter the catalog.
 
 import { Router } from 'express';
-import { db } from '../db.js';
+import { db, withTx } from '../db.js';
+import { syncSiblings } from '../services/catalogSync.js';
 import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 
 export const router = Router();
@@ -45,10 +46,13 @@ router.put('/:id', (req, res) => {
   const cur = db.prepare('SELECT * FROM Resource WHERE id = ?').get(id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const m = { ...cur, ...req.body };
-  db.prepare(`
-    UPDATE Resource SET name=?, subject=?, chapter=?, is_filler=?, audience_rating=?, show_type_id=?
-    WHERE id=?
-  `).run(m.name, m.subject, m.chapter | 0, m.is_filler ? 1 : 0, m.audience_rating, m.show_type_id, id);
+  withTx(() => {
+    db.prepare(`
+      UPDATE Resource SET name=?, subject=?, chapter=?, is_filler=?, audience_rating=?, show_type_id=?
+      WHERE id=?
+    `).run(m.name, m.subject, m.chapter | 0, m.is_filler ? 1 : 0, m.audience_rating, m.show_type_id, id);
+    syncSiblings([id]); // the same file on the other channels (see catalogSync.js)
+  });
   res.json({ ok: true });
 });
 

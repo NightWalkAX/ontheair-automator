@@ -57,6 +57,56 @@ function containedRootsError(path, channelIds, { exceptRootId = null } = {}) {
     + 'really mean to replace them with this one.';
 }
 
+/**
+ * A root's folder type just changed: re-tag everything it had already
+ * catalogued, minus anything a DEEPER root of the same channel owns (that root's
+ * type wins, as it does on scan), and bring the series registry along.
+ *
+ * Changing a root's folder type used to leave everything it had already
+ * catalogued carrying the OLD type until somebody thought to re-scan — which is
+ * how lessons kept showing up in movie blocks long after the root itself was
+ * corrected. Returns the number of resources re-tagged.
+ */
+function retypeRootSubtree(root, nextType) {
+  const { id, channel_id: nextChannel, path } = root;
+  const like = path.replace(/[%_\\]/g, '\\$&') + '/%';
+  const deeper = db.prepare(
+    'SELECT path FROM MediaRoot WHERE channel_id = ? AND id != ? AND path LIKE ? ESCAPE \'\\\''
+  ).all(nextChannel, id, like).map((r) => r.path);
+  const exclude = deeper.map(() => "AND file_path NOT LIKE ? ESCAPE '\\'").join(' ');
+  const deeperLikes = deeper.map((d) => d.replace(/[%_\\]/g, '\\$&') + '/%');
+  const retagged = db.prepare(`
+    UPDATE Resource SET show_type_id = ?
+    WHERE channel_id = ? AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
+      AND show_type_id IS NOT ? ${exclude}
+  `).run(nextType, nextChannel, path, like, nextType, ...deeperLikes).changes;
+  // A subject whose clips just changed type must not stay registered under the old one.
+  db.prepare(`
+    UPDATE ChannelSeries SET show_type_id = ?
+    WHERE channel_id = ? AND subject IN (
+      SELECT DISTINCT subject FROM Resource
+      WHERE channel_id = ? AND subject IS NOT NULL
+        AND (file_path = ? OR file_path LIKE ? ESCAPE '\\') ${exclude}
+    )
+  `).run(nextType, nextChannel, nextChannel, path, like, ...deeperLikes);
+  return retagged;
+}
+
+/**
+ * Remove one channel's assignment of a root, and the resources it catalogued
+ * (there is no FK from Resource to MediaRoot). ScheduleItem and PlayHistory rows
+ * cascade off Resource. Returns the number of resources dropped.
+ */
+function dropRoot(root) {
+  const info = db.prepare(`
+    DELETE FROM Resource
+    WHERE channel_id = ? AND show_type_id = ?
+      AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
+  `).run(root.channel_id, root.show_type_id, root.path, root.path.replace(/[%_\\]/g, '\\$&') + '/%');
+  db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(root.id);
+  return info.changes;
+}
+
 export const router = Router();
 
 // Guard: only allow browsing within the configured SMB mount point, so this
@@ -200,6 +250,71 @@ router.post('/roots/copy', (req, res) => {
   }
 });
 
+// PUT /api/media/roots/group  { path, show_type_id, next_show_type_id?, channel_ids? }
+//
+// Edit a SHARED root as one thing. The same folder on N channels is N MediaRoot
+// rows, and editing them one at a time is how they drifted: the roots panel's
+// "edit" changed the first channel's row only, so a type change split one shared
+// root into two groups and the channels disagreed about what the folder held.
+// This edits every row of the group together:
+//   next_show_type_id  new folder type for every channel (catalogue re-tagged now)
+//   channel_ids        the channels that carry the folder from now on — new ones
+//                      get the already-scanned catalogue cloned, dropped ones lose
+//                      the root AND the clips it catalogued there
+router.put('/roots/group', (req, res) => {
+  const b = req.body || {};
+  const path = b.path ? withinMount(b.path) : null;
+  const typeId = Number(b.show_type_id);
+  if (!path || !typeId) return res.status(400).json({ error: 'path and show_type_id are required' });
+  const rows = db.prepare('SELECT * FROM MediaRoot WHERE path = ? AND show_type_id = ?').all(path, typeId);
+  if (!rows.length) return res.status(404).json({ error: 'no such media root' });
+
+  const nextType = b.next_show_type_id != null ? Number(b.next_show_type_id) : typeId;
+  const current = new Set(rows.map((r) => r.channel_id));
+  const wanted = Array.isArray(b.channel_ids) ? new Set(b.channel_ids.map(Number).filter(Boolean)) : current;
+  if (!wanted.size) {
+    return res.status(400).json({ error: 'a root needs at least one channel — delete it instead' });
+  }
+  const added = [...wanted].filter((c) => !current.has(c));
+  const removed = rows.filter((r) => !wanted.has(r.channel_id));
+  const kept = rows.filter((r) => wanted.has(r.channel_id));
+
+  const contains = containedRootsError(path, added);
+  if (contains) return res.status(409).json({ error: contains });
+  // The new type must not collide with a row the channel already has for this
+  // path under that type (UNIQUE(channel_id, show_type_id, path)).
+  if (nextType !== typeId) {
+    const clash = db.prepare(
+      'SELECT COUNT(*) AS n FROM MediaRoot WHERE path = ? AND show_type_id = ?'
+    ).get(path, nextType).n;
+    if (clash) {
+      return res.status(409).json({ error: 'this folder is already a root of that type on some channel — delete one of the two first' });
+    }
+  }
+
+  try {
+    let retagged = 0;
+    let dropped = 0;
+    let clonedResources = 0;
+    for (const r of kept) {
+      if (nextType === typeId) continue;
+      db.prepare('UPDATE MediaRoot SET show_type_id = ? WHERE id = ?').run(nextType, r.id);
+      retagged += retypeRootSubtree(r, nextType);
+    }
+    for (const r of removed) dropped += dropRoot(r);
+    const ins = db.prepare('INSERT OR IGNORE INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)');
+    for (const cid of added) {
+      if (ins.run(cid, nextType, path).changes) clonedResources += cloneScannedResources(cid, nextType, path);
+    }
+    res.json({
+      ok: true, retagged, clonedResources, droppedResources: dropped,
+      added: added.length, removed: removed.length,
+    });
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
 // PUT /api/media/roots/:id  { channel_id?, show_type_id?, path? }
 // Edit a root's channel / show type (folder type) / path. A re-scan is needed
 // afterwards to re-catalog under the new assignment.
@@ -230,34 +345,9 @@ router.put('/roots/:id', (req, res) => {
     db.prepare('UPDATE MediaRoot SET channel_id = ?, show_type_id = ?, path = ? WHERE id = ?').run(
       nextChannel, nextType, path, id
     );
-    // Changing a root's folder type used to leave everything it had already
-    // catalogued carrying the OLD type until somebody thought to re-scan — which
-    // is how lessons kept showing up in movie blocks long after the root itself
-    // was corrected. Re-tag the subtree now, minus anything a DEEPER root of the
-    // same channel owns (that root's type wins, as it does on scan).
+    // Re-tag what it already catalogued now, not at the next scan.
     if (nextType !== cur.show_type_id && path === cur.path && nextChannel === cur.channel_id) {
-      const like = path.replace(/[%_\\]/g, '\\$&') + '/%';
-      const deeper = db.prepare(
-        'SELECT path FROM MediaRoot WHERE channel_id = ? AND id != ? AND path LIKE ? ESCAPE \'\\\''
-      ).all(nextChannel, id, like).map((r) => r.path);
-      const exclude = deeper.map(() => "AND file_path NOT LIKE ? ESCAPE '\\'").join(' ');
-      retagged = db.prepare(`
-        UPDATE Resource SET show_type_id = ?
-        WHERE channel_id = ? AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
-          AND show_type_id IS NOT ? ${exclude}
-      `).run(nextType, nextChannel, path, like, nextType,
-        ...deeper.map((d) => d.replace(/[%_\\]/g, '\\$&') + '/%')).changes;
-      // Same for the series registry: a subject whose clips just changed type
-      // must not stay registered under the old one.
-      db.prepare(`
-        UPDATE ChannelSeries SET show_type_id = ?
-        WHERE channel_id = ? AND subject IN (
-          SELECT DISTINCT subject FROM Resource
-          WHERE channel_id = ? AND subject IS NOT NULL
-            AND (file_path = ? OR file_path LIKE ? ESCAPE '\\') ${exclude}
-        )
-      `).run(nextType, nextChannel, nextChannel, path, like,
-        ...deeper.map((d) => d.replace(/[%_\\]/g, '\\$&') + '/%'));
+      retagged = retypeRootSubtree({ id, channel_id: nextChannel, path }, nextType);
     }
     res.json({ ok: true, rescanNeeded: true, retagged });
   } catch (err) {
@@ -273,13 +363,7 @@ router.delete('/roots/:id', (req, res) => {
   const id = Number(req.params.id);
   const root = db.prepare('SELECT * FROM MediaRoot WHERE id = ?').get(id);
   if (!root) return res.json({ ok: true, deletedResources: 0 });
-  const info = db.prepare(`
-    DELETE FROM Resource
-    WHERE channel_id = ? AND show_type_id = ?
-      AND (file_path = ? OR file_path LIKE ? ESCAPE '\\')
-  `).run(root.channel_id, root.show_type_id, root.path, root.path.replace(/[%_\\]/g, '\\$&') + '/%');
-  db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(id);
-  res.json({ ok: true, deletedResources: info.changes });
+  res.json({ ok: true, deletedResources: dropRoot(root) });
 });
 
 // POST /api/media/scan  { channel_id?, force? }  — run ffprobe ingestion.

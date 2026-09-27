@@ -3,6 +3,7 @@
 // Recognizes the common naming conventions an operator's files arrive in:
 //   - SxxEyy markers   : "Cosmos_S02E05", "s2e5", "S02.E05", "S02 E05"
 //   - NxNN markers     : "03x01", "3x1"
+//   - episode-first    : "EP3SE2", "EP 3 SE 2", "E3S2" (episode 3 of season 2)
 //   - spelled out      : "Season 1 Episode 2", "Temporada 1 Episodio 2", "Ep 4"
 // and falls back to the last standalone integer in the name (legacy behaviour).
 //
@@ -23,6 +24,14 @@ export function parseEpisode(name) {
   if ((m = base.match(/[Ss](\d{1,3})[\s._-]*[Ee](\d{1,4})/))) {
     return { season: Number(m[1]), episode: Number(m[2]) };
   }
+  // Episode FIRST, then season — "EDYOU PULSE EP3SE2", "EDYOUPULSE_EP1SE2". Must
+  // run before the bare "Ep N" rule below, which would read EP3SE2 as episode 3
+  // with no season and file season 2 on top of season 1. The lookbehind is a
+  // letter check rather than \b because "_" counts as a word character, so
+  // "\bEP" never matches the very common "Show_EP1".
+  if ((m = base.match(/(?<![A-Za-z])(?:ep|e)\.?\s*(\d{1,4})[\s._-]*(?:se|s)\s*(\d{1,3})(?!\d)/i))) {
+    return { season: Number(m[2]), episode: Number(m[1]) };
+  }
   // NxNN — "03x01". Guard both sides so a resolution like "1920x1080" or a
   // duration digit run doesn't get mistaken for a season marker.
   if ((m = base.match(/(?<![A-Za-z0-9])(\d{1,2})\s*[xX]\s*(\d{1,3})(?![A-Za-z0-9])/))) {
@@ -35,7 +44,7 @@ export function parseEpisode(name) {
   // A season with no explicit episode number ("Season 2" folder-style names).
   const seasonOnly = base.match(/(?:season|temporada)\s*(\d{1,3})/i);
   // A bare episode word ("Episode 5", "Cap 5", "Ep. 5").
-  if ((m = base.match(/(?:episode|episodio|cap[ií]?tulo|\bep)\.?\s*(\d{1,4})/i))) {
+  if ((m = base.match(/(?:episode|episodio|cap[ií]?tulo|(?<![A-Za-z])ep)\.?\s*(\d{1,4})/i))) {
     return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode: Number(m[1]) };
   }
   // Fallback: last standalone integer is the episode/order number.

@@ -631,7 +631,9 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
 
   const block = db.prepare(`
     SELECT sb.*, COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
-           COALESCE(s.slot_order, 0) AS slot_order
+           COALESCE(s.slot_order, 0) AS slot_order,
+           COALESCE(s.start_time, bt.start_time) AS start_time,
+           COALESCE(s.end_time, bt.end_time) AS end_time
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
@@ -651,10 +653,19 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
   if (item.subject == null) return res.status(400).json({ error: 'this item is not part of a series' });
 
   const target = db.prepare(
-    'SELECT id FROM Resource WHERE channel_id = ? AND subject = ? AND chapter = ? AND is_filler = 0'
+    'SELECT id, name, duration, approved FROM Resource WHERE channel_id = ? AND subject = ? AND chapter = ? AND is_filler = 0'
   ).get(block.channel_id, item.subject, chapter);
   if (!target) return res.status(404).json({ error: `no chapter ${chapter} for “${item.subject}”` });
+  // The engine only schedules approved clips, so an unapproved pick used to be
+  // skipped by the rebuild and the block quietly started somewhere else.
+  if (!target.approved) {
+    return res.status(409).json({
+      error: `“${target.name}” is not approved yet — approve it in the Catalog Editor first`,
+    });
+  }
+  const blockSecs = blockDurationSeconds(block.start_time, block.end_time);
 
+  let pinned = false;
   try {
   withTx(() => {
     // (1) set the series cursor (ensure a row exists, mark it serial), so this
@@ -683,16 +694,40 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
       ORDER BY sb.target_date, sb.template_id, slot_order
     `).all(block.channel_id, block.target_date, block.target_date);
     for (const b of scope) db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(b.id);
-    for (const b of scope) {
-      const full = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(b.id);
-      populateBlock(full);
+    const populate = (bid) => populateBlock(db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(bid));
+
+    // (3) this block first, so the later ones roll on from what it now holds.
+    // The one pick the rebuild will NOT honour is an episode longer than the
+    // whole slot — the engine skips those (right for a generated schedule, where
+    // it would otherwise stall the series), so the operator asked for S02E03 and
+    // got whatever came after it. An explicit choice wins: pin it and let the
+    // block go red, where Force (or a longer slot) is the operator's call.
+    const inScope = scope.some((b) => b.id === id); // an approved block is not rebuilt
+    if (inScope) populate(id);
+    const placed = !inScope
+      || db.prepare('SELECT 1 FROM ScheduleItem WHERE block_id = ? AND resource_id = ?').get(id, target.id);
+    if (!placed) {
+      db.prepare('DELETE FROM ScheduleItem WHERE block_id = ?').run(id);
+      db.prepare(
+        'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, 0, 1)'
+      ).run(id, target.id);
+      populate(id); // tops up around the pinned episode (nothing, if it overruns)
+      pinned = true;
     }
+    for (const b of scope) if (b.id !== id) populate(b.id);
   });
   } catch (err) {
     return res.status(500).json({ error: String(err.message || err) });
   }
 
-  res.json(validateBlock(id));
+  const v = validateBlock(id);
+  if (pinned && target.duration > blockSecs) {
+    const mmss = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+    v.warning = `“${target.name}” runs ${mmss(target.duration)}, ${target.duration - blockSecs}s longer `
+      + `than this ${mmss(blockSecs)} slot. It is placed as you asked, but the block will not pass `
+      + 'until the slot is lengthened or the block is forced.';
+  }
+  res.json(v);
 });
 
 // POST /api/blocks/:id/approve — server-side re-validation before approving,
