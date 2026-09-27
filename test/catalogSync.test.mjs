@@ -150,6 +150,15 @@ test('set-episode honours a pick longer than the slot, and refuses an unapproved
   assert.match(r.data.warning, /21s longer/);
   assert.equal(r.data.fits, false, 'and the block honestly does not pass');
 
+  // The operator accepts the overrun: forcing makes it approvable, still not "fits".
+  const forced = await j('POST', `/api/blocks/${blockId}/override`, { enabled: true, reason: 'episode runs long' });
+  assert.equal(forced.status, 200, JSON.stringify(forced.data));
+  assert.equal(forced.data.fits, false);
+  assert.equal(forced.data.approvable, true);
+  const approved = await j('POST', `/api/blocks/${blockId}/approve`);
+  assert.equal(approved.status, 200, JSON.stringify(approved.data));
+  db.prepare("UPDATE ScheduledBlock SET status = 'draft', override_reason = NULL, override_at = NULL WHERE id = ?").run(blockId);
+
   const item = r.data.items[0];
   const refused = await j('POST', `/api/blocks/${blockId}/items/${item.id}/set-episode`, { chapter: 2004 });
   assert.equal(refused.status, 409);

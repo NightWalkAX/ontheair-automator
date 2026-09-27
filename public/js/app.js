@@ -772,10 +772,26 @@ function renderItems() {
           const picked = chapters.find((c) => c.chapter === Number(epSel.value));
           const r = await api.send('POST', `/api/blocks/${currentBlock.block.id}/items/${it.id}/set-episode`, { chapter: Number(epSel.value) });
           // An episode longer than the slot is placed anyway (the operator chose
-          // it) and the server says why the block is now red.
-          if (r?.warning) toast(r.warning, 'bad', `${it.subject} · ${picked?.episode_code || ''}`);
-          else toast(`Starting at ${picked?.episode_code || 'that episode'} — this block and later drafts rebuilt`, 'ok', it.subject);
-          await openBlock(currentBlock.block.id);
+          // it). Offer the force right here instead of leaving a red block to go
+          // hunting for the button: an overrun the operator accepts is exactly
+          // what forcing is for. Cancel keeps the episode and leaves it red.
+          const blockId = currentBlock.block.id;
+          if (r?.warning) {
+            const { ok, note } = await confirmWithNote(
+              'Episode longer than the slot',
+              `${r.warning} Force it now? It will be approved and pushed with the overrun, and the reason is recorded with the block.`,
+              { confirmLabel: 'Force with overrun', placeholder: 'Why (optional) — e.g. episode runs long' },
+            );
+            if (ok) {
+              const f = await api.send('POST', `/api/blocks/${blockId}/override`, { enabled: true, reason: note });
+              toast(`Forced with the overrun${alsoAirings(f.siblings)} — it can now be approved`, 'ok', it.subject);
+            } else {
+              toast('Episode placed — the block stays red until it is forced or the slot is lengthened', 'bad', it.subject);
+            }
+          } else {
+            toast(`Starting at ${picked?.episode_code || 'that episode'} — this block and later drafts rebuilt`, 'ok', it.subject);
+          }
+          await openBlock(blockId);
           await loadSchedule();
         });
         li.append(epSel);
