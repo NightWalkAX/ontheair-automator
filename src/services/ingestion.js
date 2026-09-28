@@ -83,8 +83,8 @@ function detectSubject(filePath, rootPath) {
  * global monotonic ordering key the engine plays by. Season-less content gets a
  * null season and its plain episode number as the chapter.
  */
-function detectEpisode(fileName) {
-  const parsed = parseEpisode(basename(fileName, extname(fileName)));
+function detectEpisode(fileName, subject) {
+  const parsed = parseEpisode(basename(fileName, extname(fileName)), subject);
   // A filename with no season of its own takes it from a "Season 2" / "Temporada
   // 2" folder it sits in. Without this, "SEASON 2/EDYOU PULSE  EP 3.mp4" was
   // catalogued as episode 3 with no season — the same chapter as season 1's
@@ -534,7 +534,7 @@ export async function scanMediaRoot(mediaRoot, { force = false } = {}) {
       // as fillers, so no duration cap).
       const isFiller = typeIsFiller || (looksLikeFillerFolder(file) ? 1 : 0);
       const subject = isFiller ? null : detectSubject(file, mediaRoot.path);
-      const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file);
+      const { season, chapter } = isFiller ? { season: null, chapter: 0 } : detectEpisode(file, subject);
       rows.push({
         name: basename(file, extname(file)),
         file_path: file,

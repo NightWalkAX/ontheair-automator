@@ -189,7 +189,7 @@ router.post('/bulk', (req, res) => {
         for (const id of ids) {
           const r = rowFor.get(id);
           if (!r) continue;
-          const { season: parsedSeason, episode } = parseEpisode(r.name);
+          const { season: parsedSeason, episode } = parseEpisode(r.name, subject);
           const season = forceSeason ? forcedSeason : parsedSeason;
           const chapter = encodeChapter(season, episode);
           db.prepare('UPDATE Resource SET subject = ?, season = ?, chapter = ? WHERE id = ?')

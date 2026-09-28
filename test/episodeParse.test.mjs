@@ -15,13 +15,28 @@ test('parseEpisode recognizes the NxNN convention', () => {
   assert.deepEqual(parseEpisode('03x01 pilot'), { season: 3, episode: 1 });
   assert.deepEqual(parseEpisode('Series 3x10'), { season: 3, episode: 10 });
   // A resolution must NOT be mistaken for a season marker.
-  assert.deepEqual(parseEpisode('clip_1920x1080'), { season: null, episode: 1080 });
+  assert.equal(parseEpisode('clip_1920x1080').season, null);
 });
 
 test('parseEpisode recognizes spelled-out "Season N Episode M"', () => {
   assert.deepEqual(parseEpisode('Nature - Season 1 Episode 2'), { season: 1, episode: 2 });
   assert.deepEqual(parseEpisode('Documental Temporada 2 Episodio 7'), { season: 2, episode: 7 });
   assert.deepEqual(parseEpisode('Serie Temporada 4 Capitulo 3'), { season: 4, episode: 3 });
+});
+
+test('parseEpisode takes the FIRST number when a name carries several', () => {
+  const ep = (name, subject) => parseEpisode(name, subject).episode;
+  assert.equal(ep('Math_Intervention_Program_020_Consumer_Arithmetic_MCQ_Part_1', 'Math Intervention'), 20);
+  assert.equal(ep('Octonauts_100_Tree_Lobsters_101_Convict_Fish', 'Octonauts'), 100);
+  assert.equal(ep('Human_The_World_Within_03_D11', 'Human The World Within'), 3);
+  assert.equal(ep("Daniel_Tiger's_Neighbourhood_E03_The_Baby_Is_Here_(Part_1)", 'Daniel Tiger'), 3);
+  assert.equal(ep('Space_Cadets_1_3600'), 1, 'a trailing duration is not the episode');
+  // A number the show's own name carries is skipped…
+  assert.equal(ep('Grade 5- Mathematics- 10, 11 and 12 Times Table', 'Grade 5 Mathematics'), 10);
+  // …and when it carries all of them, the old last-number answer stands.
+  assert.equal(ep('Grade 5- Science- Force', 'Grade 5 Science'), 5);
+  // Markers still come first.
+  assert.equal(ep('Beatin_Da_Maths_S2Ep1', 'Beatin da Maths'), 1);
 });
 
 test('parseEpisode falls back to the last integer with no season', () => {
@@ -70,6 +85,7 @@ test('statedEpisode refuses a number that is not the episode', () => {
   // A part of one lesson, a year, or one of several numbers.
   assert.equal(statedEpisode('Grade 6- Social Studies- Ethnic Groups Pt.2', 'Grade 6 Social Studies'), null);
   assert.equal(statedEpisode('Multiple Choice P3', 'Grade 6 Social Studies'), null);
+  assert.equal(statedEpisode('Math Intervention Program - Solving Linear Equations (2)', 'Math Intervention'), null);
   assert.equal(statedEpisode('Documentary_2019', 'Docs'), null);
   assert.equal(statedEpisode('Human_The_World_Within_03_D11', 'Human The World Within'), null);
   assert.equal(statedEpisode('No number at all', 'Show'), null);

@@ -5,7 +5,12 @@
 //   - NxNN markers     : "03x01", "3x1"
 //   - episode-first    : "EP3SE2", "EP 3 SE 2", "E3S2" (episode 3 of season 2)
 //   - spelled out      : "Season 1 Episode 2", "Temporada 1 Episodio 2", "Ep 4"
-// and falls back to the last standalone integer in the name (legacy behaviour).
+// and falls back to the FIRST number in the name that the show's own name does
+// not carry. It used to be the LAST, which ordered "Math_Intervention_Program_020_
+// Consumer_Arithmetic_MCQ_Part_1" as 1, "Octonauts_100_Tree_Lobsters_101_Convict_
+// Fish" as 101 and "Human_The_World_Within_03_D11" as 11: when a name carries
+// several numbers, the episode is the one that follows the show name, and what
+// trails it is a part, a second episode or a disc code.
 //
 // This module intentionally imports nothing (not even db) so both ingestion and
 // the DB migration/backfill can use it without an import cycle.
@@ -14,18 +19,44 @@
  * Parse a filename (with or without extension) into { season, episode }.
  * season is null when the name carries no season information (a bare episode
  * number or a standalone clip); episode is 0 when no number is present at all.
+ * `subject` is the show the clip is filed under: a number its name carries (the
+ * grade in "Grade 5 Science") is not the episode.
  */
-export function parseEpisode(name) {
+export function parseEpisode(name, subject = '') {
   // Callers pass the base name (extension already stripped); we don't strip here
   // because a dotted marker like "cosmos.s1e1" would look like an extension.
   const base = String(name || '');
   const marked = parseMarked(base);
   if (marked) return marked;
-  // Fallback: last standalone integer is the episode/order number.
+  const seasonOnly = base.match(/(?:season|temporada)\s*(\d{1,3})/i);
+  return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode: firstFreeNumber(base, subject) };
+}
+
+/**
+ * The episode by the no-marker rule: the first non-zero number the show's name
+ * does not carry. When the show's name carries every number in it ("Grade 5-
+ * Science- Force") there is no episode to find, and the last number is kept, as
+ * it always was, so such clips keep the chapters they have.
+ */
+function firstFreeNumber(base, subject) {
+  const nums = (base.match(/\d{1,4}/g) || []).map(Number);
+  const own = new Set((String(subject || '').match(/\d+/g) || []).map(Number));
+  const free = nums.find((n) => n > 0 && !own.has(n));
+  return free ?? (nums.length ? nums[nums.length - 1] : 0);
+}
+
+/**
+ * What parseEpisode() returned before it took the FIRST free number: an explicit
+ * marker, else the last number in the name. Kept only so migration 006 can tell
+ * which chapters are still exactly what that rule wrote.
+ */
+export function legacyParseEpisode(name) {
+  const base = String(name || '');
+  const marked = parseMarked(base);
+  if (marked) return marked;
   const seasonOnly = base.match(/(?:season|temporada)\s*(\d{1,3})/i);
   const nums = base.match(/\d{1,4}/g);
-  const episode = nums && nums.length ? Number(nums[nums.length - 1]) : 0;
-  return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode };
+  return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode: nums ? Number(nums[nums.length - 1]) : 0 };
 }
 
 /**
@@ -37,7 +68,7 @@ export function parseEpisode(name) {
  * explicit marker (S02E05, 3x01, Ep 4, Episode 4…) or the name's ONE free number
  * counts. A number the show's own name carries is not free ("Grade 5- Science-
  * Force" under "Grade 5 Science" states no episode at all), and neither is a
- * part ("Pt. 2"), a year, or one of several numbers ("Human_03_D11"): those
+ * part ("Pt. 2", "(2)"), a year, or one of several numbers ("Human_03_D11"): those
  * return null, and the caller falls back to the clip's position.
  */
 export function statedEpisode(name, subject = '') {
@@ -53,6 +84,8 @@ export function statedEpisode(name, subject = '') {
   // "Productivity Pt. 2", "Multiple Choice P3", "Part_1": the Nth part of one
   // lesson, not the Nth episode of the show.
   if (/(?:part|pt|p)[\s._#-]*$/i.test(base.slice(0, hit.index))) return null;
+  // "Solving Linear Equations (2)": a second part or a second copy.
+  if (base[hit.index - 1] === '(' && base[hit.index + hit[0].length] === ')') return null;
   return n;
 }
 

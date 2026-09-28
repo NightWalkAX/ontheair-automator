@@ -28,8 +28,9 @@ import * as pruneOrphanSeries from './002-prune-orphan-series.js';
 import * as lessonRoots from './003-lesson-roots-in-local-shows.js';
 import * as edyouPulse from './004-unify-edyou-pulse.js';
 import * as syncSharedCatalog from './005-sync-shared-catalog.js';
+import * as firstNumberOrder from './006-first-number-order.js';
 
-const MIGRATIONS = [retagShowTypes, pruneOrphanSeries, lessonRoots, edyouPulse, syncSharedCatalog];
+const MIGRATIONS = [retagShowTypes, pruneOrphanSeries, lessonRoots, edyouPulse, syncSharedCatalog, firstNumberOrder];
 
 /** Where the record of what has already run lives, next to the database. */
 export function lockPath() {
