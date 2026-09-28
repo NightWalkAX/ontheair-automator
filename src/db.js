@@ -350,6 +350,11 @@ export function initSchema() {
   // with the block rather than living in somebody's memory.
   addColumnIfMissing('ScheduledBlock', 'override_reason', 'TEXT');
   addColumnIfMissing('ScheduledBlock', 'override_at', 'TEXT');
+  // Operator shift of the block's END, in seconds (negative = earlier). The end
+  // of one block is the start of the next, so this one number moves the boundary
+  // between them: the block that could not be made to fit gets the room it
+  // needs, and its neighbour gives it up (see linkShifts() in scheduling.js).
+  addColumnIfMissing('ScheduledBlock', 'end_shift_seconds', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs

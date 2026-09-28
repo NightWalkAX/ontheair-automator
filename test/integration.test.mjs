@@ -1467,6 +1467,88 @@ test('one saga at a time: a franchise mid-run blocks every other franchise', () 
   db.prepare('DELETE FROM ChannelType WHERE id = ?').run(ch);
 });
 
+test('moving the boundary between two blocks fixes an overrun the catalogue cannot', async () => {
+  // Two adjacent hours on one channel-day: the first runs 2:00 long, the second
+  // 2:00 short. No clip can fix either; moving the boundary fixes both.
+  const ch = db.prepare("INSERT INTO ChannelType (name, api_ip, api_port) VALUES ('Shift', '127.0.0.1', 1) RETURNING id").get().id;
+  const date = '2026-12-29';
+  const mk = (name, start, end) => {
+    const tpl = db.prepare(`INSERT INTO BlockTemplate (channel_id, name, weekday, weekdays, start_time, end_time)
+                            VALUES (?, ?, 'Tue', 'Tue', ?, ?) RETURNING id`).get(ch, name, start, end).id;
+    const slot = db.prepare(`INSERT INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order)
+                             VALUES (?, ?, ?, 0) RETURNING id`).get(tpl, start, end).id;
+    return db.prepare(`INSERT INTO ScheduledBlock (template_id, slot_id, channel_id, target_date, status)
+                       VALUES (?, ?, ?, ?, 'draft') RETURNING id`).get(tpl, slot, ch, date).id;
+  };
+  const a = mk('Shift A', '20:00', '21:00');
+  const b = mk('Shift B', '21:00', '22:00');
+  const clip = db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, subject, chapter)
+                           VALUES (?, ?, ?, 0, 1, ?, 'Docs', 0) RETURNING id`);
+  const ins = db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order) VALUES (?, ?, 0)');
+  ins.run(a, clip.get('Long doc', '/tmp/Shift-long.mov', 3720, ch).id);
+  ins.run(b, clip.get('Short doc', '/tmp/Shift-short.mov', 3480, ch).id);
+
+  assert.equal(validateBlock(a).fits, false, 'A runs 2:00 over');
+  assert.equal(validateBlock(b).fits, false, 'B is 2:00 short');
+  assert.equal(validateBlock(a).nextBlockId, b, 'A and B share a boundary');
+  assert.equal(validateBlock(b).prevBlockId, a);
+
+  // A's start has nothing before it, so it cannot move.
+  assert.equal((await j('PUT', `/api/blocks/${a}/shift`, { edge: 'start', seconds: -120 })).status, 409);
+  // Past the configured limit is refused.
+  assert.equal((await j('PUT', `/api/blocks/${a}/shift`, { edge: 'end', seconds: 99999 })).status, 400);
+
+  const moved = await j('PUT', `/api/blocks/${a}/shift`, { edge: 'end', seconds: 120 });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.data.endShift, 120);
+  assert.equal(moved.data.blockSeconds, 3720);
+  assert.equal(moved.data.effectiveEnd, '21:02:00');
+  assert.equal(moved.data.fits, true, 'A now fits the time it really airs');
+  assert.equal(moved.data.neighbour.id, b);
+  assert.equal(moved.data.neighbour.effectiveStart, '21:02:00', 'B starts when A ends');
+  assert.equal(moved.data.neighbour.fits, true, 'and B, 2:00 shorter, fits too');
+  assert.equal((await j('POST', `/api/blocks/${a}/approve`)).status, 200);
+  assert.equal((await j('POST', `/api/blocks/${b}/approve`)).status, 200);
+
+  // The week grid judges both blocks by the same shifted windows.
+  const grid = await j('GET', `/api/blocks?week=${date}&channel_id=${ch}`);
+  const ga = grid.data.blocks.find((x) => x.id === a);
+  const gb = grid.data.blocks.find((x) => x.id === b);
+  assert.equal(ga.fits, true);
+  assert.equal(gb.fits, true);
+  assert.equal(gb.start_shift, 120);
+  assert.equal(gb.effective_start, '21:02:00');
+
+  // The same boundary can be moved from B's side; it is one number, not two.
+  const fromB = await j('PUT', `/api/blocks/${b}/shift`, { edge: 'start', seconds: 60 });
+  assert.equal(fromB.status, 200);
+  assert.equal(fromB.data.startShift, 60);
+  assert.equal(validateBlock(a).endShift, 60, "B's start is A's end");
+  assert.equal(fromB.data.neighbour.id, a);
+  assert.equal(fromB.data.neighbour.fits, false, 'and the answer says what that cost A');
+
+  // The push gate sees the shifted windows too: A no longer fits at 60s.
+  const { unfitBlocksInRange } = await import('../src/services/blockValidation.js');
+  assert.ok(unfitBlocksInRange(date, date, [ch]).some((x) => x.id === a));
+
+  // Reset puts both back on the slot times.
+  await j('PUT', `/api/blocks/${a}/shift`, { edge: 'end', seconds: 0 });
+  assert.equal(validateBlock(b).startShift, 0);
+  assert.equal(validateBlock(b).blockSeconds, 3600);
+
+  // Two blocks in the same slot (a template conflict) share no boundary with
+  // anyone: which of them a shift belongs to would be a guess.
+  const { linkShifts } = await import('../src/services/scheduling.js');
+  const day = linkShifts([
+    { id: 1, channel_id: 9, target_date: date, start_time: '06:00', end_time: '08:00', end_shift_seconds: 60 },
+    { id: 2, channel_id: 9, target_date: date, start_time: '06:00', end_time: '08:00', end_shift_seconds: 0 },
+    { id: 3, channel_id: 9, target_date: date, start_time: '08:00', end_time: '09:00', end_shift_seconds: 0 },
+  ]);
+  assert.equal(day[2].prev_block_id, null);
+  assert.equal(day[2].start_shift, 0);
+  assert.equal(day[0].blockSeconds, 7260, 'a block still keeps its own end shift');
+});
+
 test('a block with more than the allowed filler back to back cannot be approved', async () => {
   assert.equal(maxFillerRunSeconds([]), 0);
   assert.equal(

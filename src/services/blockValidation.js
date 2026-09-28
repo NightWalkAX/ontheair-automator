@@ -19,7 +19,7 @@
 import { db } from '../db.js';
 import {
   MOVIES_CODE, blockDurationSeconds, fillerRunLimit, fitTolerance, fitsTolerance,
-  maxFillerRunSeconds,
+  maxFillerRunSeconds, maxShiftSeconds, shiftedWindow,
 } from './scheduling.js';
 import { EPISODE_NO_CTE, withLabel } from './labels.js';
 
@@ -66,7 +66,11 @@ export function validateBlock(blockId) {
     WHERE si.block_id = ? ORDER BY si.play_order
   `).all(blockId).map(withLabel);
 
-  const blockSeconds = blockDurationSeconds(block.start_time, block.end_time);
+  // The window is the slot as the operator left it: a shifted boundary with the
+  // block before or after moves where this one starts or ends.
+  const win = block.channel_id != null ? shiftedWindow(block.id, block.channel_id, block.target_date) : null;
+  const slotSeconds = blockDurationSeconds(block.start_time, block.end_time);
+  const blockSeconds = win?.blockSeconds ?? slotSeconds;
   const totalSeconds = items.reduce((s, i) => s + i.duration, 0);
   const diff = blockSeconds - totalSeconds; // >0 underrun, <0 overrun
   const { maxUnderrun, maxOverrun } = fitTolerance();
@@ -92,6 +96,14 @@ export function validateBlock(blockId) {
     overrideReason: block.override_reason ?? null,
     overrideAt: block.override_at ?? null,
     approvable: fits || overridden,
+    slotSeconds,
+    startShift: win?.start_shift ?? 0,
+    endShift: win?.end_shift ?? 0,
+    effectiveStart: win?.effective_start ?? `${block.start_time}:00`,
+    effectiveEnd: win?.effective_end ?? `${block.end_time}:00`,
+    prevBlockId: win?.prev_block_id ?? null,
+    nextBlockId: win?.next_block_id ?? null,
+    maxShift: maxShiftSeconds(),
   };
 }
 

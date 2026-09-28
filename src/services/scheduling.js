@@ -79,6 +79,104 @@ export function blockDurationSeconds(startTime, endTime) {
   return secs;
 }
 
+// --- Block shifts -------------------------------------------------------------
+// Sometimes a block cannot be brought inside tolerance at all: the catalogue has
+// no clip that closes the hole, or the programme simply runs long. The operator
+// can then move the BOUNDARY between two blocks — "this one ends 3:12 later and
+// the next one starts 3:12 later" — instead of forcing a block that is wrong.
+//
+// A shift is stored once, as `ScheduledBlock.end_shift_seconds`, and read back
+// as the start shift of the block that begins where it ends (same channel, same
+// date, slot start == slot end). Storing it once is what keeps the two sides
+// from ever disagreeing: OTAV plays the day as one continuous playlist, so the
+// next block really does start whenever this one ends. A block with nothing
+// adjacent after it (a gap, the end of the day) can still end later or earlier;
+// the start of a block with nothing adjacent before it is fixed.
+
+/** The largest shift an operator may set, in seconds (config shift.maxSeconds). */
+export function maxShiftSeconds() {
+  return Number(loadConfig().shift?.maxSeconds ?? 900);
+}
+
+/** 'HH:MM' → seconds after midnight. */
+function hhmmSeconds(t) {
+  const [h, m] = String(t || '00:00').split(':').map(Number);
+  return h * 3600 + m * 60;
+}
+
+/** Seconds after midnight → 'HH:MM:SS' (wraps a day either way). */
+export function clockString(secs) {
+  const s = ((Math.round(secs) % 86400) + 86400) % 86400;
+  return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60]
+    .map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+/**
+ * Annotate blocks with their shifted window. Each row needs id, channel_id,
+ * target_date, start_time, end_time and end_shift_seconds; it gains
+ * start_shift / end_shift (seconds), prev_block_id / next_block_id (the adjacent
+ * block on either side, or null), slotSeconds, blockSeconds (the shifted
+ * length) and effective_start / effective_end ('HH:MM:SS'). Rows whose
+ * neighbours are not in `rows` are treated as having none, so pass a whole
+ * channel-day.
+ */
+export function linkShifts(rows) {
+  // A boundary links two blocks only when exactly one block ends there and
+  // exactly one starts there. Two templates sharing a slot on the same day is a
+  // conflict in the templates, and guessing which of them the shift belongs to
+  // would move a block nobody asked to move.
+  const at = (r, t) => `${r.channel_id}|${r.target_date}|${String(t).slice(0, 5)}`;
+  const starting = new Map();
+  const ending = new Map();
+  for (const r of rows) {
+    const s = at(r, r.start_time), e = at(r, r.end_time);
+    starting.set(s, starting.has(s) ? null : r);
+    ending.set(e, ending.has(e) ? null : r);
+  }
+  for (const r of rows) {
+    r.end_shift = Number(r.end_shift_seconds) || 0;
+    r.start_shift = 0;
+    r.prev_block_id = null;
+    r.next_block_id = null;
+  }
+  for (const r of rows) {
+    const k = at(r, r.end_time);
+    const next = starting.get(k);
+    if (!next || next === r || ending.get(k) !== r) continue;
+    r.next_block_id = next.id;
+    next.prev_block_id = r.id;
+    next.start_shift = r.end_shift;
+  }
+  for (const r of rows) {
+    const start = hhmmSeconds(r.start_time);
+    r.slotSeconds = blockDurationSeconds(r.start_time, r.end_time);
+    r.blockSeconds = r.slotSeconds - r.start_shift + r.end_shift;
+    r.effective_start = clockString(start + r.start_shift);
+    r.effective_end = clockString(start + r.slotSeconds + r.end_shift);
+  }
+  return rows;
+}
+
+/** Every block of one channel-day with its window, for linkShifts(). */
+export function channelDayBlocks(channelId, targetDate) {
+  return db.prepare(`
+    SELECT sb.id, sb.target_date, sb.end_shift_seconds,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           COALESCE(s.start_time, bt.start_time)  AS start_time,
+           COALESCE(s.end_time, bt.end_time)      AS end_time
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE COALESCE(sb.channel_id, bt.channel_id) = ? AND sb.target_date = ?
+    ORDER BY start_time
+  `).all(channelId, targetDate);
+}
+
+/** One block's shifted window (see linkShifts), or null when it is gone. */
+export function shiftedWindow(blockId, channelId, targetDate) {
+  return linkShifts(channelDayBlocks(channelId, targetDate)).find((r) => r.id === blockId) ?? null;
+}
+
 /** 'YYYY-MM-DD' for `daysAhead` days after a base date (default today). */
 function dateStr(daysAhead, base = new Date()) {
   const d = new Date(base);
@@ -1014,7 +1112,11 @@ export function populateBlock(block) {
   const ctx = loadBlock(block.id);
   if (!ctx) return null;
   const { template, start, end, slotOrder, channelId } = ctx;
-  const blockSecs = blockDurationSeconds(start, end);
+  // Fill the window the operator left the block with: a shifted boundary is a
+  // decision about when this block airs, and a rebuild must respect it.
+  const blockSecs = (channelId != null
+    ? shiftedWindow(block.id, channelId, ctx.block.target_date)?.blockSeconds
+    : null) ?? blockDurationSeconds(start, end);
 
   // Secondary airing: copy the primary's content verbatim (same channel).
   if (slotOrder > 0) {

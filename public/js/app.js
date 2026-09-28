@@ -261,7 +261,11 @@ async function loadSchedule() {
         tabIndex: 0,
       });
       card.append(el('div', { className: 'b-title', textContent: `${b.channel_name}: ${b.template_name}` }));
-      card.append(el('div', { className: 'b-meta', textContent: `${b.start_time}–${b.end_time} · ${b.content_type}` }));
+      const moved = b.start_shift || b.end_shift;
+      card.append(el('div', {
+        className: 'b-meta',
+        textContent: `${moved ? `${b.effective_start.slice(0, 5)}–${b.effective_end.slice(0, 5)}` : `${b.start_time}–${b.end_time}`} · ${b.content_type}`,
+      }));
       const badges = el('div', { className: 'b-badges' });
       // One badge, but the reason matters: "off 0:00" on a block whose duration
       // is perfect and whose filler run is half an hour reads as a bug.
@@ -275,6 +279,13 @@ async function loadSchedule() {
       }));
       badges.append(el('span', { className: 'badge status', textContent: b.status }));
       if (b.is_mirror) badges.append(el('span', { className: 'badge', textContent: '🔁 repeat' }));
+      if (moved) {
+        badges.append(el('span', {
+          className: 'badge warn',
+          textContent: `⇆ ${[b.start_shift && `start ${fmtShift(b.start_shift)}`, b.end_shift && `end ${fmtShift(b.end_shift)}`].filter(Boolean).join(' · ')}`,
+          title: `Slot ${b.start_time}–${b.end_time}, moved to ${b.effective_start}–${b.effective_end}`,
+        }));
+      }
       card.append(badges);
       card.addEventListener('click', () => openBlock(b.id));
       card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBlock(b.id); } });
@@ -601,8 +612,7 @@ async function openBlock(id) {
   currentMirror = (v.block.slot_order || 0) > 0;
 
   $('#modalTitle').textContent = `${v.block.template_name} — ${v.block.target_date}`;
-  $('#modalMeta').textContent = `${v.block.start_time}–${v.block.end_time} · block ${fmt(v.blockSeconds)} · channel ${v.block.channel_id}`
-    + (currentMirror ? ' · 🔁 mirrored airing (read-only — edit the primary airing)' : '');
+  renderModalMeta();
   // Mirror airings copy their primary verbatim: hide the editing controls.
   $('#beLib').style.display = currentMirror ? 'none' : '';
   $('.block-editor').classList.toggle('mirror', currentMirror);
@@ -616,6 +626,16 @@ async function openBlock(id) {
   renderBlockControls();
   renderItems();
   $('#modal').classList.remove('hidden');
+}
+
+function renderModalMeta() {
+  const v = currentBlock;
+  const moved = v.startShift || v.endShift;
+  $('#modalMeta').textContent = (moved
+    ? `airs ${v.effectiveStart}–${v.effectiveEnd} (slot ${v.block.start_time}–${v.block.end_time})`
+    : `${v.block.start_time}–${v.block.end_time}`)
+    + ` · block ${fmt(v.blockSeconds)} · channel ${v.block.channel_id}`
+    + (currentMirror ? ' · 🔁 mirrored airing (read-only — edit the primary airing)' : '');
 }
 
 // Per-show summary chips, the max-per-show cap control, and a draggable show-
@@ -715,8 +735,8 @@ function renderBlockControls() {
 
 // Clock time (HH:MM) `offsetSecs` after a base 'HH:MM' block start.
 function clockAt(baseHHMM, offsetSecs) {
-  const [h, m] = String(baseHHMM || '00:00').split(':').map(Number);
-  const t = (((h * 3600 + m * 60 + offsetSecs) % 86400) + 86400) % 86400;
+  const [h, m, sec = 0] = String(baseHHMM || '00:00').split(':').map(Number);
+  const t = (((h * 3600 + m * 60 + sec + offsetSecs) % 86400) + 86400) % 86400;
   return `${String(Math.floor(t / 3600)).padStart(2, '0')}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
 }
 
@@ -725,7 +745,8 @@ function renderItems() {
   list.innerHTML = '';
   const totalSecs = currentItems.reduce((s, i) => s + i.duration, 0);
   $('#blockCount').textContent = `${currentItems.length} item(s) · ${fmt(totalSecs)}`;
-  const blockStart = currentBlock?.block?.start_time || '00:00';
+  // A shifted block airs from its shifted start.
+  const blockStart = currentBlock?.effectiveStart || currentBlock?.block?.start_time || '00:00';
   let acc = 0; // running seconds from block start, for air-times
   currentItems.forEach((it, idx) => {
     const airAt = clockAt(blockStart, acc);
@@ -925,7 +946,100 @@ function renderValidation() {
   force.title = overridden
     ? 'Stop forcing this block — it goes back to being refused until it passes'
     : 'Approve and push it anyway, and record why';
+  renderShift(diff, durationFits);
   return approvable;
+}
+
+// ---- Block shift -----------------------------------------------------------
+// When no clip closes the hole (or the programme simply runs long), the block's
+// start or end can be moved instead. The boundary is shared with the block next
+// to it — ending 3:12 later means the next block starts 3:12 later — which is
+// what really happens on air, since OTAV plays the day as one playlist.
+const fmtShift = (s) => `${s > 0 ? '+' : s < 0 ? '−' : ''}${fmt(Math.abs(s)).replace(/^0:/, '')}`;
+
+// "+3:12", "-0:45", "1:02:03", "90" → signed seconds; null when unreadable.
+function parseShift(text) {
+  const t = String(text).trim().replace('−', '-');
+  if (t === '') return 0;
+  const m = /^([+-]?)(\d+(?::\d{1,2}){0,2})$/.exec(t);
+  if (!m) return null;
+  const secs = m[2].split(':').map(Number).reduce((a, n) => a * 60 + n, 0);
+  return m[1] === '-' ? -secs : secs;
+}
+
+function renderShift(diff, durationFits) {
+  const box = $('#blockShift');
+  box.innerHTML = '';
+  const v = currentBlock;
+  if (!v || v.startShift === undefined) return;
+
+  const edge = (key) => {
+    const isStart = key === 'start';
+    const current = isStart ? v.startShift : v.endShift;
+    const wrap = el('span', { className: 'bs-edge' });
+    wrap.append(el('span', {
+      className: current ? 'bs-moved' : 'muted',
+      textContent: `${isStart ? 'Starts' : 'Ends'} ${isStart ? v.effectiveStart : v.effectiveEnd}`
+        + (current ? ` (${fmtShift(current)})` : ''),
+    }));
+    if (isStart && v.prevBlockId == null) {
+      wrap.title = 'Nothing airs right before this block, so its start stays on the slot time';
+      return wrap;
+    }
+    const input = el('input', {
+      type: 'text', value: current ? fmtShift(current) : '', placeholder: '+m:ss',
+      title: `Move the ${key} of the block: +3:12 later, -0:45 earlier (max ${fmt(v.maxShift)})`,
+    });
+    input.setAttribute('aria-label', `Move the ${key} of the block`);
+    const move = el('button', { className: 'mini ghost', type: 'button', textContent: 'Move' });
+    move.onclick = () => {
+      const secs = parseShift(input.value);
+      if (secs == null) return toast('Write it as +3:12, -0:45 or a number of seconds', 'bad', 'Move block');
+      applyShift(key, secs, move);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') move.click(); });
+    wrap.append(input, move);
+    // One click to land the block exactly on its content: an underrun pulls the
+    // edge in, an overrun pushes it out.
+    const fitTo = isStart ? current + diff : current - diff;
+    if (!durationFits && Math.abs(fitTo) <= v.maxShift) {
+      const match = el('button', {
+        className: 'mini ghost', type: 'button', textContent: `Match content (${fmtShift(fitTo) || '0'})`,
+        title: isStart ? 'Start the block where its content needs it to' : 'End the block where its content ends',
+      });
+      match.onclick = () => applyShift(key, fitTo, match);
+      wrap.append(match);
+    }
+    if (current) {
+      const reset = el('button', { className: 'mini ghost', type: 'button', textContent: 'Reset', title: 'Back to the slot time' });
+      reset.onclick = () => applyShift(key, 0, reset);
+      wrap.append(reset);
+    }
+    return wrap;
+  };
+  box.append(edge('start'), edge('end'));
+}
+
+async function applyShift(edge, seconds, btn) {
+  await withBusy(btn, async () => {
+    const id = currentBlock.block.id;
+    // The shift was worked out from what is on screen, so save that first.
+    if (!currentMirror) {
+      const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
+      await api.send('PUT', `/api/blocks/${id}/items`, { items });
+    }
+    const v = await api.send('PUT', `/api/blocks/${id}/shift`, { edge, seconds });
+    currentBlock = v;
+    currentItems = v.items.map((i) => ({ ...i }));
+    renderModalMeta();
+    renderItems();
+    const n = v.neighbour;
+    if (n) {
+      toast(`${n.template_name} now airs ${n.effectiveStart}–${n.effectiveEnd}`
+        + (n.fits ? '' : ` and ${n.problem} — open it to adjust`), n.fits ? 'ok' : 'bad', 'Block moved');
+    } else toast(`Block now airs ${v.effectiveStart}–${v.effectiveEnd}`, 'ok', 'Block moved');
+    loadSchedule();
+  }).catch(() => {});
 }
 
 // ---- Library pane ----------------------------------------------------------

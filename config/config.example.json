@@ -23,6 +23,9 @@
   "movies": {
     "maxPerBlock": 2
   },
+  "shift": {
+    "maxSeconds": 900
+  },
   "pathMap": {},
   "otav": {
     "pushTimeoutSeconds": 900

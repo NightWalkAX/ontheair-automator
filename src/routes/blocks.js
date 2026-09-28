@@ -4,7 +4,8 @@
 import { Router } from 'express';
 import { db, withTx } from '../db.js';
 import {
-  blockDurationSeconds, fillerRunLimit, fitTolerance, fitsTolerance, generateWeek, populateBlock,
+  blockDurationSeconds, channelDayBlocks, fillerRunLimit, fitTolerance, fitsTolerance, generateWeek,
+  linkShifts, maxShiftSeconds, populateBlock, shiftedWindow,
 } from '../services/scheduling.js';
 import { blockProblem, validateBlock } from '../services/blockValidation.js';
 import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
@@ -362,7 +363,7 @@ router.get('/', (req, res) => {
   const params = [dates[0], dates[6]];
   if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
   const rows = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, sb.override_reason,
+    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, sb.override_reason, sb.end_shift_seconds,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
            bt.name AS template_name, bt.weekday, bt.content_type,
            COALESCE(s.start_time, bt.start_time) AS start_time,
@@ -438,10 +439,13 @@ router.get('/', (req, res) => {
     GROUP BY si.block_id
   `).all(...params)) offType.set(t.block_id, t.n || 0);
 
+  // Shifted windows come from the neighbours, and every neighbour of a block is
+  // on the same channel-day — already in `rows`, whatever the channel filter.
+  linkShifts(rows);
   const tol = fitTolerance();
   const maxFillerRun = fillerRunLimit();
   const blocks = rows.map((r) => {
-    const blockSeconds = blockDurationSeconds(r.start_time, r.end_time);
+    const blockSeconds = r.blockSeconds;
     const totalSeconds = totals.get(r.id) || 0;
     const diff = blockSeconds - totalSeconds;   // >0 underrun, <0 overrun
     const fillerRun = fillerRuns.get(r.id) || 0;
@@ -479,7 +483,7 @@ router.get('/export', (req, res) => {
   const params = [dates[0], dates[6]];
   if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
   const blocks = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status,
+    SELECT sb.id, sb.target_date, sb.status, sb.end_shift_seconds,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
            bt.name AS template_name,
            COALESCE(s.start_time, bt.start_time) AS start_time,
@@ -493,6 +497,7 @@ router.get('/export', (req, res) => {
     WHERE ${clauses.join(' AND ')}
     ORDER BY c.name, sb.target_date, start_time, slot_order
   `).all(...params);
+  linkShifts(blocks); // a shifted block airs at its shifted time
 
   const itemsOf = db.prepare(`
     WITH ${EPISODE_NO_CTE}
@@ -545,7 +550,7 @@ router.get('/export', (req, res) => {
         const rows = itemsOf.all(b.id);
         const mains = [];
         let offset = 0; // seconds from block start, counting fillers too
-        const blockStart = (() => { const [h, m] = b.start_time.split(':').map(Number); return h * 3600 + m * 60; })();
+        const blockStart = (() => { const [h, m] = b.start_time.split(':').map(Number); return h * 3600 + m * 60; })() + b.start_shift;
         for (const it of rows) {
           if (!it.is_filler) {
             // Same naming as the review UI and the OTAV playlist: "Show · S01E02".
@@ -554,7 +559,11 @@ router.get('/export', (req, res) => {
           offset += it.duration;
         }
         const mirror = b.slot_order > 0 ? ' <span class="mirror">🔁 repeat airing</span>' : '';
-        body += `<div class="block"><h3>${esc(b.start_time)}–${esc(b.end_time)} · ${esc(b.template_name)} `
+        const shifted = b.start_shift || b.end_shift;
+        const span = shifted
+          ? `${esc(b.effective_start)}–${esc(b.effective_end)}`
+          : `${esc(b.start_time)}–${esc(b.end_time)}`;
+        body += `<div class="block"><h3>${span} · ${esc(b.template_name)} `
           + `<span class="status">${esc(b.status)}</span>${mirror}</h3>`;
         if (!mains.length) {
           body += `<p class="empty">No main programming (fillers only).</p></div>`;
@@ -691,7 +700,8 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
       error: 'this block is already pushed to OTAV — change the episode on a day that has not been exported',
     });
   }
-  const blockSecs = blockDurationSeconds(block.start_time, block.end_time);
+  const blockSecs = shiftedWindow(id, block.channel_id, block.target_date)?.blockSeconds
+    ?? blockDurationSeconds(block.start_time, block.end_time);
   let reopened = 0;
 
   try {
@@ -846,6 +856,67 @@ router.post('/:id/override', (req, res) => {
     carried++;
   }
   res.json({ ...validateBlock(id), siblings: carried });
+});
+
+// PUT /api/blocks/:id/shift { edge: 'start'|'end', seconds } — move where this
+// block starts or ends, for the overrun or underrun nothing else can fix.
+//
+// The end of a block is the start of the next one on that channel-day, so a
+// shift moves the BOUNDARY between the two: a block that runs 3:12 long ends
+// 3:12 later and its neighbour starts 3:12 later, with 3:12 less room. That is
+// what actually happens on air — OTAV plays the day as one continuous playlist —
+// so the playlist itself does not change; what changes is that both blocks are
+// now judged against the times they will really air at. `seconds` is the
+// boundary's absolute offset from the slot time (0 puts it back), negative =
+// earlier. `edge: 'start'` moves the boundary with the block before, and is
+// refused when nothing is adjacent before it: the day's first block starts when
+// the schedule event does. Both blocks are re-judged, and the neighbour's verdict
+// is returned so the operator sees what the shift cost it.
+router.put('/:id/shift', (req, res) => {
+  const id = Number(req.params.id);
+  const v = validateBlock(id);
+  if (!v) return res.status(404).json({ error: 'not found' });
+  const edge = req.body?.edge === 'start' ? 'start' : 'end';
+  const seconds = Number(req.body?.seconds);
+  if (!Number.isInteger(seconds)) return res.status(400).json({ error: 'seconds must be a whole number' });
+  const max = maxShiftSeconds();
+  if (Math.abs(seconds) > max) {
+    return res.status(400).json({ error: `a block can be moved at most ${max}s (config shift.maxSeconds)` });
+  }
+
+  const ownerId = edge === 'end' ? id : v.prevBlockId;
+  if (ownerId == null) {
+    return res.status(409).json({
+      error: 'nothing airs right before this block, so its start cannot move — move the end instead',
+    });
+  }
+
+  // Try the shift on the channel-day first: neither block the boundary sits
+  // between may be squeezed to nothing.
+  const day = channelDayBlocks(v.block.channel_id, v.block.target_date);
+  const owner = day.find((r) => r.id === ownerId);
+  owner.end_shift_seconds = seconds;
+  linkShifts(day);
+  const squeezed = day.filter((r) => (r.id === ownerId || r.id === owner.next_block_id) && r.blockSeconds < 60);
+  if (squeezed.length) {
+    return res.status(409).json({ error: 'that shift would leave a block with less than a minute of air' });
+  }
+
+  db.prepare('UPDATE ScheduledBlock SET end_shift_seconds = ? WHERE id = ?').run(seconds, ownerId);
+  const neighbourId = edge === 'end' ? owner.next_block_id : ownerId;
+  const nv = neighbourId != null ? validateBlock(neighbourId) : null;
+  res.json({
+    ...validateBlock(id),
+    neighbour: nv && {
+      id: nv.block.id,
+      template_name: nv.block.template_name,
+      effectiveStart: nv.effectiveStart,
+      effectiveEnd: nv.effectiveEnd,
+      fits: nv.fits,
+      approvable: nv.approvable,
+      problem: blockProblem(nv),
+    },
+  });
 });
 
 // POST /api/blocks/approve-week?week=YYYY-MM-DD — approve every fitting draft.
