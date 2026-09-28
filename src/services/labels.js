@@ -5,7 +5,12 @@
 // `chapter` is a channel-wide monotonic ordering key (renumbering a catalog
 // leaves values like 1674 or 1474 on episode 1 and 2 of a show), so it orders
 // correctly but must not reach an operator's eyes. The episode number shown is
-// instead the clip's 1-based position inside its (show, season).
+// the one the FILENAME states ("Octonauts_74_…" is E74, see statedEpisode()),
+// and only when the name doesn't state one plainly, the clip's 1-based position
+// inside its (show, season). Showing the position everywhere made a folder that
+// starts at episode 74 read as E01, E02… — nothing an operator could match to a file.
+
+import { statedEpisode } from './episodeParse.js';
 
 /**
  * SQL CTE exposing EpisodeNo(id, episode_no) for every non-filler clip.
@@ -38,10 +43,11 @@ const pad2 = (n) => String(n).padStart(2, '0');
  * on its own, because it numbers position within a subject and the flat "Movies"
  * folder holds a hundred-plus unrelated films that would come out as Part 1..138.
  */
-export function episodeCode({ season, episode_no, is_filler, show_type_code, chapter } = {}) {
+export function episodeCode({ season, episode_no, is_filler, show_type_code, chapter, name, subject } = {}) {
   if (!episode_no || is_filler) return '';
   if (show_type_code === 'movies') return Number(chapter) > 0 ? `Part ${episode_no}` : '';
-  return season != null ? `S${pad2(season)}E${pad2(episode_no)}` : `E${pad2(episode_no)}`;
+  const ep = (name != null ? statedEpisode(name, subject) : null) ?? episode_no;
+  return season != null ? `S${pad2(season)}E${pad2(ep)}` : `E${pad2(ep)}`;
 }
 
 /**

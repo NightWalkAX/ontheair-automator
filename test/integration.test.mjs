@@ -2456,7 +2456,9 @@ test('fix order: positions 1..N re-deal the chapters the season already holds', 
 
   const after = (await j('GET', `/api/resources?channel_id=${c1}&subject=${encodeURIComponent(show)}`)).data;
   assert.equal(after[0].id, before[1].id, 'the clip put at position 1 now plays first');
-  assert.equal(after[0].label, `${show} · S01E01`, 'and is renamed E01 accordingly');
+  // Fix order changes when a clip airs, not what it is: its label keeps the
+  // episode number its filename states.
+  assert.equal(after[0].label, before[1].label, 'and keeps the episode number its file states');
   assert.deepEqual(after.map((r) => r.chapter).sort((a, b) => a - b), chaptersBefore,
     'the chapter values are permuted, not renumbered — the rest of the channel is untouched');
 });

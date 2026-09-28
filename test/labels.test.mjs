@@ -41,6 +41,15 @@ test('TV and lesson naming is unchanged', () => {
   assert.equal(clipLabel(seasonless), 'Grade 4 Science · E07');
 });
 
+test('a label shows the episode number the filename states, not the position', () => {
+  // The 11th clip of the folder is still episode 74.
+  const ep = { show_type_code: 'tv_shows', subject: 'Octonauts', name: 'Octonauts_74_The_Water_Bears', episode_no: 11, chapter: 74 };
+  assert.equal(clipLabel(ep), 'Octonauts · E74');
+  // A name that states no episode falls back to the position.
+  const lesson = { show_type_code: 'lessons', subject: 'Grade 5 Science', name: 'Grade 5- Science- Force', episode_no: 3, chapter: 3 };
+  assert.equal(clipLabel(lesson), 'Grade 5 Science · E03');
+});
+
 test('fillers and unfiled clips keep their raw name', () => {
   assert.equal(clipLabel({ is_filler: 1, name: 'Infobits_02', subject: null }), 'Infobits_02');
   assert.equal(episodeCode({ is_filler: 1, episode_no: 3 }), '');

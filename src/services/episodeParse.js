@@ -19,6 +19,45 @@ export function parseEpisode(name) {
   // Callers pass the base name (extension already stripped); we don't strip here
   // because a dotted marker like "cosmos.s1e1" would look like an extension.
   const base = String(name || '');
+  const marked = parseMarked(base);
+  if (marked) return marked;
+  // Fallback: last standalone integer is the episode/order number.
+  const seasonOnly = base.match(/(?:season|temporada)\s*(\d{1,3})/i);
+  const nums = base.match(/\d{1,4}/g);
+  const episode = nums && nums.length ? Number(nums[nums.length - 1]) : 0;
+  return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode };
+}
+
+/**
+ * The episode number a filename STATES, or null when it doesn't say one plainly.
+ *
+ * This is the number an operator reads in the name, and so the one a label must
+ * show: "Octonauts_74_The_Water_Bears" is episode 74 even when it is only the
+ * 11th clip of the folder. Unlike parseEpisode() there is no guessing — only an
+ * explicit marker (S02E05, 3x01, Ep 4, Episode 4…) or the name's ONE free number
+ * counts. A number the show's own name carries is not free ("Grade 5- Science-
+ * Force" under "Grade 5 Science" states no episode at all), and neither is a
+ * part ("Pt. 2"), a year, or one of several numbers ("Human_03_D11"): those
+ * return null, and the caller falls back to the clip's position.
+ */
+export function statedEpisode(name, subject = '') {
+  const base = String(name || '');
+  const marked = parseMarked(base);
+  if (marked) return marked.episode > 0 ? marked.episode : null;
+  const own = new Set((String(subject || '').match(/\d+/g) || []).map(Number));
+  const free = [...base.matchAll(/\d+/g)].filter((m) => !own.has(Number(m[0])));
+  if (free.length !== 1) return null;
+  const [hit] = free;
+  const n = Number(hit[0]);
+  if (!n || hit[0].length > 4 || (n >= 1900 && n <= 2099)) return null;
+  // "Productivity Pt. 2", "Multiple Choice P3", "Part_1": the Nth part of one
+  // lesson, not the Nth episode of the show.
+  if (/(?:part|pt|p)[\s._#-]*$/i.test(base.slice(0, hit.index))) return null;
+  return n;
+}
+
+/** The explicit-marker rules of parseEpisode(): { season, episode } or null. */
+function parseMarked(base) {
   let m;
   // SxxEyy — the dominant TV convention. Allow separators between S## and E##.
   if ((m = base.match(/[Ss](\d{1,3})[\s._-]*[Ee](\d{1,4})/))) {
@@ -47,10 +86,7 @@ export function parseEpisode(name) {
   if ((m = base.match(/(?:episode|episodio|cap[ií]?tulo|(?<![A-Za-z])ep)\.?\s*(\d{1,4})/i))) {
     return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode: Number(m[1]) };
   }
-  // Fallback: last standalone integer is the episode/order number.
-  const nums = base.match(/\d{1,4}/g);
-  const episode = nums && nums.length ? Number(nums[nums.length - 1]) : 0;
-  return { season: seasonOnly ? Number(seasonOnly[1]) : null, episode };
+  return null;
 }
 
 /**
