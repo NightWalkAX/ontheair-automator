@@ -41,34 +41,39 @@ router.post('/push', async (req, res) => {
     return res.status(409).json({ ok: false, error: 'a push is already running — watch or cancel that one first' });
   }
 
-  // Nothing that no longer validates reaches air. The range is re-checked HERE,
-  // before the job starts and before OTAV is touched, so the operator gets one
-  // list of what to fix instead of a half-pushed week.
-  const range = DATE.test(week)
-    ? [week, (() => { const e = new Date(`${week}T00:00:00Z`); e.setUTCDate(e.getUTCDate() + 6); return e.toISOString().slice(0, 10); })()]
-    : DATE.test(from) && DATE.test(to) ? [from, to]
-    : DATE.test(date) ? [date, date]
-    : null;
-  if (range) {
-    const unfit = unfitBlocksInRange(range[0], range[1], channelIds);
-    if (unfit.length) {
-      return res.status(409).json({
-        ok: false,
-        error: `${unfit.length} block(s) in this range cannot go to air — fix them first`,
-        blocks: unfit,
-      });
-    }
-  }
-
-  const deadlineMs = Math.max(60, Number(loadConfig().otav?.pushTimeoutSeconds) || 900) * 1000;
-  const job = JOB_ID.test(jobId) ? startJob(jobId, { deadlineMs, label: week || date || `${from}..${to}` }) : null;
-  const progress = job || undefined;
-  const opts = { ...(progress ? { progress } : {}), ...(channelIds.length ? { channelIds } : {}) };
-  const send = (payload) => {
-    if (job) finishJob(job.id, { ok: payload.ok !== false, summary: payload, error: payload.error || null });
-    return payload;
-  };
+  // Everything from here on can throw (an unreadable config.json, a locked
+  // database). Express 4 does not catch a rejected async handler, so a throw
+  // outside this try left the request with no answer at all — the browser's
+  // push dialog (and the test suite) waited on it forever.
+  let job = null;
   try {
+    // Nothing that no longer validates reaches air. The range is re-checked HERE,
+    // before the job starts and before OTAV is touched, so the operator gets one
+    // list of what to fix instead of a half-pushed week.
+    const range = DATE.test(week)
+      ? [week, (() => { const e = new Date(`${week}T00:00:00Z`); e.setUTCDate(e.getUTCDate() + 6); return e.toISOString().slice(0, 10); })()]
+      : DATE.test(from) && DATE.test(to) ? [from, to]
+      : DATE.test(date) ? [date, date]
+      : null;
+    if (range) {
+      const unfit = unfitBlocksInRange(range[0], range[1], channelIds);
+      if (unfit.length) {
+        return res.status(409).json({
+          ok: false,
+          error: `${unfit.length} block(s) in this range cannot go to air — fix them first`,
+          blocks: unfit,
+        });
+      }
+    }
+
+    const deadlineMs = Math.max(60, Number(loadConfig().otav?.pushTimeoutSeconds) || 900) * 1000;
+    job = JOB_ID.test(jobId) ? startJob(jobId, { deadlineMs, label: week || date || `${from}..${to}` }) : null;
+    const progress = job || undefined;
+    const opts = { ...(progress ? { progress } : {}), ...(channelIds.length ? { channelIds } : {}) };
+    const send = (payload) => {
+      if (job) finishJob(job.id, { ok: payload.ok !== false, summary: payload, error: payload.error || null });
+      return payload;
+    };
     if (DATE.test(week)) {
       const end = new Date(`${week}T00:00:00Z`);
       end.setUTCDate(end.getUTCDate() + 6);

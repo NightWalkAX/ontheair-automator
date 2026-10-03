@@ -13,7 +13,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,11 @@ process.env.FFPROBE_PATH = join(__dirname, 'fake-ffprobe');
 // data/scheduler.sqlite. Must be set before importing src/db.js (which opens it).
 process.env.SCHEDULER_DB = process.env.SCHEDULER_DB
   || join(mkdtempSync(join(tmpdir(), 'otav-db-')), 'test.sqlite');
+// Same for settings: a throwaway copy of the template, so the run neither
+// depends on this checkout having a config/config.json (it is gitignored —
+// a fresh clone has none) nor writes into the operator's own.
+process.env.SCHEDULER_CONFIG = join(mkdtempSync(join(tmpdir(), 'otav-cfg-')), 'config.json');
+copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), process.env.SCHEDULER_CONFIG);
 
 const { db, initSchema } = await import('../src/db.js');
 const { router: channels } = await import('../src/routes/channels.js');

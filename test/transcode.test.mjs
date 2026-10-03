@@ -29,7 +29,7 @@ process.env.TRANSCODE_ARCHIVE_DIR = join(scratch, 'originals');
 // updateConfig() WRITES this file (the exported-day switch persists there), so
 // the run works on a throwaway copy and never touches the operator's own.
 const testConfig = join(scratch, 'config.json');
-copyFileSync(join(__dirname, '..', 'config', 'config.json'), testConfig);
+copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), testConfig);
 process.env.SCHEDULER_CONFIG = testConfig;
 
 const { db, initSchema } = await import('../src/db.js');

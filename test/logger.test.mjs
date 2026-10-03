@@ -9,7 +9,7 @@
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,9 +18,13 @@ process.env.SCHEDULER_LOG_DIR = scratch;
 process.env.SCHEDULER_LOG_MAX_BYTES = '2048';   // rotate almost immediately
 process.env.SCHEDULER_LOG_KEEP = '3';
 
-const { log, logPath, tailLog, progressLogger } = await import('../src/logger.js');
+const { log, tailLog, progressLogger } = await import('../src/logger.js');
 
-const readLog = () => readFileSync(logPath(), 'utf8');
+// Read through tailLog(), not the live file alone: the log rotates every 2KB
+// here, and whether a given line landed in the live file or the one just
+// rotated out depends on how long the lines before it were (temp dir names,
+// RSS digits) — reading only the live file made these assertions flaky.
+const readLog = () => tailLog(10_000);
 
 before(() => {
   // Nothing installs the handlers here: initLogging() replaces console and
