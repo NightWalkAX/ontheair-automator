@@ -53,6 +53,7 @@ import { loadConfig, updateConfig } from '../config.js';
 import { log } from '../logger.js';
 import { sendMail, emailProblem, emailConfig } from './mailer.js';
 import { OtavClient } from './otavClient.js';
+import { alertRecipients, rosterConfig } from './shiftRoster.js';
 
 const L = log('monitor');
 
@@ -131,6 +132,9 @@ export function monitorConfig(raw = loadConfig().monitor) {
       cooldownMinutes: clampNum((m.resync || {}).cooldownMinutes, 1, 1440, 15),
       emailWhenFixed: (m.resync || {}).emailWhenFixed === true,
     },
+    // Who gets the alerts: whoever is on shift (shiftRoster.js), and their
+    // "starts in N minutes" / "shift ended" e-mails.
+    roster: rosterConfig(m.roster),
     repeatMinutes: clampNum(m.repeatMinutes, 0, 1440, 30),
     batchSeconds: clampNum(m.batchSeconds, 0, 300, 15),
     sources,
@@ -594,7 +598,7 @@ export function describeEvent(ev) {
     + (ev.note ? ` (${ev.note})` : '');
 }
 
-export function composeMail(events) {
+export function composeMail(events, routingNote = null) {
   const bad = events.filter((e) => e.type !== 'close');
   const tag = bad.length ? 'ALERT' : 'RECOVERED';
   const subject = events.length === 1
@@ -609,13 +613,15 @@ export function composeMail(events) {
       r.onAir ? `  On air: ${r.onAir}` : null, `  Feed: ${r.url}`]
       .filter(Boolean).join('\n')),
     '',
+    routingNote,
     `Sent by the OTAV automator signal monitor at ${localTime(new Date().toISOString())}.`,
-  ].join('\n');
+  ].filter((l) => l !== null).join('\n');
   const color = { open: '#dc2626', remind: '#d97706', close: '#16a34a' };
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px">
 ${rows.map((r) => `<p style="margin:0 0 12px;padding:8px 12px;border-left:4px solid ${color[r.type]}">
 <strong>${escapeHtml(r.line)}</strong>${r.resync ? `<br>${escapeHtml(r.resync)}` : ''}${r.onAir ? `<br>On air: ${escapeHtml(r.onAir)}` : ''}
 <br><span style="color:#666;font-size:12px">${escapeHtml(r.url)}</span></p>`).join('\n')}
+${routingNote ? `<p style="color:#666;font-size:12px">${escapeHtml(routingNote)}</p>` : ''}
 <p style="color:#888;font-size:12px">Sent by the OTAV automator signal monitor.</p></div>`;
   return { subject, text, html };
 }
@@ -623,7 +629,7 @@ ${rows.map((r) => `<p style="margin:0 0 12px;padding:8px 12px;border-left:4px so
 let outbox = [];
 let outboxTimer = null;
 
-function enqueueMail(ev) {
+export function enqueueMail(ev) {
   outbox.push(ev);
   if (outboxTimer) return;
   const wait = monitorConfig().batchSeconds * 1000;
@@ -641,15 +647,19 @@ export async function flushMail() {
   outbox = [];
   if (!events.length) return null;
   const ids = events.map((e) => e.incident.eventId);
-  const problem = emailProblem();
+  // Only whoever is on shift — or the whole list when the roster can't say.
+  const route = alertRecipients();
+  const recipients = route.to || emailConfig().recipients;
+  const problem = emailProblem({ ...emailConfig(), recipients });
   if (problem) {
     L.warn(`${events.length} alert(s) not e-mailed: ${problem}`);
     recordMail(ids, problem);
     return { sent: false, error: problem };
   }
   try {
-    await sendMail(composeMail(events));
-    L.info(`e-mailed ${events.length} alert(s) to ${emailConfig().recipients.length} recipient(s)`);
+    await sendMail({ ...composeMail(events, route.note), to: recipients });
+    L.info(`e-mailed ${events.length} alert(s) to ${recipients.length} recipient(s)`
+      + (route.to ? ' on shift' : route.note ? ' (whole list — roster has nobody for now)' : ''));
     recordMail(ids, null);
     return { sent: true };
   } catch (err) {
@@ -886,13 +896,39 @@ export function monitorStatus() {
     frame: { width: FRAME_W, height: FRAME_H },
     sources: cfg.sources.map((s) => (live?.get(s.id)?.snapshot()
       || { ...s, state: s.enabled ? (cfg.enabled ? 'starting' : 'off') : 'disabled' })),
-    email: { problem: emailProblem(), recipients: emailConfig().recipients.length },
+    email: (() => {
+      const route = alertRecipients();
+      const recipients = route.to || emailConfig().recipients;
+      return {
+        problem: emailProblem({ ...emailConfig(), recipients }),
+        recipients: recipients.length,
+        onShift: !!route.to,
+        note: route.note,
+      };
+    })(),
   };
+}
+
+/**
+ * What the person coming on shift should know straight away: the feeds in
+ * trouble right now, and whether the monitor is watching at all.
+ */
+export function handoverLines() {
+  if (!monitorConfig().enabled) return ['', 'Note: the signal monitor is OFF right now, so no alerts will be sent.'];
+  const lines = [];
+  for (const w of running?.watches?.values() || []) {
+    for (const inc of [w.incident, w.audioIncident]) {
+      if (inc) lines.push(`• ${w.source.name}: ${KIND_LABEL[inc.kind] || inc.kind} since ${localTime(inc.startedAt)}`);
+    }
+  }
+  return lines.length ? ['', 'Open right now:', ...lines] : ['', 'All feeds are fine right now.'];
 }
 
 /** Persist a new monitor section (already validated) and apply it. */
 export function saveMonitorConfig(next) {
   updateConfig((c) => { c.monitor = { ...(c.monitor || {}), ...next }; });
-  restartMonitor();
+  // The roster settings are read per alert; changing them must not reconnect
+  // every feed (which also closes any open incident as "monitor restarted").
+  if (Object.keys(next).some((k) => k !== 'roster')) restartMonitor();
   return monitorConfig();
 }

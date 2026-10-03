@@ -325,6 +325,22 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
 - ffmpeg children are killed on process exit; after a hard crash each dies at its next write
   into the broken pipe (seen: 10–20s). A reader that stops delivering for
   `down.stallRestartSeconds` is killed and restarted with backoff.
+- **Alerts go to whoever is ON SHIFT** (`src/services/shiftRoster.js`, the "Shift roster" panel).
+  The operators' shift spreadsheet (.xlsx/.xlsm, one sheet per month: `Date | … | 9 AM-5 PM |
+  5 PM-1 AM Remote | 1 AM-9 AM Remote | Off`) is uploaded as-is (`POST /api/monitor/roster/import`,
+  raw body; the zip is read with `node:zlib`, no package). Every column headed with a time range
+  is a shift. **A sheet day runs 09:00 → 09:00** (confirmed with the operator on 2026-10-03): a shift
+  that starts earlier on the clock than the first column, like "1 AM-9 AM", is the night AFTER
+  the row's date. People become CODES (A, B, C…, `ShiftPerson`), and the operator gives each code
+  a name and an e-mail. A re-import finds the code again by the name as written in the sheet, so
+  the e-mails carry over, and a shift whose person didn't change keeps its notice record.
+  `flushMail()` asks `alertRecipients()`. When nobody is on the roster for that moment, or the
+  person on shift has no e-mail, the alert goes to the whole `email.recipients` list (now the
+  backup list) and says why: an alert is never dropped because a sheet ran out. Each person gets
+  an e-mail `monitor.roster.leadMinutes` (30) before their shift and one when it ends
+  (`checkShiftNotices()`, every 30s, recorded on `Shift` so a restart never re-sends). A person's
+  back-to-back shifts count as one stretch, and an "ended" notice more than 30 min late is
+  recorded but not sent. Times are this Mac's local clock.
 - `email.appPassword` must be a Google **App Password**; `GET /api/monitor/config` never returns
   it (`hasPassword`), and a PUT with it blank keeps the stored one. Tests swap the transport
   with `setTransportForTests()` and use `test/fake-ffmpeg-frames` — nothing leaves the machine.

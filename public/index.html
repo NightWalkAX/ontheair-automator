@@ -308,7 +308,7 @@
   <section id="tab-monitor" class="tab">
     <div class="section-head">
       <h2>Signal Monitor <span class="muted" style="font-size:13px;font-weight:500">· watch the public feeds, e-mail when one goes black</span></h2>
-      <p>Each feed is read in the background, with nobody watching: ffmpeg takes one small frame per second from the lowest-quality version of the stream, and the app checks how much of the picture is lit. For a feed linked to an OTAV channel, the app first tries a <strong>resync</strong> of that channel and only alerts if the picture doesn't come back. The sound is followed the same way, on its own. When a feed stays <strong>black</strong> or <strong>silent</strong> longer than the limit, or stops sending anything (<strong>no signal</strong>), everybody on the list gets an e-mail, and gets another when it comes back. Alerts that happen within a few seconds of each other go out as one message. If a feed is linked to a channel, the e-mail also says which clip OTAV had on air.</p>
+      <p>Each feed is read in the background, with nobody watching: ffmpeg takes one small frame per second from the lowest-quality version of the stream, and the app checks how much of the picture is lit. For a feed linked to an OTAV channel, the app first tries a <strong>resync</strong> of that channel and only alerts if the picture doesn't come back. The sound is followed the same way, on its own. When a feed stays <strong>black</strong> or <strong>silent</strong> longer than the limit, or stops sending anything (<strong>no signal</strong>), <strong>whoever is on shift</strong> gets an e-mail, and another when it comes back. If the shift roster has nobody for that time, the e-mail goes to the whole list instead. Alerts that happen within a few seconds of each other go out as one message. If a feed is linked to a channel, the e-mail also says which clip OTAV had on air.</p>
     </div>
 
     <div class="mon-bar">
@@ -324,7 +324,7 @@
       <div class="panel">
         <h3>✉️ Who gets the alerts</h3>
         <form id="monEmailForm" class="stack" style="margin-top:0">
-          <label class="field"><span>Recipients: one address per line</span>
+          <label class="field"><span>Backup list, one address per line: used when the shift roster has nobody for that time</span>
             <textarea name="recipients" rows="4" placeholder="ops@example.gy&#10;engineer@example.gy"></textarea>
           </label>
           <label class="field"><span>Send from (Gmail account)</span>
@@ -362,6 +362,31 @@
           <div class="spec-grid-wide"><button type="submit">Save rules</button></div>
         </form>
       </div>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <h3>👥 Shift roster <span class="spacer"></span>
+        <button type="button" class="mini ghost" id="rosterImportBtn">Import shift sheet (.xlsx / .xlsm)…</button>
+        <input type="file" id="rosterFile" accept=".xlsx,.xlsm" hidden />
+      </h3>
+      <p class="muted mon-hint" id="rosterSummary"></p>
+      <div id="rosterNow" class="roster-now"></div>
+      <div class="split" style="margin-top:12px">
+        <div>
+          <div class="form-title">Who each code is</div>
+          <table id="rosterPeople"><thead><tr><th>Code</th><th>In the sheet</th><th>Name</th><th>E-mail</th></tr></thead><tbody></tbody></table>
+          <div class="row-actions" style="margin-top:10px"><button type="button" id="rosterSavePeople">Save names &amp; e-mails</button></div>
+        </div>
+        <div>
+          <div class="form-title">Next shifts</div>
+          <table id="rosterUpcoming"><thead><tr><th>When</th><th>Shift</th><th>Who</th><th>Notices</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <form id="rosterRules" class="stack" style="margin-top:12px">
+        <label class="chk"><input type="checkbox" name="routeAlerts" /> send alerts <strong>only to whoever is on shift</strong> (the backup list when nobody is)</label>
+        <label class="chk"><input type="checkbox" name="notify" /> <span>e-mail each person <input name="leadMinutes" type="number" min="1" max="240" class="mon-inline" /> min before their shift starts, and when it ends</span></label>
+        <div class="row-actions"><button type="submit" class="ghost">Save roster settings</button></div>
+      </form>
     </div>
 
     <div class="panel" style="margin-top:22px">

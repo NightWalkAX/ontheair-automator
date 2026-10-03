@@ -921,3 +921,8 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 #tab-monitor .field > input, #tab-monitor .field > textarea { width: 100%; }
 .mon-audio { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .tx-badge.st-silent { background: var(--bad); color: #fff; border-color: transparent; }
+
+/* Signal monitor: shift roster */
+.roster-now { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+#rosterPeople input { width: 100%; min-width: 0; }
+#rosterUpcoming tr.roster-current td { font-weight: 600; }

@@ -2,12 +2,15 @@
 // feed, the incident history, and the settings — feeds, thresholds, and the
 // Gmail account + recipient list the alerts go to.
 
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { updateConfig } from '../config.js';
 import {
   monitorStatus, monitorConfig, saveMonitorConfig, recentEvents, slug,
 } from '../services/signalMonitor.js';
 import { emailConfig, isEmail, sendMail } from '../services/mailer.js';
+import {
+  importRoster, listPeople, savePeople, onShiftAt, upcomingShifts, rosterRange, personLabel,
+} from '../services/shiftRoster.js';
 
 export const router = Router();
 
@@ -70,7 +73,7 @@ router.put('/config', (req, res) => {
     }
     // Partial groups merge onto what is stored: sending { black: { maxLuma } }
     // must not reset the rest of the black settings to their defaults.
-    for (const k of ['black', 'freeze', 'down', 'resync', 'silence']) {
+    for (const k of ['black', 'freeze', 'down', 'resync', 'silence', 'roster']) {
       if (b[k] && typeof b[k] === 'object') next[k] = { ...current[k], ...b[k] };
     }
     if ('sources' in b) next.sources = cleanSources(b.sources);
@@ -128,6 +131,50 @@ router.post('/test-email', async (req, res) => {
         + 'If you can read it, alerts will reach you.</p>',
     });
     res.json({ ok: true, recipients: n });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// --- On-shift roster ----------------------------------------------------------
+
+const shiftView = (r) => ({
+  id: r.id, day: r.day, label: r.label, code: r.code, who: personLabel(r), location: r.location,
+  startsAt: r.starts_at, endsAt: r.ends_at, hasEmail: !!r.email,
+  startNoticeAt: r.start_notice_at, endNoticeAt: r.end_notice_at, noticeError: r.notice_error,
+});
+
+// GET /api/monitor/roster — the codes with their names/e-mails, who is on shift
+// now, the next shifts, and the dates the imported sheet covers.
+router.get('/roster', (req, res) => {
+  const limit = Math.min(60, Math.max(1, Number(req.query.limit) || 12));
+  res.json({
+    ok: true,
+    people: listPeople(),
+    range: rosterRange(),
+    onShift: onShiftAt().map(shiftView),
+    upcoming: upcomingShifts(Date.now(), limit).map(shiftView),
+  });
+});
+
+// POST /api/monitor/roster/import — the shift spreadsheet (.xlsx / .xlsm) as the
+// raw request body. Replaces the shifts for the dates it covers; codes and
+// their e-mails carry over.
+router.post('/roster/import', express.raw({ type: () => true, limit: '20mb' }), (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) {
+    return res.status(400).json({ ok: false, error: 'no file received' });
+  }
+  try {
+    res.json({ ok: true, ...importRoster(req.body), people: listPeople() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: `could not read the roster: ${err.message}` });
+  }
+});
+
+// PUT /api/monitor/roster/people — [{ code, name, email }].
+router.put('/roster/people', (req, res) => {
+  try {
+    res.json({ ok: true, people: savePeople(req.body?.people) });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
   }

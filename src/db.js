@@ -239,6 +239,36 @@ export function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_signalevent_source ON SignalEvent(source_id, id);
 
+    -- On-shift roster (src/services/shiftRoster.js): who the signal alerts go
+    -- to, imported from the shift spreadsheet. A person is a CODE (A, B, C…);
+    -- the operator gives each code a name and an e-mail, so the schedule itself
+    -- never has to change when somebody does. sheet_name is how the code is
+    -- found again on the next import.
+    CREATE TABLE IF NOT EXISTS ShiftPerson (
+      code       TEXT PRIMARY KEY,
+      sheet_name TEXT NOT NULL UNIQUE,
+      name       TEXT,
+      email      TEXT
+    );
+    -- One row per shift. starts_at/ends_at are UTC ISO instants, computed from
+    -- the sheet's local wall-clock times when imported, so string comparison
+    -- is time comparison. The notice columns record the "starts in 30 min" and
+    -- "your shift ended" e-mails, so a restart never sends one twice.
+    CREATE TABLE IF NOT EXISTS Shift (
+      id              INTEGER PRIMARY KEY,
+      day             TEXT NOT NULL,             -- the sheet row's date (YYYY-MM-DD)
+      label           TEXT NOT NULL,             -- the column, e.g. "5 PM-1 AM"
+      code            TEXT NOT NULL REFERENCES ShiftPerson(code),
+      location        TEXT,                      -- "Remote" / "Office", as written
+      starts_at       TEXT NOT NULL,
+      ends_at         TEXT NOT NULL,
+      start_notice_at TEXT,
+      end_notice_at   TEXT,
+      notice_error    TEXT,
+      UNIQUE (day, label)
+    );
+    CREATE INDEX IF NOT EXISTS idx_shift_time ON Shift(starts_at, ends_at);
+
     CREATE TABLE IF NOT EXISTS ResourceOverride (
       resource_id      INTEGER PRIMARY KEY REFERENCES Resource(id) ON DELETE CASCADE,
       display_name     TEXT,        -- on-screen name; Resource.name stays untouched

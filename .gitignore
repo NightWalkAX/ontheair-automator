@@ -31,3 +31,6 @@ media/
 # One installation's record of which data repairs have run (see src/migrations).
 data/.migrations.lock
 data/.migrations.lock.tmp
+
+# Rotated app logs (automator.log.1 … .5 escape *.log)
+data/logs/

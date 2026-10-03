@@ -3901,7 +3901,10 @@ function renderMonStatus(st) {
       : `Watching ${watching} feed(s)${st.startedAt ? ` since ${monTime(st.startedAt)}` : ''}.`;
   const mail = $('#monEmailState');
   mail.className = `tx-badge ${st.email.problem ? 'st-dimming' : 'st-ok'}`;
-  mail.textContent = st.email.problem ? `✉ e-mail off: ${st.email.problem}` : `✉ alerts go to ${st.email.recipients} address(es)`;
+  mail.textContent = st.email.problem ? `✉ e-mail off: ${st.email.problem}`
+    : st.email.onShift ? `✉ alerts go to whoever is on shift (${st.email.recipients})`
+      : `✉ alerts go to ${st.email.recipients} address(es)`;
+  mail.title = st.email.note || '';
 
   const grid = $('#monGrid');
   grid.innerHTML = '';
@@ -4021,8 +4024,111 @@ async function loadMonitorTab() {
   rf.resyncWait.value = monitor.resync.waitSeconds;
   rf.resyncCooldown.value = monitor.resync.cooldownMinutes;
   rf.resyncEmailFixed.checked = monitor.resync.emailWhenFixed;
-  await refreshMonitor();
+  const ro = $('#rosterRules');
+  ro.routeAlerts.checked = monitor.roster.routeAlerts;
+  ro.notify.checked = monitor.roster.notify;
+  ro.leadMinutes.value = monitor.roster.leadMinutes;
+  await Promise.all([refreshMonitor(), loadRoster()]);
 }
+
+// ---- Shift roster ------------------------------------------------------------
+// The shift spreadsheet, imported as codes (A, B, C…). The operator gives each
+// code a name and an e-mail; alerts go to whoever is on shift.
+
+const rosterWhen = (iso) => new Date(iso).toLocaleString('en-GB', {
+  weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+});
+const rosterClock = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+async function loadRoster() {
+  const r = await api.get('/api/monitor/roster');
+  const range = r.range || {};
+  $('#rosterSummary').textContent = range.shifts
+    ? `${range.shifts} shifts loaded, ${range.from} → ${range.to}. Times are this Mac's clock. Import the sheet again whenever it changes: names and e-mails stay with their code.`
+    : 'No roster loaded: every alert goes to the whole list. Import the shift spreadsheet to send alerts only to whoever is on shift.';
+
+  const now = $('#rosterNow');
+  now.innerHTML = '';
+  if (range.shifts) {
+    now.append(el('strong', { textContent: 'On shift now:' }));
+    if (!r.onShift.length) now.append(el('span', { className: 'tx-badge st-dimming', textContent: 'nobody (alerts go to the whole list)' }));
+    for (const s of r.onShift) {
+      now.append(el('span', {
+        className: `tx-badge ${s.hasEmail ? 'st-ok' : 'st-dimming'}`,
+        textContent: `${s.who} · ${s.label} until ${rosterClock(s.endsAt)}${s.hasEmail ? '' : ' (no e-mail!)'}`,
+      }));
+    }
+  }
+
+  const pb = $('#rosterPeople tbody');
+  pb.innerHTML = '';
+  if (!r.people.length) pb.append(el('tr', {}, el('td', { colSpan: 4, className: 'muted', textContent: 'Import the shift sheet first.' })));
+  for (const p of r.people) {
+    const name = el('input', { value: p.name || '', placeholder: p.sheetName });
+    const email = el('input', { type: 'email', value: p.email || '', placeholder: 'name@example.gy' });
+    const tr = el('tr', {}, el('td', {}, el('strong', { textContent: p.code })), el('td', { className: 'muted', textContent: p.sheetName }),
+      el('td', {}, name), el('td', {}, email));
+    tr.dataset.code = p.code;
+    pb.append(tr);
+  }
+
+  const ub = $('#rosterUpcoming tbody');
+  ub.innerHTML = '';
+  if (!r.upcoming.length) ub.append(el('tr', {}, el('td', { colSpan: 4, className: 'muted', textContent: range.shifts ? 'No more shifts in the sheet — import the next one.' : '' })));
+  const t = Date.now();
+  for (const s of r.upcoming) {
+    const current = Date.parse(s.startsAt) <= t;
+    const notes = [s.startNoticeAt ? `start ✓ ${rosterClock(s.startNoticeAt)}` : '', s.endNoticeAt ? `end ✓ ${rosterClock(s.endNoticeAt)}` : '']
+      .filter(Boolean).join(' · ');
+    const tr = el('tr', { className: current ? 'roster-current' : '' },
+      el('td', { textContent: `${rosterWhen(s.startsAt)} → ${rosterClock(s.endsAt)}` }),
+      el('td', { textContent: s.label + (s.location ? ` (${s.location})` : '') }),
+      el('td', { textContent: s.who + (s.hasEmail ? '' : ' · no e-mail') }),
+      el('td', { className: s.noticeError ? 'tx-err' : 'muted', textContent: s.noticeError || notes }));
+    ub.append(tr);
+  }
+}
+
+$('#rosterImportBtn').addEventListener('click', () => $('#rosterFile').click());
+$('#rosterFile').addEventListener('change', async (e) => {
+  const file = e.currentTarget.files[0];
+  e.currentTarget.value = '';
+  if (!file) return;
+  try {
+    const r = await fetch('/api/monitor/roster/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: await file.arrayBuffer(),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.status);
+    const added = data.added.length ? ` New codes: ${data.added.map((p) => `${p.code} = ${p.sheetName}`).join(', ')}.` : '';
+    toast(`${data.shifts} shifts, ${data.from} → ${data.to}.${added}`, 'ok', 'Roster imported');
+    await loadRoster();
+  } catch (err) {
+    toast(err.message, 'bad', 'Import failed');
+  }
+});
+
+$('#rosterSavePeople').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const people = $$('#rosterPeople tbody tr[data-code]').map((tr) => {
+    const [name, email] = $$('input', tr);
+    return { code: tr.dataset.code, name: name.value, email: email.value };
+  });
+  await api.send('PUT', '/api/monitor/roster/people', { people });
+  toast('Names and e-mails saved', 'ok');
+  await Promise.all([loadRoster(), refreshMonitor()]);
+}).catch(() => {}));
+
+$('#rosterRules').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.currentTarget;
+  return withBusy(f.querySelector('button[type="submit"]'), async () => {
+    await api.send('PUT', '/api/monitor/config', {
+      roster: { routeAlerts: f.routeAlerts.checked, notify: f.notify.checked, leadMinutes: Number(f.leadMinutes.value) },
+    });
+    toast('Roster settings saved', 'ok');
+    await loadMonitorTab();
+  }).catch(() => {});
+});
 
 // Poll fast while the tab is open, slowly otherwise — the red dot on the tab
 // button is how an alert is noticed from another tab of the UI.
