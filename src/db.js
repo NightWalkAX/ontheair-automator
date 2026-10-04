@@ -385,6 +385,10 @@ export function initSchema() {
   // between them: the block that could not be made to fit gets the room it
   // needs, and its neighbour gives it up (see linkShifts() in scheduling.js).
   addColumnIfMissing('ScheduledBlock', 'end_shift_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  // 1 when end_shift_seconds was set by balanceDay() (the automatic ±60s
+  // correction) rather than by the operator. Auto shifts are recomputed from
+  // scratch on every rebalance; an operator's shift is never touched.
+  addColumnIfMissing('ScheduledBlock', 'end_shift_auto', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs

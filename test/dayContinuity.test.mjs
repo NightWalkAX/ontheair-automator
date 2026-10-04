@@ -97,10 +97,10 @@ test('pushing TODAY needs explicit confirmation; a week push holds today back', 
 
   // A past or future single day is not on air: no confirmation needed. (The
   // push itself fails against port 1 — what matters is that it was attempted.)
-  const other = await j('POST', `/api/otav/push?date=${addDays(today, 1)}&channels=${ch}`);
+  const other = await j('POST', `/api/otav/push?date=${addDays(today, 1)}&channels=${ch}&allowGaps=1`);
   assert.notEqual(other.status, 409);
 
-  const week = await j('POST', `/api/otav/push?week=${addDays(today, -1)}&channels=${ch}`);
+  const week = await j('POST', `/api/otav/push?week=${addDays(today, -1)}&channels=${ch}&allowGaps=1`);
   assert.equal(week.status, 200);
   assert.deepEqual(week.data.held, [today], 'today is reported as held, not pushed');
   assert.ok(!week.data.days.some((d) => d.targetDate === today));
@@ -141,4 +141,162 @@ test('the generator never picks a clip Air Spec found missing', () => {
 
   const pool = moviePool({ id: 0 }, { id: 0, target_date: '2031-03-17' }, 7200, ch, null);
   assert.deepEqual(pool.map((r) => r.name), ['Kept']);
+});
+
+// --- Day continuity: gaps, auto-shift, week check ----------------------------
+
+const { linkShifts, channelDayBlocks, balanceDay } = await import('../src/services/scheduling.js');
+const { checkRange } = await import('../src/services/dayCoverage.js');
+
+const clipOf = (ch, name, secs) => db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+  VALUES (?, ?, ?, 0, 1, ?) RETURNING id`).get(name, join(media, `${name}.mov`), secs, ch).id;
+function fill(blockId, ch, ...secs) {
+  const ins = db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order) VALUES (?, ?, ?)');
+  secs.forEach((s, i) => {
+    const name = `c${blockId}_${i}`;
+    writeFileSync(join(media, `${name}.mov`), 'x');
+    ins.run(blockId, clipOf(ch, name, s), i);
+  });
+}
+const win = (ch, date) => Object.fromEntries(linkShifts(channelDayBlocks(ch, date)).map((r) => [r.id, r]));
+
+test('uncovered time belongs to the block before it, up to the next day\'s first block', () => {
+  const ch = channel('Gaps');
+  const d1 = '2031-04-07', d2 = '2031-04-08';
+  const a = template(ch, 'A', [['06:00', '08:00']]);
+  const b = template(ch, 'B', [['08:30', '23:59']]);
+  const ba = block(a.tpl, a.slots[0], ch, d1);
+  const bb = block(b.tpl, b.slots[0], ch, d1);
+  const next = block(a.tpl, a.slots[0], ch, d2); // the next day starts at 06:00
+
+  let w = win(ch, d1);
+  assert.equal(w[ba].extend_seconds, 1800, 'A owns 08:00–08:30');
+  assert.equal(w[ba].blockSeconds, 9000);
+  assert.equal(w[ba].effective_end, '08:30:00');
+  // B ends 23:59 and the next day starts 06:00: B owns the night.
+  assert.equal(w[bb].extend_seconds, 6 * 3600 + 60);
+  assert.equal(w[bb].effective_end, '06:00:00');
+
+  // With no next day scheduled there is nothing to extend to: reported instead.
+  db.prepare('DELETE FROM ScheduledBlock WHERE id = ?').run(next);
+  w = win(ch, d1);
+  assert.equal(w[bb].extend_seconds, 0);
+});
+
+test('balanceDay moves small residues down the day and leaves manual shifts and exported days alone', () => {
+  const ch = channel('Balance');
+  const date = '2031-04-14';
+  const t1 = template(ch, 'One', [['10:00', '11:00']]);
+  const t2 = template(ch, 'Two', [['11:00', '12:00']]);
+  const t3 = template(ch, 'Three', [['12:00', '13:00']]);
+  const b1 = block(t1.tpl, t1.slots[0], ch, date);
+  const b2 = block(t2.tpl, t2.slots[0], ch, date);
+  const b3 = block(t3.tpl, t3.slots[0], ch, date);
+  fill(b1, ch, 3600 - 20);      // 20s short
+  fill(b2, ch, 3600 + 30);      // 30s long
+  fill(b3, ch, 3600 - 10);      // 10s short, and nothing after it
+
+  const r = balanceDay(ch, date);
+  assert.equal(r.shifted, 2);
+  let w = win(ch, date);
+  assert.equal(w[b1].end_shift, -20, 'One ends 20s early');
+  assert.equal(w[b1].blockSeconds, 3580);
+  assert.equal(w[b2].start_shift, -20);
+  assert.equal(w[b2].blockSeconds, 3630, 'Two starts 20s early and ends 30s late: exact');
+  assert.equal(w[b2].end_shift, 10);
+  assert.equal(w[b3].blockSeconds, 3590, 'Three inherits it: now exact too');
+  assert.ok(Object.values(w).every((x) => x.blockSeconds === db.prepare(
+    'SELECT SUM(r.duration) s FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?',
+  ).get(x.id).s), 'every block now lands on the second');
+
+  // Idempotent.
+  balanceDay(ch, date);
+  assert.deepEqual(Object.values(win(ch, date)).map((x) => x.end_shift), Object.values(w).map((x) => x.end_shift));
+
+  // An operator's shift is never moved.
+  db.prepare('UPDATE ScheduledBlock SET end_shift_seconds = 45, end_shift_auto = 0 WHERE id = ?').run(b1);
+  balanceDay(ch, date);
+  w = win(ch, date);
+  assert.equal(w[b1].end_shift, 45);
+
+  // A residue past autoMax is left for the operator.
+  const t4 = template(ch, 'Four', [['13:00', '14:00']]);
+  const t5 = template(ch, 'Five', [['14:00', '15:00']]);
+  const b4 = block(t4.tpl, t4.slots[0], ch, date);
+  block(t5.tpl, t5.slots[0], ch, date);
+  fill(b4, ch, 3600 - 300);
+  balanceDay(ch, date);
+  assert.equal(win(ch, date)[b4].end_shift, 0);
+
+  // An exported day is on the playout Mac: hands off.
+  db.prepare("UPDATE ScheduledBlock SET status = 'exported' WHERE id = ?").run(b3);
+  assert.equal(balanceDay(ch, date).skipped, 'exported');
+});
+
+test('the week check finds every way a day can end early', async () => {
+  const ch = channel('Check');
+  const d1 = '2031-05-05', d2 = '2031-05-06';
+  const a = template(ch, 'Morning', [['00:00', '12:00']]);
+  const b = template(ch, 'Evening', [['12:00', '00:00']]);
+  const am = block(a.tpl, a.slots[0], ch, d1);
+  const pm = block(b.tpl, b.slots[0], ch, d1, 'draft');
+  block(a.tpl, a.slots[0], ch, d2);
+  fill(am, ch, 12 * 3600);
+  fill(pm, ch, 12 * 3600);
+
+  let rep = await checkRange(d1, d1, [ch]);
+  let day = rep.channels[0].days[0];
+  assert.equal(day.ok, false);
+  const kinds = day.problems.map((p) => p.kind);
+  assert.ok(kinds.includes('draft'), 'the evening is not approved');
+  assert.ok(kinds.includes('black'), 'so the playlist ends at noon');
+  assert.equal(day.playlistEnd, '12:00:00');
+  assert.ok(day.problems.find((p) => p.kind === 'black').seconds === 12 * 3600);
+
+  db.prepare("UPDATE ScheduledBlock SET status = 'approved' WHERE id = ?").run(pm);
+  rep = await checkRange(d1, d1, [ch]);
+  day = rep.channels[0].days[0];
+  assert.deepEqual(day.problems.filter((p) => p.blocking), [], JSON.stringify(day.problems));
+  assert.equal(day.playlistEnd, '00:00:00 (+1d)');
+
+  // A template conflict.
+  const c = template(ch, 'Clash', [['11:00', '13:00']]);
+  fill(block(c.tpl, c.slots[0], ch, d1), ch, 7200);
+  rep = await checkRange(d1, d1, [ch]);
+  assert.ok(rep.channels[0].days[0].problems.some((p) => p.kind === 'overlap'));
+
+  // The push refuses it, and says why.
+  const push = await j('POST', `/api/otav/push?date=${d1}&channels=${ch}`);
+  assert.equal(push.status, 409);
+  assert.equal(push.data.gaps, true);
+  assert.ok(push.data.problems.some((p) => p.kind === 'overlap'));
+});
+
+test('the end of the day closes with fillers, or hands the residue back to the block before', () => {
+  const ch = channel('Closing');
+  const date = '2031-06-02';
+  const filler = (secs) => {
+    const p = join(media, `fill_${ch}_${secs}.mov`);
+    writeFileSync(p, 'x');
+    return db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id)
+      VALUES (?, ?, ?, 1, 1, ?) RETURNING id`).get(`f${secs}`, p, secs, ch).id;
+  };
+  filler(52); filler(60);
+  const a = template(ch, 'Before', [['22:00', '23:00']]);
+  const b = template(ch, 'Last', [['23:00', '00:00']]);
+  const ba = block(a.tpl, a.slots[0], ch, date);
+  const bb = block(b.tpl, b.slots[0], ch, date);
+  block(a.tpl, a.slots[0], ch, '2031-06-03'); // next day starts 22:00 → Last owns the gap
+  db.prepare('DELETE FROM ScheduledBlock WHERE target_date = ? AND template_id = ?').run('2031-06-03', a.tpl);
+  // Nothing scheduled the next day: Last's end is fixed at midnight.
+  fill(ba, ch, 3600 - 60);
+  db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order) SELECT ?, id, 9 FROM Resource WHERE channel_id = ? AND duration = 60 AND is_filler = 1').run(ba, ch);
+  fill(bb, ch, 3600 - 43); // 43s short, and the shortest filler is 52s
+
+  balanceDay(ch, date);
+  const w = win(ch, date);
+  const tot = (id) => db.prepare('SELECT SUM(r.duration) s FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?').get(id).s;
+  assert.ok(Math.abs(w[bb].blockSeconds - tot(bb)) <= 5, `Last lands: ${w[bb].blockSeconds} vs ${tot(bb)}`);
+  assert.ok(Math.abs(w[ba].blockSeconds - tot(ba)) <= 5, `Before lands: ${w[ba].blockSeconds} vs ${tot(ba)}`);
+  assert.equal(w[bb].effective_end, '00:00:00', 'and the day still ends at midnight');
 });

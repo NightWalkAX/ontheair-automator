@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { db, withTx } from '../db.js';
 import {
   blockDurationSeconds, channelDayBlocks, fillerRunLimit, fitTolerance, fitsTolerance, generateWeek,
-  linkShifts, maxShiftSeconds, populateBlock, shiftedWindow,
+  linkShifts, maxShiftSeconds, populateBlock, shiftedWindow, balanceDay,
 } from '../services/scheduling.js';
 import { blockProblem, validateBlock } from '../services/blockValidation.js';
 import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
@@ -240,6 +240,27 @@ router.put('/templates/:id/slots', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Week check ("no black screens") --------------------------------------------
+// GET /api/blocks/week-check?week=YYYY-MM-DD&channels=1,3 — everything that
+// would make a channel-day's playlist end before the next day's event (see
+// services/dayCoverage.js). No channels = every active channel.
+router.get('/week-check', async (req, res) => {
+  const week = String(req.query.week || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(week)) return res.status(400).json({ error: 'week=YYYY-MM-DD is required' });
+  try {
+    res.json(await checkWeek(week, parseChannelIds(req.query.channels)));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+/** ?channels=1,3 (or an array) → [1, 3]; anything else → []. */
+export function parseChannelIds(v) {
+  return [...new Set((Array.isArray(v) ? v : String(v ?? '').split(','))
+    .map((x) => Number(String(x).trim()))
+    .filter((n) => Number.isInteger(n) && n > 0))];
+}
+
 // ---- Generation ------------------------------------------------------------
 // POST /api/blocks/generate?weekStart=YYYY-MM-DD (defaults to today)
 router.post('/generate', (req, res) => {
@@ -267,6 +288,15 @@ function siblingAirings(block) {
   `).all(block.template_id, block.target_date, block.id, block.channel_id);
 }
 
+/** Re-balance the channel-day a block sits on (see balanceDay in scheduling.js). */
+function balanceBlockDay(blockId) {
+  const b = db.prepare(`
+    SELECT sb.target_date, COALESCE(sb.channel_id, bt.channel_id) AS channel_id
+    FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id WHERE sb.id = ?
+  `).get(blockId);
+  return b && b.channel_id != null ? balanceDay(b.channel_id, b.target_date) : null;
+}
+
 // POST /api/blocks/:id/regenerate — repopulate one block (keeps manual items).
 router.post('/:id/regenerate', (req, res) => {
   const block = db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(Number(req.params.id));
@@ -280,7 +310,8 @@ router.post('/:id/regenerate', (req, res) => {
     ?? db.prepare('SELECT channel_id FROM BlockTemplate WHERE id = ?').get(block.template_id)?.channel_id })) {
     clear.run(sib.id);
   }
-  res.json(populateBlock(block));
+  const result = populateBlock(block);
+  res.json({ ...result, balance: balanceBlockDay(block.id) });
 });
 
 // PUT /api/blocks/:id/max-per-show { max } — set the block's template cap on how
@@ -639,6 +670,8 @@ router.put('/:id/items', (req, res) => {
   );
   tx.run(id);
   items.forEach((it, idx) => ins.run(id, it.resource_id, idx, it.is_manual_override ? 1 : 0));
+  // A few seconds over or under after an edit move the boundary, not the day.
+  balanceBlockDay(id);
 
   res.json(validateBlock(id));
 });
@@ -734,7 +767,7 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
     // nextChapter floors at the cursor and unions earlier-dated items, so the
     // run rolls forward from the corrected episode. Bounded to the 7-day window.
     const scope = db.prepare(`
-      SELECT sb.id, COALESCE(s.slot_order, 0) AS slot_order
+      SELECT sb.id, sb.target_date, COALESCE(s.slot_order, 0) AS slot_order
       FROM ScheduledBlock sb
       JOIN BlockTemplate bt ON bt.id = sb.template_id
       LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
@@ -769,6 +802,9 @@ router.post('/:id/items/:itemId/set-episode', (req, res) => {
       populate(id); // tops up around the pinned episode (nothing, if it overruns)
     }
     for (const b of scope) if (b.id !== id) populate(b.id);
+    for (const d of new Set([block.target_date, ...scope.map((b) => b.target_date).filter(Boolean)])) {
+      balanceDay(block.channel_id, d);
+    }
   });
   } catch (err) {
     return res.status(500).json({ error: String(err.message || err) });
@@ -902,7 +938,10 @@ router.put('/:id/shift', (req, res) => {
     return res.status(409).json({ error: 'that shift would leave a block with less than a minute of air' });
   }
 
-  db.prepare('UPDATE ScheduledBlock SET end_shift_seconds = ? WHERE id = ?').run(seconds, ownerId);
+  // The operator's shift is theirs: balanceDay never moves it, and the rest of
+  // the day re-balances around it.
+  db.prepare('UPDATE ScheduledBlock SET end_shift_seconds = ?, end_shift_auto = 0 WHERE id = ?').run(seconds, ownerId);
+  balanceDay(v.block.channel_id, v.block.target_date);
   const neighbourId = edge === 'end' ? owner.next_block_id : ownerId;
   const nv = neighbourId != null ? validateBlock(neighbourId) : null;
   res.json({

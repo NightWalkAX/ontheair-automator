@@ -13,7 +13,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,17 @@ process.env.SCHEDULER_DB = process.env.SCHEDULER_DB
 // a fresh clone has none) nor writes into the operator's own.
 process.env.SCHEDULER_CONFIG = join(mkdtempSync(join(tmpdir(), 'otav-cfg-')), 'config.json');
 copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), process.env.SCHEDULER_CONFIG);
+// These fixtures were written when a block's window was exactly its slot. A
+// day's uncovered time now belongs to the block before it (see linkShifts), and
+// the fixtures leave whole hours uncovered on purpose — so that behaviour is off
+// here and covered on its own in dayContinuity.test.mjs.
+{
+  const cfg = JSON.parse(readFileSync(process.env.SCHEDULER_CONFIG, 'utf8'));
+  cfg.schedule = { ...(cfg.schedule || {}), extendIntoGaps: false };
+  cfg.shift = { ...(cfg.shift || {}), autoMaxSeconds: 0 };
+  cfg.otav = { ...(cfg.otav || {}), blockOnGaps: false };
+  writeFileSync(process.env.SCHEDULER_CONFIG, JSON.stringify(cfg, null, 2));
+}
 
 const { db, initSchema } = await import('../src/db.js');
 const { router: channels } = await import('../src/routes/channels.js');

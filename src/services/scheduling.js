@@ -121,48 +121,147 @@ export function clockString(secs) {
     .map((n) => String(n).padStart(2, '0')).join(':');
 }
 
+const DAY_SECONDS = 86400;
+/** Days since the epoch for a 'YYYY-MM-DD' date (calendar arithmetic, no clock). */
+const dayNumber = (date) => Math.round(Date.parse(`${date}T00:00:00Z`) / 86400000);
+
+/**
+ * Seconds after midnight at which `channelId`'s first block of the day AFTER
+ * `targetDate` starts, or null when that day has nothing scheduled.
+ */
+function nextDayFirstStart(channelId, targetDate) {
+  const row = db.prepare(`
+    SELECT MIN(COALESCE(s.start_time, bt.start_time)) AS t
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE COALESCE(sb.channel_id, bt.channel_id) = ? AND sb.target_date = date(?, '+1 day')
+  `).get(channelId, targetDate);
+  return row?.t ? hhmmSeconds(row.t) : null;
+}
+
+/** Fill time no block covers by stretching the block before it? (config schedule.extendIntoGaps) */
+export function extendsIntoGaps() {
+  return loadConfig().schedule?.extendIntoGaps !== false;
+}
+
 /**
  * Annotate blocks with their shifted window. Each row needs id, channel_id,
  * target_date, start_time, end_time and end_shift_seconds; it gains
  * start_shift / end_shift (seconds), prev_block_id / next_block_id (the adjacent
- * block on either side, or null), slotSeconds, blockSeconds (the shifted
- * length) and effective_start / effective_end ('HH:MM:SS'). Rows whose
- * neighbours are not in `rows` are treated as having none, so pass a whole
- * channel-day.
+ * block on either side, or null), extend_seconds / overlap_seconds (see below),
+ * slotSeconds, blockSeconds (the shifted length) and effective_start /
+ * effective_end ('HH:MM:SS'). Rows whose neighbours are not in `rows` are
+ * treated as having none, so pass whole channel-days.
+ *
+ * GAPS ARE COVERED. OTAV plays a channel-day as one continuous playlist, so time
+ * no block covers is not "nothing on air at 19:00" — it is the rest of the day
+ * starting early, and the day running out before the next day's event: black
+ * on air. So a block followed by uncovered time owns that time
+ * (`extend_seconds`): its window runs to the start of the next block, and the
+ * last block of a day runs to the first block of the NEXT day (a template that
+ * ends at 23:59 loses its minute this way, Elevate's 00:00–06:00 night lands in
+ * its last block). Generation fills the window and validation judges it, so
+ * neither has to know. The next day must be scheduled for this to apply; when
+ * it is not, the week check reports it. `overlap_seconds` is the opposite: the
+ * next block starts before this one ends — a template conflict, never extended.
+ * `schedule.extendIntoGaps: false` turns the extension off.
  */
-export function linkShifts(rows) {
-  // A boundary links two blocks only when exactly one block ends there and
-  // exactly one starts there. Two templates sharing a slot on the same day is a
-  // conflict in the templates, and guessing which of them the shift belongs to
-  // would move a block nobody asked to move.
-  const at = (r, t) => `${r.channel_id}|${r.target_date}|${String(t).slice(0, 5)}`;
-  const starting = new Map();
-  const ending = new Map();
-  for (const r of rows) {
-    const s = at(r, r.start_time), e = at(r, r.end_time);
-    starting.set(s, starting.has(s) ? null : r);
-    ending.set(e, ending.has(e) ? null : r);
-  }
+export function linkShifts(rows, { nextDayStart = nextDayFirstStart } = {}) {
   for (const r of rows) {
     r.end_shift = Number(r.end_shift_seconds) || 0;
     r.start_shift = 0;
     r.prev_block_id = null;
     r.next_block_id = null;
+    r.extend_seconds = 0;
+    r.overlap_seconds = 0;
+    r.slotSeconds = blockDurationSeconds(r.start_time, r.end_time);
+    r._start = dayNumber(r.target_date) * DAY_SECONDS + hhmmSeconds(r.start_time);
+    r._end = r._start + r.slotSeconds;
+  }
+
+  // A boundary links two blocks only when exactly one block ends there and
+  // exactly one starts there, on the same date. Two templates sharing a slot on
+  // the same day is a conflict in the templates, and guessing which of them the
+  // shift belongs to would move a block nobody asked to move. Times are
+  // absolute, so a block ending at midnight never "links" to the 00:00 block
+  // that STARTS the same date.
+  const at = (r, t) => `${r.channel_id}|${r.target_date}|${t}`;
+  const starting = new Map();
+  const ending = new Map();
+  for (const r of rows) {
+    const s = at(r, r._start), e = at(r, r._end);
+    starting.set(s, starting.has(s) ? null : r);
+    ending.set(e, ending.has(e) ? null : r);
   }
   for (const r of rows) {
-    const k = at(r, r.end_time);
+    const k = at(r, r._end);
     const next = starting.get(k);
     if (!next || next === r || ending.get(k) !== r) continue;
     r.next_block_id = next.id;
     next.prev_block_id = r.id;
     next.start_shift = r.end_shift;
   }
+
+  {
+    const extend = extendsIntoGaps();
+    const byChannel = new Map();
+    for (const r of rows) {
+      if (!byChannel.has(r.channel_id)) byChannel.set(r.channel_id, []);
+      byChannel.get(r.channel_id).push(r);
+    }
+    for (const list of byChannel.values()) {
+      list.sort((a, b) => a._start - b._start || a.id - b.id);
+      // Two blocks in the same time (a duplicated slot, a template that runs
+      // through its neighbours): both air, one after the other, and everything
+      // after them airs that much late.
+      for (let i = 0; i + 1 < list.length; i++) {
+        const r = list[i], nx = list[i + 1];
+        const over = (r._end + r.end_shift) - (nx._start + nx.start_shift);
+        if (nx._start === r._start || (over > 0 && r.next_block_id !== nx.id)) {
+          r.overlap_seconds = Math.max(r.overlap_seconds, over);
+        }
+      }
+      if (!extend) continue;
+      list.forEach((r, i) => {
+        if (r.next_block_id) return;
+        const end = r._end + r.end_shift;
+        // What airs next: the first block starting after this one, on this date
+        // or the next one — never further (a day that is not generated yet is
+        // a hole to report, not a day-long block).
+        const nxt = list.slice(i + 1).find((x) => x._start > r._start);
+        // A gap on the same day: this block owns it, and the block after the
+        // gap becomes its neighbour — the boundary between them is one point in
+        // the continuous playlist like any other, and can move the same way.
+        if (nxt && nxt.target_date === r.target_date && !nxt.prev_block_id && nxt._start > r._end) {
+          r.extend_seconds = nxt._start - r._end;
+          r.next_block_id = nxt.id;
+          nxt.prev_block_id = r.id;
+          nxt.start_shift = r.end_shift;
+          return;
+        }
+        let nextStart = null;
+        if (nxt) {
+          if (dayNumber(nxt.target_date) - dayNumber(r.target_date) <= 1) nextStart = nxt._start + nxt.start_shift;
+        } else if (nextDayStart) {
+          const t = nextDayStart(r.channel_id, r.target_date);
+          if (t != null) nextStart = (dayNumber(r.target_date) + 1) * DAY_SECONDS + t;
+        }
+        if (nextStart == null) return;
+        if (r.overlap_seconds) return; // a conflict is reported, never stretched
+        if (nextStart > end) r.extend_seconds = nextStart - end;
+        else if (nextStart < end) r.overlap_seconds = end - nextStart;
+      });
+    }
+  }
+
   for (const r of rows) {
     const start = hhmmSeconds(r.start_time);
-    r.slotSeconds = blockDurationSeconds(r.start_time, r.end_time);
-    r.blockSeconds = r.slotSeconds - r.start_shift + r.end_shift;
+    r.blockSeconds = r.slotSeconds - r.start_shift + r.end_shift + r.extend_seconds;
     r.effective_start = clockString(start + r.start_shift);
-    r.effective_end = clockString(start + r.slotSeconds + r.end_shift);
+    r.effective_end = clockString(start + r.slotSeconds + r.end_shift + r.extend_seconds);
+    delete r._start;
+    delete r._end;
   }
   return rows;
 }
@@ -170,15 +269,16 @@ export function linkShifts(rows) {
 /** Every block of one channel-day with its window, for linkShifts(). */
 export function channelDayBlocks(channelId, targetDate) {
   return db.prepare(`
-    SELECT sb.id, sb.target_date, sb.end_shift_seconds,
+    SELECT sb.id, sb.target_date, sb.status, sb.end_shift_seconds, sb.end_shift_auto,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
            COALESCE(s.start_time, bt.start_time)  AS start_time,
-           COALESCE(s.end_time, bt.end_time)      AS end_time
+           COALESCE(s.end_time, bt.end_time)      AS end_time,
+           COALESCE(s.slot_order, 0)              AS slot_order
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
     LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
     WHERE COALESCE(sb.channel_id, bt.channel_id) = ? AND sb.target_date = ?
-    ORDER BY start_time
+    ORDER BY start_time, sb.id
   `).all(channelId, targetDate);
 }
 
@@ -1084,7 +1184,40 @@ function resyncMirrors(template_id, target_date, channelId, primaryBlockId) {
   const mirrors = db.prepare(
     'SELECT id FROM ScheduledBlock WHERE template_id = ? AND target_date = ? AND channel_id IS ? AND id != ?'
   ).all(template_id, target_date, channelId ?? null, primaryBlockId);
-  for (const m of mirrors) copyItems(primaryBlockId, m.id);
+  for (const m of mirrors) {
+    copyItems(primaryBlockId, m.id);
+    topUpMirror(m.id, channelId, target_date);
+  }
+}
+
+/**
+ * A repeat airing holds its primary's content clip for clip — but its WINDOW is
+ * its own: it may own a gap after it (see linkShifts) that the primary does not.
+ * Close whatever the copy leaves uncovered with fillers at the end, so the
+ * repeat doesn't end the day early. Returns the seconds of filler added.
+ */
+function topUpMirror(blockId, channelId, targetDate) {
+  if (channelId == null) return 0;
+  const win = shiftedWindow(blockId, channelId, targetDate);
+  if (!win) return 0;
+  const total = blockTotalSeconds(blockId);
+  const hole = win.blockSeconds - total;
+  if (fitsTolerance(hole)) return 0;
+  if (hole <= 0) return 0;
+  const { items } = fitFillers(channelId, hole);
+  const ins = db.prepare(
+    'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, ?, 0)'
+  );
+  let order = db.prepare('SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM ScheduleItem WHERE block_id = ?').get(blockId).n;
+  for (const r of items) ins.run(blockId, r.id, order++);
+  return items.reduce((s, r) => s + r.duration, 0);
+}
+
+/** Sum of a block's clip durations, in seconds. */
+function blockTotalSeconds(blockId) {
+  return db.prepare(
+    'SELECT COALESCE(SUM(r.duration), 0) AS s FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?'
+  ).get(blockId).s;
 }
 
 /**
@@ -1137,9 +1270,8 @@ export function populateBlock(block) {
       'SELECT id FROM ScheduledBlock WHERE template_id = ? AND slot_id = ? AND target_date = ? AND channel_id IS ?'
     ).get(template.id, primarySlot.id, block.target_date, channelId ?? null);
     const count = primary ? copyItems(primary.id, block.id) : 0;
-    const total = db.prepare(
-      'SELECT COALESCE(SUM(r.duration),0) AS s FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?'
-    ).get(block.id).s;
+    if (primary) topUpMirror(block.id, channelId, block.target_date);
+    const total = blockTotalSeconds(block.id);
     const underrun = blockSecs - total;
     return { blockId: block.id, blockSeconds: blockSecs, mainCount: count, fillerCount: 0, underrun, fits: fitsTolerance(underrun), mirrored: true };
   }
@@ -1173,7 +1305,13 @@ export function populateBlock(block) {
     // closing whatever is left at the end.
     const startSecs = timeOfDaySeconds(start);
     const packer = makeFillerPacker(channelId);
-    const { items: seq, total } = buildAlignedBlock(template, block, blockSecs, startSecs, channelId, packer);
+    // A movie block that owns a gap (see linkShifts) has more time than its
+    // slot; keep its feature cap in proportion, or the extra hours go to filler.
+    const slotSecs = blockDurationSeconds(start, end);
+    const tpl = isMovieBlock(template) && blockSecs > slotSecs
+      ? { ...template, movie_limit: Math.ceil(movieLimit(template) * blockSecs / slotSecs) }
+      : template;
+    const { items: seq, total } = buildAlignedBlock(tpl, block, blockSecs, startSecs, channelId, packer);
     let order = 0;
     for (const r of seq) {
       insert.run(block.id, r.id, order++);
@@ -1277,5 +1415,179 @@ function wipeDraftBlocks(weekStart, channelId) {
 export function generateWeek(weekStart = new Date(), channelId = null) {
   wipeDraftBlocks(weekStart, channelId);
   const blocks = rollForwardTemplates(weekStart, channelId);
-  return blocks.filter((b) => b.status === 'draft').map((b) => populateBlock(b)).filter(Boolean);
+  const results = blocks.filter((b) => b.status === 'draft').map((b) => populateBlock(b)).filter(Boolean);
+  // Then close each channel-day: small residues move the boundaries instead of
+  // piling up into a day that ends early.
+  const days = new Set(blocks.filter((b) => b.channel_id != null).map((b) => `${b.channel_id}|${b.target_date}`));
+  for (const k of days) {
+    const [ch, date] = k.split('|');
+    balanceDay(Number(ch), date, { rebuild: true });
+  }
+  return results;
+}
+
+// --- Automatic boundary correction ---------------------------------------------
+// A block rarely lands on the second: the fit tolerance lets it end up to 5s
+// short or long, and a manual edit can leave more. Every one of those residues
+// moves everything after it on air (one continuous playlist), and at the end of
+// the day they add up to the playlist ending early — black — or late. Instead,
+// a residue up to shift.autoMaxSeconds (default 60) moves the boundary with the
+// next block, exactly as an operator's shift does, and the next block is judged
+// against its new window; the correction cascades down the day. Where a
+// boundary cannot move — before a gap the block owns, at the end of the day —
+// the block's window is fixed and a draft there is rebuilt to it instead.
+
+/** Largest residue corrected by moving a boundary, in seconds (config shift.autoMaxSeconds). */
+export function autoShiftMaxSeconds() {
+  const n = Number(loadConfig().shift?.autoMaxSeconds ?? 60);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Re-balance one channel-day. Never touches a day with an exported block (that
+ * day is on the playout Mac) or a boundary the operator moved by hand. Auto
+ * shifts are recomputed from scratch, so calling this twice is a no-op.
+ * `rebuild` lets it re-fill a DRAFT whose window cannot move (generation only).
+ * Returns { shifted, rebuilt, skipped? }.
+ */
+export function balanceDay(channelId, targetDate, { rebuild = false } = {}) {
+  const autoMax = autoShiftMaxSeconds();
+  if (!autoMax) return { shifted: 0, rebuilt: 0, skipped: 'disabled' };
+  const ids = channelDayBlocks(channelId, targetDate);
+  if (!ids.length) return { shifted: 0, rebuilt: 0 };
+  if (ids.some((b) => b.status === 'exported')) return { shifted: 0, rebuilt: 0, skipped: 'exported' };
+
+  const setShift = db.prepare('UPDATE ScheduledBlock SET end_shift_seconds = ?, end_shift_auto = ? WHERE id = ?');
+  for (const b of ids) if (Number(b.end_shift_auto)) setShift.run(0, 0, b.id);
+
+  const tol = fitTolerance();
+  const maxShift = maxShiftSeconds();
+  const rebuiltIds = new Set();
+  const closedIds = new Set();
+  let shifted = 0;
+  // Each step changes one boundary and re-reads the day; the walk only moves
+  // forward (a shift changes the NEXT block's window, never an earlier one), so
+  // it ends within a pass per block plus one per rebuild.
+  for (let guard = 0; guard < ids.length * 3 + 5; guard++) {
+    const rows = linkShifts(channelDayBlocks(channelId, targetDate));
+    let changed = false;
+    for (const r of rows) {
+      const total = blockTotalSeconds(r.id);
+      if (!total) continue; // nothing scheduled: nothing to balance against
+      const diff = r.blockSeconds - total; // >0 short, <0 long
+      if (diff === 0) continue;
+      const manual = !Number(r.end_shift_auto) && r.end_shift !== 0;
+      if (r.next_block_id && !manual && Math.abs(diff) <= autoMax) {
+        const shift = r.end_shift - diff;
+        const next = rows.find((x) => x.id === r.next_block_id);
+        if (Math.abs(shift) <= maxShift && next && next.blockSeconds + diff >= 60 && r.blockSeconds - diff >= 60) {
+          setShift.run(shift, 1, r.id);
+          shifted++;
+          changed = true;
+          break;
+        }
+      }
+      // A window that cannot move (the end of the day), or a residue too big to
+      // move: close it with fillers — top up a short block, or swap one filler
+      // for shorter ones in a long one. Main content is never touched, and only
+      // once per block; whatever is left (≤ autoMax) then moves the boundary.
+      if ((!r.next_block_id || Math.abs(diff) > autoMax) && !fitsTolerance(diff, tol)
+          && Math.abs(diff) <= maxShift && !closedIds.has(r.id)) {
+        closedIds.add(r.id);
+        if (closeWithFillers(r.id, channelId, diff)) { changed = true; break; }
+        // Its own fillers can't close it (none short enough, none to swap):
+        // propagate BACKWARD — move the boundary before it by the residue and let
+        // the previous block close that instead. Kept only if it then fits.
+        const prev = r.prev_block_id && rows.find((x) => x.id === r.prev_block_id);
+        if (prev && prev.status !== 'exported' && !( !Number(prev.end_shift_auto) && prev.end_shift !== 0)
+            && Math.abs(prev.end_shift + diff) <= maxShift && r.blockSeconds - diff >= 60) {
+          db.exec('SAVEPOINT back_shift');
+          setShift.run(prev.end_shift + diff, 1, prev.id);
+          const pDiff = prev.blockSeconds + diff - blockTotalSeconds(prev.id);
+          const closed = fitsTolerance(pDiff, tol) || closeWithFillers(prev.id, channelId, pDiff);
+          const after = linkShifts(channelDayBlocks(channelId, targetDate));
+          const pv = after.find((x) => x.id === prev.id);
+          const rv = after.find((x) => x.id === r.id);
+          if (closed && fitsTolerance(pv.blockSeconds - blockTotalSeconds(prev.id), tol)
+              && fitsTolerance(rv.blockSeconds - blockTotalSeconds(r.id), tol)) {
+            db.exec('RELEASE back_shift');
+            closedIds.add(prev.id);
+            shifted++;
+            changed = true;
+            break;
+          }
+          db.exec('ROLLBACK TO back_shift');
+          db.exec('RELEASE back_shift');
+        }
+      }
+      // Still out: a draft is rebuilt to its window, once — only when the caller
+      // is generating (never over an operator's hand edit).
+      if (rebuild && !r.next_block_id && r.status === 'draft' && !fitsTolerance(diff, tol) && !rebuiltIds.has(r.id)) {
+        rebuiltIds.add(r.id);
+        populateBlock(db.prepare('SELECT * FROM ScheduledBlock WHERE id = ?').get(r.id));
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  if (shifted || rebuiltIds.size || closedIds.size) {
+    l.info(`balanced channel ${channelId} ${targetDate}: ${shifted} boundary shift(s), `
+      + `${closedIds.size} filler close(s), ${rebuiltIds.size} rebuild(s)`);
+  }
+  return { shifted, closed: closedIds.size, rebuilt: rebuiltIds.size };
+}
+
+/**
+ * Bring a block whose end cannot move onto its window by touching fillers only.
+ * `diff` is window - content: positive = short (append fillers for it), negative
+ * = long (drop the shortest filler that covers the excess, then top up what that
+ * opens). Mirrors are left alone (they copy their primary). Returns true when it
+ * changed anything.
+ */
+function closeWithFillers(blockId, channelId, diff) {
+  const isMirror = db.prepare(`
+    SELECT COALESCE(s.slot_order, 0) AS o FROM ScheduledBlock sb
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id WHERE sb.id = ?`).get(blockId)?.o > 0;
+  if (isMirror && diff < 0) return false;
+  const ins = db.prepare(
+    'INSERT INTO ScheduleItem (block_id, resource_id, play_order, is_manual_override) VALUES (?, ?, ?, 0)'
+  );
+  const nextOrder = () => db.prepare(
+    'SELECT COALESCE(MAX(play_order), -1) + 1 AS n FROM ScheduleItem WHERE block_id = ?'
+  ).get(blockId).n;
+  let hole = diff;
+  if (diff < 0) {
+    const victim = db.prepare(`
+      SELECT si.id, r.duration FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+      WHERE si.block_id = ? AND r.is_filler = 1 AND si.is_manual_override = 0 AND r.duration >= ?
+      ORDER BY r.duration ASC, si.play_order DESC LIMIT 1`).get(blockId, -diff);
+    if (!victim) return false;
+    db.prepare('DELETE FROM ScheduleItem WHERE id = ?').run(victim.id);
+    hole = victim.duration + diff;
+  }
+  if (hole > 0) {
+    const tol = fitTolerance();
+    let { items, total } = fitFillers(channelId, hole);
+    // Nothing in the pool is short enough for a small hole: give one filler
+    // back and re-pack it together with the hole instead.
+    if (diff > 0 && !fitsTolerance(hole - total, tol)) {
+      const swaps = db.prepare(`
+        SELECT si.id, MIN(r.duration) AS duration FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+        WHERE si.block_id = ? AND r.is_filler = 1 AND si.is_manual_override = 0
+        GROUP BY r.duration ORDER BY r.duration LIMIT 12`).all(blockId);
+      for (const sw of swaps) {
+        const fit = fitFillers(channelId, sw.duration + hole);
+        if (fit.items.length && fitsTolerance(sw.duration + hole - fit.total, tol)) {
+          db.prepare('DELETE FROM ScheduleItem WHERE id = ?').run(sw.id);
+          ({ items, total } = fit);
+          break;
+        }
+      }
+    }
+    if (!items.length) return diff < 0; // a dropped filler is still a change
+    let order = nextOrder();
+    for (const r of items) ins.run(blockId, r.id, order++);
+  }
+  return true;
 }

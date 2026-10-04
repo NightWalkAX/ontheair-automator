@@ -7,6 +7,8 @@ import {
 import { cancelJob, finishJob, getJob, startJob, subscribe } from '../services/pushProgress.js';
 import { missingFilesInRange, unfitBlocksInRange } from '../services/blockValidation.js';
 import { localDate } from '../dates.js';
+import { blockingProblems, checkRange } from '../services/dayCoverage.js';
+import { db } from '../db.js';
 import { loadConfig } from '../config.js';
 
 export const router = Router();
@@ -81,6 +83,28 @@ router.post('/push', async (req, res) => {
           error: `${unfit.length} block(s) in this range cannot go to air — fix them first`,
           blocks: unfit,
         });
+      }
+      // A day that would end before the next day's event — a block left in
+      // draft, a template conflict, uncovered time — is black on air. The check
+      // simulates exactly what this push sends. ?allowGaps=1 is the operator's
+      // "push it anyway" after reading the list. Only instances this push can
+      // reach are judged: a channel with no OTAV address has nothing to push.
+      if (loadConfig().otav?.blockOnGaps !== false && !['1', 'true'].includes(String(q.allowGaps ?? ''))) {
+        const pushable = channelIds.length ? channelIds : db.prepare(
+          "SELECT id FROM ChannelType WHERE is_active = 1 AND COALESCE(TRIM(api_ip), '') != ''",
+        ).all().map((r) => r.id);
+        const problems = pushable.length
+          ? blockingProblems(await checkRange(range[0], range[1], pushable), { excludeDates })
+            .filter((p) => p.kind !== 'unfit' && p.kind !== 'missing-file') // reported above / below
+          : [];
+        if (problems.length) {
+          return res.status(409).json({
+            ok: false,
+            gaps: true,
+            error: `${problems.length} problem(s) would leave black on air — fix them, or push anyway`,
+            problems,
+          });
+        }
       }
       // A clip whose file is gone is skipped by OTAV, the day runs short and the
       // channel goes black before the next day's event. Refuse rather than air it.

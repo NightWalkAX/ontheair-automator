@@ -24,11 +24,17 @@
     "maxPerBlock": 2
   },
   "shift": {
-    "maxSeconds": 900
+    "maxSeconds": 900,
+    "autoMaxSeconds": 60
+  },
+  "schedule": {
+    "extendIntoGaps": true
   },
   "pathMap": {},
   "otav": {
-    "pushTimeoutSeconds": 900
+    "pushTimeoutSeconds": 900,
+    "verifyFilesBeforePush": true,
+    "blockOnGaps": true
   },
   "ffmpegPath": "ffmpeg",
   "transcode": {

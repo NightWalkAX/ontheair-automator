@@ -371,6 +371,35 @@ production data of 2026-10-04:
   file Air Spec recorded as `missing` (`ON_DISK_SQL` in `scheduling.js`).
 - Every push result is written to `automator.log` (`[otav]`), and a malformed OTAV reply
   (`ERR_ASSERTION`, seen on `/scheduler/resynchronize`) is no longer reported as "cannot reach".
+- **Uncovered time belongs to the block before it** (`linkShifts()`, `extend_seconds`): a block
+  followed by a gap owns it and becomes the neighbour of the block after the gap (so that boundary
+  can move like any other), and the LAST block of a day runs to the first block of the next day
+  (a 23:59 end loses its minute this way; Elevate's 00:00–06:00 lands in its night block). Only
+  date+1 counts — a day not generated yet is reported, not absorbed. Generation and validation read
+  the window, so neither needs to know; a mirror copies its primary and then tops up its own extra
+  window with fillers (`topUpMirror()`); a movie block's feature cap scales with the window.
+  Same-slot duplicates and templates that run into their neighbours get `overlap_seconds` and are
+  never stretched. `schedule.extendIntoGaps: false` turns it off (the legacy integration fixtures
+  do, since they leave hours uncovered on purpose).
+- **`balanceDay(channelId, date)` closes residues automatically** (`shift.autoMaxSeconds`, default
+  60): a block off by ≤ autoMax moves its END boundary (`end_shift_seconds`, flagged
+  `end_shift_auto = 1`), the next block is judged against its new window, and the correction
+  cascades. A window that cannot move (end of day) or a residue too big to move is closed with
+  FILLERS only (`closeWithFillers()`: top up, or swap one filler for a re-pack); when the block's
+  own fillers can't, the residue is handed BACKWARD to the previous block, kept only if both then
+  fit. Auto shifts are recomputed from scratch on every call (idempotent); an operator's shift
+  (`end_shift_auto = 0`) is never moved, and a day with an exported block is never touched. Runs
+  after `generateWeek()` (which may also rebuild a chain-end draft), regenerate, `PUT items`,
+  set-episode and a manual shift.
+- **The week check** (`src/services/dayCoverage.js`, `GET /api/blocks/week-check`) simulates what a
+  push sends — approved/exported blocks, slot order, back to back from the first block — and lists
+  per channel-day: not generated, missing template blocks, drafts (a push leaves them out), overlaps,
+  unfit blocks, missing files, and where the playlist ends against the next day's event (`black` /
+  `overrun`). `POST /api/otav/push` refuses on any blocking problem for the instances it can reach
+  (409 `gaps: true` with `problems`), unless `allowGaps=1` or `otav.blockOnGaps: false`.
+  Replayed against the 2026-10-04 production copy it reproduces the real incidents to the second
+  (Elevate ending 23:34 on 09-28, MoE Central at 19:30), and a freshly generated week ends exactly
+  at the next day's event wherever every block approves.
 
 ## OnTheAir Video REST API (integration target)
 
