@@ -25,6 +25,7 @@ import { router as blocks } from './routes/blocks.js';
 import { router as otav } from './routes/otav.js';
 import { router as transcode } from './routes/transcode.js';
 import { router as monitor } from './routes/monitor.js';
+import { router as holidays } from './routes/holidays.js';
 import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
@@ -55,6 +56,7 @@ app.use('/api/blocks', blocks);
 app.use('/api/otav', otav);
 app.use('/api/transcode', transcode);
 app.use('/api/monitor', monitor);
+app.use('/api/holidays', holidays);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,

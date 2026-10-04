@@ -10,6 +10,7 @@ import { db } from '../db.js';
 import { loadConfig } from '../config.js';
 import { nextChapter, cooldownEligible } from './playHistory.js';
 import { log } from '../logger.js';
+import { holidaySql } from './holidays.js';
 
 const l = log('scheduling');
 
@@ -375,8 +376,11 @@ function ruleFor(showCode, isSerial) {
  * Non-filler candidate resources for a block's channel, optionally by subject
  * and capped at maxDuration so a single main item can never overrun the slot.
  */
-function candidates(channelId, subject, maxDuration, showCode = null) {
+function candidates(channelId, subject, maxDuration, showCode = null, date = null) {
   const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
+  // Seasonal films air only in their season (services/holidays.js).
+  const hol = date ? holidaySql(date) : null;
+  if (hol) clauses.push(hol.allowed);
   const params = [channelId];
   if (subject) { clauses.push('r.subject = ?'); params.push(subject); }
   if (maxDuration) { clauses.push('r.duration <= ?'); params.push(maxDuration); }
@@ -385,7 +389,7 @@ function candidates(channelId, subject, maxDuration, showCode = null) {
   // and only the second one keeps a lesson out of a movie block.
   if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
   return db.prepare(`
-    SELECT r.* FROM Resource r
+    SELECT r.*, ${hol ? hol.inSeason : '0'} AS in_season FROM Resource r
     LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE ${clauses.join(' AND ')}
   `).all(...params);
@@ -396,7 +400,7 @@ function candidates(channelId, subject, maxDuration, showCode = null) {
 // candidate without committing; `consume` advances past it once it's placed.
 
 function serialIterator(channelId, subject, block, showCode = null) {
-  const chapters = seriesParts(channelId, subject, showCode);
+  const chapters = seriesParts(channelId, subject, showCode, block?.target_date ?? null);
   if (!chapters.length) return { peek: () => null, consume: () => {} };
 
   const target = nextChapter(channelId, subject, block.target_date);
@@ -414,8 +418,9 @@ function serialIterator(channelId, subject, block, showCode = null) {
  * caller has one to enforce (a movie block), so a series whose rows are typed as
  * something else contributes nothing rather than contributing the wrong thing.
  */
-function seriesParts(channelId, subject, showCode = null) {
+function seriesParts(channelId, subject, showCode = null, date = null) {
   const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
+  if (date) clauses.push(holidaySql(date).allowed); // a Christmas saga waits for Christmas
   const params = [channelId, subject];
   if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
   return db.prepare(`
@@ -471,13 +476,14 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
   const scope = subjects === undefined
     ? templateSeries(template, channelId).map((s) => s.subject)
     : subjects;
+  const hol = holidaySql(block.target_date);
   let all;
   if (scope === null) {
     all = db.prepare(`
-      SELECT r.* FROM Resource r
+      SELECT r.*, ${hol.inSeason} AS in_season FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = 'movies' AND ${ON_DISK_SQL}
+        AND st.code = 'movies' AND ${ON_DISK_SQL} AND ${hol.allowed}
     `).all(channelId, blockSecs);
   } else {
     if (!scope.length) return [];
@@ -486,10 +492,10 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
     // not a content type: the production catalogue has 971 lesson files carrying
     // show_type Movies, and without this join they schedule as films.
     all = db.prepare(`
-      SELECT r.* FROM Resource r
+      SELECT r.*, ${hol.inSeason} AS in_season FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = ? AND r.subject IN (${marks}) AND ${ON_DISK_SQL}
+        AND st.code = ? AND r.subject IN (${marks}) AND ${ON_DISK_SQL} AND ${hol.allowed}
     `).all(channelId, blockSecs, MOVIES_CODE, ...scope);
   }
   if (!all.length) return [];
@@ -503,7 +509,12 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
       AND sb.target_date BETWEEN date(?, '-6 days') AND date(?, '+6 days')
   `).all(block.id, block.target_date, block.target_date).map((r) => r.id));
 
-  const cooled = cooldownEligible(channelId, all, block.target_date);
+  // In season, a holiday film is exempt from the cooldown (it has a few weeks a
+  // year); the ±6-day no-repeat still holds.
+  const cooled = [
+    ...all.filter((r) => Number(r.in_season)),
+    ...cooldownEligible(channelId, all.filter((r) => !Number(r.in_season)), block.target_date),
+  ];
   const unaired = all.filter((r) => !nearby.has(r.id));
   const fresh = cooled.filter((r) => !nearby.has(r.id));
   if (fresh.length) return fresh;
@@ -640,7 +651,7 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
         ? franchiseFilter(pool, channelId, block, saga)
         : pool.filter((r) => !r.subject || Number(r.chapter) <= 0);
       const room = blockSecs - (pos - startSecs);
-      for (const r of chooseMovies(pool, pos, room, limit - items.length)) place(r);
+      for (const r of preferSeasonal(pool, pos, room, limit - items.length)) place(r);
     }
     return { items, hole: blockSecs - (pos - startSecs) };
   };
@@ -660,6 +671,30 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
     }
   }
   return run.items;
+}
+
+/**
+ * chooseMovies(), preferring films in their holiday season: as many seasonal
+ * titles as fit lead the run and the rest is filled by best fit. When that
+ * leaves more dead air than the filler-run cap and leading with a single
+ * seasonal title closes the slot better, the single lead wins — a holiday film
+ * is preferred, never at the price of a block that cannot air.
+ */
+function preferSeasonal(pool, startSecs, room, limit) {
+  const seasonal = pool.filter((r) => Number(r.in_season));
+  if (!seasonal.length || limit <= 0) return chooseMovies(pool, startSecs, room, limit);
+  const sum = (list) => list.reduce((s, r) => s + r.duration, 0);
+  const lead = (k) => {
+    const first = chooseMovies(seasonal, startSecs, room, k);
+    const used = new Set(first.map((r) => r.id));
+    const rest = chooseMovies(pool.filter((r) => !used.has(r.id)), startSecs + sum(first),
+      room - sum(first), limit - first.length);
+    return [...first, ...rest];
+  };
+  const many = lead(limit);
+  if (room - sum(many) <= fillerRunLimit()) return many;
+  const one = lead(1);
+  return room - sum(one) < room - sum(many) ? one : many;
 }
 
 /**
@@ -704,7 +739,7 @@ export function activeFranchise(channelId, subjects, block) {
     `).all(channelId, MOVIES_CODE).map((r) => r.subject);
   }
   for (const subject of list) {
-    const parts = seriesParts(channelId, subject, MOVIES_CODE)
+    const parts = seriesParts(channelId, subject, MOVIES_CODE, block?.target_date ?? null)
       .map((r) => Number(r.chapter))
       .filter((c) => c > 0);
     if (parts.length < 2) continue; // a one-part "saga" is never mid-run
@@ -752,15 +787,18 @@ function franchiseFilter(pool, channelId, block, activeSubject) {
  */
 function cooldownOrder(channelId, pool, asOfDate) {
   if (!pool.length) return [];
-  const eligible = cooldownEligible(channelId, pool, asOfDate);
-  const eligibleIds = new Set(eligible.map((r) => r.id));
-  const cooling = pool.filter((r) => !eligibleIds.has(r.id));
   const rotate = (list) => {
     if (list.length < 2) return list;
     const i = new Date(asOfDate + 'T00:00:00').getDate() % list.length;
     return [...list.slice(i), ...list.slice(0, i)];
   };
-  return [...rotate(eligible), ...rotate(cooling)];
+  // A film in its season leads, cooldown or not: it has a few weeks a year.
+  const seasonal = pool.filter((r) => Number(r.in_season));
+  const rest = pool.filter((r) => !Number(r.in_season));
+  const eligible = cooldownEligible(channelId, rest, asOfDate);
+  const eligibleIds = new Set(eligible.map((r) => r.id));
+  const cooling = rest.filter((r) => !eligibleIds.has(r.id));
+  return [...rotate(seasonal), ...rotate(eligible), ...rotate(cooling)];
 }
 
 function iteratorForSeries(series, channelId, block, blockSecs) {
@@ -769,7 +807,7 @@ function iteratorForSeries(series, channelId, block, blockSecs) {
       return serialIterator(channelId, series.subject, block);
     case 'tv': {
       const weekday = WEEKDAYS[new Date(block.target_date + 'T00:00:00').getDay()];
-      const pool = candidates(channelId, series.subject, blockSecs);
+      const pool = candidates(channelId, series.subject, blockSecs, null, block.target_date);
       // Sunday still leads with the latest-added episode (SEED §4); it just
       // carries on down the list instead of stopping there.
       return sequenceIterator(weekday === 'Sun'
@@ -779,7 +817,7 @@ function iteratorForSeries(series, channelId, block, blockSecs) {
     case 'cooldown':
     default:
       return sequenceIterator(
-        cooldownOrder(channelId, candidates(channelId, series.subject, blockSecs), block.target_date)
+        cooldownOrder(channelId, candidates(channelId, series.subject, blockSecs, null, block.target_date), block.target_date)
       );
   }
 }
@@ -1092,7 +1130,7 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
       const hole = blockSecs - total;
       let best = null;
       for (const sr of openSeries) {
-        for (const r of candidates(channelId, sr.subject, hole)) {
+        for (const r of candidates(channelId, sr.subject, hole, null, block.target_date)) {
           if (usedIds.has(r.id)) continue;
           if (!best || r.duration > best.duration) best = r;
         }

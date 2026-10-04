@@ -389,6 +389,32 @@ export function initSchema() {
   // correction) rather than by the operator. Auto shifts are recomputed from
   // scratch on every rebalance; an operator's shift is never touched.
   addColumnIfMissing('ScheduledBlock', 'end_shift_auto', 'INTEGER NOT NULL DEFAULT 0');
+  // Seasonal programming (services/holidays.js). "Holiday", not "season":
+  // Resource.season is the TV season number. A holiday is a yearly MM-DD range
+  // (may wrap the new year); files are marked by path so the decision holds on
+  // every channel carrying the file.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS Holiday (
+      id        INTEGER PRIMARY KEY,
+      name      TEXT NOT NULL UNIQUE,
+      start_md  TEXT NOT NULL,              -- 'MM-DD'
+      end_md    TEXT NOT NULL,              -- 'MM-DD', may be before start_md (wraps the year)
+      color     TEXT,
+      active    INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS HolidayFile (
+      file_path  TEXT NOT NULL,
+      holiday_id INTEGER NOT NULL REFERENCES Holiday(id) ON DELETE CASCADE,
+      PRIMARY KEY (file_path, holiday_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_holidayfile_holiday ON HolidayFile(holiday_id);
+  `);
+  if (!db.prepare('SELECT 1 FROM Holiday LIMIT 1').get()) {
+    const seed = db.prepare('INSERT OR IGNORE INTO Holiday (name, start_md, end_md, color) VALUES (?, ?, ?, ?)');
+    seed.run('Christmas', '12-01', '12-31', '#c0392b');
+    seed.run('Halloween', '10-15', '10-31', '#e67e22');
+    seed.run("Valentine's Day", '02-01', '02-14', '#d6336c');
+  }
   addColumnIfMissing('ShowType', 'code', 'TEXT');
   addColumnIfMissing('ShowType', 'is_filler', 'INTEGER NOT NULL DEFAULT 0');
   // These Resource columns predate this migration helper — guard them for DBs

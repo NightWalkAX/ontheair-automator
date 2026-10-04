@@ -884,6 +884,8 @@ function blockItem(itemId, item, message) {
 
 /** Point every catalogue row for this physical file at the converted one. */
 function pointCatalogue(item, finalCanonical) {
+  // Seasonal marks are keyed by path too: they follow the file.
+  db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(finalCanonical, item.file_path);
   return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
     .run(finalCanonical, Math.round(item.out_duration || item.src_duration || 0), item.file_path).changes;
 }
@@ -891,9 +893,12 @@ function pointCatalogue(item, finalCanonical) {
 /** Snapshot the catalogue rows for one file, returning a restore(). */
 function catalogueSnapshot(filePath) {
   const rows = db.prepare('SELECT id, file_path, duration FROM Resource WHERE file_path = ?').all(filePath);
+  const marks = db.prepare('SELECT holiday_id FROM HolidayFile WHERE file_path = ?').all(filePath);
   return () => {
     const back = db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE id = ?');
     for (const r of rows) back.run(r.file_path, r.duration, r.id);
+    const mark = db.prepare('INSERT OR IGNORE INTO HolidayFile (file_path, holiday_id) VALUES (?, ?)');
+    for (const m of marks) mark.run(filePath, m.holiday_id);
   };
 }
 

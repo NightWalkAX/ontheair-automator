@@ -15,6 +15,7 @@
 
 import { Router } from 'express';
 import { dirname } from 'node:path';
+import { holidaysByFile, setFileHolidays } from '../services/holidays.js';
 import { db, withTx } from '../db.js';
 import { parseEpisode, encodeChapter } from '../services/episodeParse.js';
 import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
@@ -87,6 +88,8 @@ router.get('/', (req, res) => {
   const roots = db.prepare('SELECT path FROM MediaRoot WHERE channel_id = ?')
     .all(channelId).map((x) => x.path);
 
+  const marks = holidaysByFile();
+
   // Group into show_type → subject → [episodes].
   const groups = new Map();
   for (const r of rows) {
@@ -105,6 +108,7 @@ router.get('/', (req, res) => {
       is_filler: !!r.is_filler, approved: !!r.approved, has_override: !!r.has_override,
       file_path: r.file_path, rel_dirs: relDirs(r.file_path, roots),
       show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
+      holidays: marks[r.file_path] || [],
     });
   }
   const out = [...groups.values()].map((g) => ({ ...g, shows: [...g.shows.values()] }));
@@ -150,6 +154,7 @@ router.put('/resource/:id', (req, res) => {
 //   set-showtype    { show_type_id }
 //   find-replace    { field, find, replace } string replace on display_name|subject
 //   template        { template }           display_name = tokens {name}{subject}{chapter}{n}
+//   set-holidays    { holiday_ids, mode }  seasonal marks per FILE; mode set|add|remove
 router.post('/bulk', (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
   const op = String(req.body?.op || '');
@@ -162,7 +167,7 @@ router.post('/bulk', (req, res) => {
     // set-approved is a pure availability flag — it doesn't touch the
     // organization fields, so don't snapshot an override (would falsely badge
     // the clip as "edited").
-    if (op !== 'set-approved') for (const id of ids) ensureOverride(id);
+    if (op !== 'set-approved' && op !== 'set-holidays') for (const id of ids) ensureOverride(id);
     switch (op) {
       case 'set-subject': {
         const subject = req.body.subject || null;
@@ -291,6 +296,15 @@ router.post('/bulk', (req, res) => {
         }
         break;
       }
+      case 'set-holidays': {
+        // Seasonal programming: marks are per FILE (every channel's copy), so
+        // this needs no sibling sync. mode: set | add | remove.
+        const mode = ['set', 'add', 'remove'].includes(req.body.mode) ? req.body.mode : 'set';
+        const holidayIds = Array.isArray(req.body.holiday_ids) ? req.body.holiday_ids : [];
+        const paths = ids.map((id) => rowFor.get(id)?.file_path).filter(Boolean);
+        setFileHolidays(paths, holidayIds, mode);
+        break;
+      }
       case 'set-approved': {
         // Review gate toggle. Only approved resources are visible to the
         // scheduling engine (see services/scheduling.js + playHistory.js).
@@ -337,7 +351,7 @@ router.post('/bulk', (req, res) => {
     }
     // The fix-order editors address rows through `entries`, not `ids`.
     const entryIds = Array.isArray(req.body.entries) ? req.body.entries.map((e) => Number(e.id)) : [];
-    if (op !== 'set-showtype') syncSiblings([...ids, ...entryIds]);
+    if (op !== 'set-showtype' && op !== 'set-holidays') syncSiblings([...ids, ...entryIds]);
   };
   try { withTx(run); } catch (err) { return res.status(400).json({ error: String(err.message || err) }); }
   res.json({ ok: true, count: ids.length });
