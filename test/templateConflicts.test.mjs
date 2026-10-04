@@ -86,3 +86,32 @@ test('a movie block with no saga mid-run may start one when every standalone fil
   const run = pickMovieRun({ id: 0, is_movie_block: 1, movie_limit: 1 }, { id: 0, target_date: '2031-02-02' }, 7200, 0, c);
   assert.deepEqual(run.map((r) => r.name), ['Saga_1'], 'the next saga starts at its first part — never part 2');
 });
+
+test('fillers are spread between programmes by TIME, and cooling films close a hole fresh ones cannot', async () => {
+  const { spreadFillers, moviePool } = await import('../src/services/scheduling.js');
+  const M = (id) => ({ id, duration: 5000, is_filler: 0 });
+  const F = (id, d) => ({ id, duration: d, is_filler: 1 });
+  // One 11-minute filler and eight short ones, two gaps: by count the long one
+  // and four short ones shared a gap; by time the long one sits alone-ish.
+  const out = spreadFillers([M('A')], [F('big', 685), ...[1, 2, 3, 4, 5, 6, 7, 8].map((i) => F(`s${i}`, 120))]);
+  const gapSecs = [];
+  let run = 0;
+  for (const r of [...out, M('end')]) { if (r.is_filler) run += r.duration; else { gapSecs.push(run); run = 0; } }
+  assert.ok(Math.max(...gapSecs) <= 1645 / 2 + 120, `gaps ${gapSecs}`); // by count it was 685 + 4×120 = 1165 vs 480
+  assert.equal(out.filter((r) => r.is_filler).length, 9);
+
+  // Two fresh films leave 45 minutes; a cooling third one closes it.
+  const movies = db.prepare("SELECT id FROM ShowType WHERE code = 'movies'").get().id;
+  const c = db.prepare("INSERT INTO ChannelType (name) VALUES ('Cooling') RETURNING id").get().id;
+  const film = (name, d) => db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, approved, channel_id, show_type_id, subject, chapter)
+    VALUES (?, ?, ?, 0, 1, ?, ?, 'Movies', 0) RETURNING id`).get(name, `/c/${name}.mov`, d, c, movies).id;
+  film('Fresh1', 6500); film('Fresh2', 5100);
+  const cooling = [film('Cool1', 2800), film('Cool2', 9000), film('Cool3', 9100), film('Cool4', 9200)];
+  for (const id of cooling) db.prepare("INSERT INTO PlayHistory (resource_id, channel_id, played_at) VALUES (?, ?, '2031-03-01T20:00:00')").run(id, c);
+  const tplRow = { id: 0, is_movie_block: 1, movie_limit: 3 };
+  const blk = { id: 0, target_date: '2031-03-02' };
+  assert.deepEqual(moviePool(tplRow, blk, 14400, c, null).map((r) => r.name).sort(), ['Fresh1', 'Fresh2']);
+  const picked = pickMovieRun(tplRow, blk, 14400, 0, c).map((r) => r.name);
+  const total = picked.reduce((n, name) => n + { Fresh1: 6500, Fresh2: 5100, Cool1: 2800, Cool2: 9000, Cool3: 9100, Cool4: 9200 }[name], 0);
+  assert.ok(14400 - total <= 1200, `hole ${14400 - total}s with ${picked}`);
+});

@@ -662,7 +662,18 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
       // fit would air "Narnia 2" with no "Narnia 1" before it — or start a second
       // saga while the first is half aired; allowed() above is what prevents it.)
       const room = blockSecs - (pos - startSecs);
-      for (const r of preferSeasonal(pool, pos, room, limit - items.length)) place(r);
+      let picks = preferSeasonal(pool, pos, room, limit - items.length);
+      // Fresh titles first — but when they cannot fill the slot (production,
+      // Discover Night Movies: 2 of 138 films outside a 69-day cooldown, leaving
+      // 45 minutes of filler), let cooling titles close it. The cooldown is a
+      // preference; a block that cannot air is not.
+      const left = (list) => room - list.reduce((n, r) => n + r.duration, 0);
+      if (left(picks) > fillerRunLimit()) {
+        const wide = allowed(moviePool(template, block, blockSecs, channelId, scope, { ignoreCooldown: true }));
+        const alt = preferSeasonal(wide, pos, room, limit - items.length);
+        if (left(alt) < left(picks)) picks = alt;
+      }
+      for (const r of picks) place(r);
     }
     return { items, hole: blockSecs - (pos - startSecs) };
   };
@@ -1279,6 +1290,25 @@ export function spreadFillers(main, fillers) {
   if (!main.length) return [...fillers];
   if (!fillers.length) return [...main];
   const gaps = main.length + 1;
+  // Real clips have durations: balance the gaps by TIME, not by count. Dealing
+  // by count put an 11-minute filler and eight short ones in one gap (28:56 of
+  // dead air) and nine short ones in the other. Longest first into the gap with
+  // the least time so far; each gap keeps the fillers in their original order.
+  if (fillers.every((f) => Number(f.duration) > 0)) {
+    const buckets = Array.from({ length: gaps }, () => ({ secs: 0, idx: [] }));
+    const order = fillers.map((f, i) => i).sort((a, b) => fillers[b].duration - fillers[a].duration || a - b);
+    for (const i of order) {
+      const g = buckets.reduce((best, x) => (x.secs < best.secs ? x : best), buckets[0]);
+      g.secs += Number(fillers[i].duration);
+      g.idx.push(i);
+    }
+    const out = [];
+    buckets.forEach((g, k) => {
+      for (const i of g.idx.sort((a, b) => a - b)) out.push(fillers[i]);
+      if (k < main.length) out.push(main[k]);
+    });
+    return out;
+  }
   const base = Math.floor(fillers.length / gaps);
   let extra = fillers.length % gaps; // remainder spread over the leading gaps
   const out = [];
