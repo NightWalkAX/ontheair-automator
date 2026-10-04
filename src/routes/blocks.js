@@ -265,9 +265,10 @@ export function parseChannelIds(v) {
 // POST /api/blocks/generate?weekStart=YYYY-MM-DD (defaults to today)
 router.post('/generate', (req, res) => {
   const ws = req.query.weekStart ? new Date(String(req.query.weekStart) + 'T00:00:00') : new Date();
-  const channelId = req.query.channel_id ? Number(req.query.channel_id) : null;
+  // ?channels=1,3 (the scope picker) or the legacy single ?channel_id=; none = every channel.
+  const ids = parseChannelIds(req.query.channels ?? req.query.channel_id);
   try {
-    const results = generateWeek(ws, channelId);
+    const results = generateWeek(ws, ids.length ? ids : null);
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -296,6 +297,30 @@ function balanceBlockDay(blockId) {
   `).get(blockId);
   return b && b.channel_id != null ? balanceDay(b.channel_id, b.target_date) : null;
 }
+
+// GET /api/blocks/:id/counterparts?channels=1,3 — the same airing on other
+// channels: same template, same slot, same date. The scope picker uses it to run
+// a block action (approve, force, regenerate) on "this channel + others"; each
+// counterpart then goes through the same endpoint, with its own verdict.
+// Channels the template does not air on that day are listed in `none`.
+router.get('/:id/counterparts', (req, res) => {
+  const b = db.prepare(`
+    SELECT sb.id, sb.template_id, sb.slot_id, sb.target_date, COALESCE(sb.channel_id, bt.channel_id) AS channel_id
+    FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id WHERE sb.id = ?
+  `).get(Number(req.params.id));
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const wanted = parseChannelIds(req.query.channels).filter((c) => c !== b.channel_id);
+  const rows = wanted.length ? db.prepare(`
+    SELECT sb.id, sb.status, COALESCE(sb.channel_id, bt.channel_id) AS channel_id, c.name AS channel_name
+    FROM ScheduledBlock sb
+    JOIN BlockTemplate bt ON bt.id = sb.template_id
+    JOIN ChannelType c ON c.id = COALESCE(sb.channel_id, bt.channel_id)
+    WHERE sb.template_id = ? AND sb.slot_id IS ? AND sb.target_date = ?
+      AND COALESCE(sb.channel_id, bt.channel_id) IN (${wanted.map(() => '?').join(',')})
+  `).all(b.template_id, b.slot_id, b.target_date, ...wanted) : [];
+  const found = new Set(rows.map((r) => r.channel_id));
+  res.json({ block: b, counterparts: rows, none: wanted.filter((c) => !found.has(c)) });
+});
 
 // POST /api/blocks/:id/regenerate — repopulate one block (keeps manual items).
 router.post('/:id/regenerate', (req, res) => {
@@ -503,7 +528,8 @@ router.get('/', (req, res) => {
 // for a single combined document covering every channel.
 router.get('/export', (req, res) => {
   const start = req.query.week ? new Date(String(req.query.week) + 'T00:00:00') : new Date();
-  const channelId = req.query.channel_id ? Number(req.query.channel_id) : null;
+  const channelIds = parseChannelIds(req.query.channels ?? req.query.channel_id);
+  const channelId = channelIds.length === 1 ? channelIds[0] : null;
   const dates = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(start); d.setDate(d.getDate() + i);
@@ -512,7 +538,10 @@ router.get('/export', (req, res) => {
 
   const clauses = ['sb.target_date BETWEEN ? AND ?'];
   const params = [dates[0], dates[6]];
-  if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
+  if (channelIds.length) {
+    clauses.push(`COALESCE(sb.channel_id, bt.channel_id) IN (${channelIds.map(() => '?').join(',')})`);
+    params.push(...channelIds);
+  }
   const blocks = db.prepare(`
     SELECT sb.id, sb.target_date, sb.status, sb.end_shift_seconds,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
@@ -566,6 +595,7 @@ router.get('/export', (req, res) => {
 
   const scopeLabel = channelId != null
     ? (blocks[0]?.channel_name || `Channel ${channelId}`)
+    : channelIds.length ? [...new Set(blocks.map((b) => b.channel_name))].join(', ') || 'Selected channels'
     : 'All channels';
   let body = '';
   if (!blocks.length) {
@@ -962,9 +992,13 @@ router.put('/:id/shift', (req, res) => {
 router.post('/approve-week', (req, res) => {
   const start = req.query.week ? new Date(String(req.query.week) + 'T00:00:00') : new Date();
   const end = new Date(start); end.setDate(end.getDate() + 6);
-  const drafts = db.prepare(
-    "SELECT id FROM ScheduledBlock WHERE status='draft' AND target_date BETWEEN ? AND ?"
-  ).all(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+  // ?channels=1,3 limits it to the channels the operator picked; none = all.
+  const ids = parseChannelIds(req.query.channels);
+  const drafts = db.prepare(`
+    SELECT sb.id FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id
+    WHERE sb.status = 'draft' AND sb.target_date BETWEEN ? AND ?
+    ${ids.length ? `AND COALESCE(sb.channel_id, bt.channel_id) IN (${ids.map(() => '?').join(',')})` : ''}
+  `).all(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), ...ids);
 
   const approved = [], blocked = [];
   for (const { id } of drafts) {

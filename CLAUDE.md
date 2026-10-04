@@ -412,6 +412,21 @@ production data of 2026-10-04:
   (Elevate ending 23:34 on 09-28, MoE Central at 19:30), and a freshly generated week ends exactly
   at the next day's event wherever every block approves.
 
+## Channel scope and deletion
+
+- **Every scheduling action takes a channel scope** (the UI's "this channel / this + others"
+  picker). Week-wide: `POST /generate`, `POST /approve-week`, `GET /export`, `GET /week-check` and
+  `POST /api/otav/push` all accept `channels=1,3` (`parseChannelIds()` in `routes/blocks.js`; none
+  = every channel, and `channel_id=` still works). Per block: `GET /api/blocks/:id/counterparts?
+  channels=` resolves the same airing (template + slot + date) on the other channels, and the UI
+  runs the normal per-block endpoint on each, so every block keeps its own verdict. Shift and
+  set-episode stay per channel: neighbours and series cursors differ.
+- **Deleting a channel** (`DELETE /api/channels/:id`, preview at `GET …/delete-preview`) is no
+  longer a bare cascade: a template whose PRIMARY channel is the deleted one but which also airs
+  elsewhere is handed to another of its channels first (the cascade took it away from everybody),
+  Air Spec's queue rows move to a surviving copy of the file, monitor feeds lose only the link, a
+  running push refuses it, and blocks already pushed for today or later need `?force=1`.
+
 ## OnTheAir Video REST API (integration target)
 
 Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>/...` (per `ChannelType` row) — this project talks to 6 of them independently, not one shared instance.

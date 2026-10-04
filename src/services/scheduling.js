@@ -1379,7 +1379,15 @@ export function populateBlock(block) {
  * Idempotent via UNIQUE(template_id, slot_id, target_date). Returns the blocks,
  * sorted primary-first within each template/date so mirrors populate after.
  */
+/** null | id | [ids] → null (every channel) or a Set of channel ids. */
+function channelScope(channelId) {
+  if (channelId == null) return null;
+  const ids = (Array.isArray(channelId) ? channelId : [channelId]).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length ? new Set(ids) : null;
+}
+
 export function rollForwardTemplates(weekStart = new Date(), channelId = null) {
+  const scope = channelScope(channelId);
   const templates = db.prepare('SELECT * FROM BlockTemplate').all();
 
   // The active channels a template airs on (BlockTemplateChannel, falling back to
@@ -1408,7 +1416,7 @@ export function rollForwardTemplates(weekStart = new Date(), channelId = null) {
       if (!templateWeekdays(t).includes(weekday)) continue;
       let channels = channelsFor.all(t.id).map((r) => r.id);
       if (!channels.length && legacyChannel.get(t.channel_id)) channels.push(t.channel_id);
-      if (channelId != null) channels = channels.filter((c) => c === Number(channelId));
+      if (scope) channels = channels.filter((c) => scope.has(c));
       for (const ch of channels) {
         for (const slot of templateSlots(t)) {
           insert.run(t.id, slot.id, ch, target);
@@ -1437,9 +1445,10 @@ export function rollForwardTemplates(weekStart = new Date(), channelId = null) {
 function wipeDraftBlocks(weekStart, channelId) {
   const clauses = ["status = 'draft'", 'target_date BETWEEN ? AND ?'];
   const params = [dateStr(0, weekStart), dateStr(6, weekStart)];
-  if (channelId != null) {
-    clauses.push("COALESCE(channel_id, (SELECT channel_id FROM BlockTemplate WHERE id = template_id)) = ?");
-    params.push(Number(channelId));
+  const scope = channelScope(channelId);
+  if (scope) {
+    clauses.push(`COALESCE(channel_id, (SELECT channel_id FROM BlockTemplate WHERE id = template_id)) IN (${[...scope].map(() => '?').join(',')})`);
+    params.push(...scope);
   }
   db.prepare(`DELETE FROM ScheduledBlock WHERE ${clauses.join(' AND ')}`).run(...params);
 }
@@ -1447,8 +1456,8 @@ function wipeDraftBlocks(weekStart, channelId) {
 /**
  * Generate a full week: delete the existing draft schedule for the scope, roll
  * forward templates, then populate each freshly-created draft block. Approved/
- * exported blocks survive the wipe and are not repopulated. Pass a channelId to
- * restrict generation to a single channel (per-channel tab).
+ * exported blocks survive the wipe and are not repopulated. Pass a channel id (or
+ * a list of them) to restrict generation to those channels.
  */
 export function generateWeek(weekStart = new Date(), channelId = null) {
   wipeDraftBlocks(weekStart, channelId);

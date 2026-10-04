@@ -300,3 +300,33 @@ test('the end of the day closes with fillers, or hands the residue back to the b
   assert.ok(Math.abs(w[ba].blockSeconds - tot(ba)) <= 5, `Before lands: ${w[ba].blockSeconds} vs ${tot(ba)}`);
   assert.equal(w[bb].effective_end, '00:00:00', 'and the day still ends at midnight');
 });
+
+test('scope: approve-week, generate and counterparts honour ?channels=', async () => {
+  const { router: blocks } = await import('../src/routes/blocks.js');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/blocks', blocks);
+  const srv = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+  const b = `http://127.0.0.1:${srv.address().port}`;
+  const call = async (m, p) => { const r = await fetch(b + p, { method: m }); return { status: r.status, data: await r.json() }; };
+  try {
+    const x = channel('Scope X'), y = channel('Scope Y'), z = channel('Scope Z');
+    const date = '2031-07-07';
+    const t = template(x, 'Shared scope', [['10:00', '11:00']]);
+    for (const c of [x, y, z]) db.prepare('INSERT INTO BlockTemplateChannel (template_id, channel_id) VALUES (?, ?)').run(t.tpl, c);
+    const bx = block(t.tpl, t.slots[0], x, date, 'draft');
+    const by = block(t.tpl, t.slots[0], y, date, 'draft');
+    fill(bx, x, 3600);
+    fill(by, y, 3600);
+
+    const cp = await call('GET', `/api/blocks/${bx}/counterparts?channels=${y},${z}`);
+    assert.deepEqual(cp.data.counterparts.map((r) => r.id), [by]);
+    assert.deepEqual(cp.data.none, [z], 'Z has no block for that airing');
+
+    const wk = await call('POST', `/api/blocks/approve-week?week=${date}&channels=${x}`);
+    assert.deepEqual(wk.data.approved, [bx], 'only the chosen channel is approved');
+    assert.equal(db.prepare('SELECT status FROM ScheduledBlock WHERE id = ?').get(by).status, 'draft');
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
