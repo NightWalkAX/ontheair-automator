@@ -412,6 +412,18 @@ production data of 2026-10-04:
   (Elevate ending 23:34 on 09-28, MoE Central at 19:30), and a freshly generated week ends exactly
   at the next day's event wherever every block approves.
 
+## Validation cost (what froze the app)
+
+`EPISODE_NO_CTE` window-numbers the whole non-filler catalogue (~40k rows on the production
+library) on every statement that uses it. Run once per block it was the event-loop stalls in the
+logs: validating a week for the push gate took 47.6s, the printable export 20–64s, and a push
+labelled every block twice. Per-block statements now use `EPISODE_NO_BLOCK_CTE` (labels.js; bind the
+block id FIRST), which numbers only the partitions that block touches — same numbers, ~1/20th the
+cost — and gates that need only the verdict call `validateBlock(id, { windows, labels: false })`,
+with `windows` a Map caching each channel-day's `linkShifts()`. Measured on the production copy:
+week push gate 47.6s → 0.19s, export 64s → 1.9s, week check 0.35s. Keep it that way: never
+validate block-by-block with labels in a loop.
+
 ## Channel scope and deletion
 
 - **Every scheduling action takes a channel scope** (the UI's "this channel / this + others"

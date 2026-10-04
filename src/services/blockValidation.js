@@ -21,9 +21,9 @@ import { db } from '../db.js';
 import { localizePath } from '../config.js';
 import {
   MOVIES_CODE, blockDurationSeconds, fillerRunLimit, fitTolerance, fitsTolerance,
-  maxFillerRunSeconds, maxShiftSeconds, shiftedWindow,
+  maxFillerRunSeconds, maxShiftSeconds, shiftedWindow, linkShifts, channelDayBlocks,
 } from './scheduling.js';
-import { EPISODE_NO_CTE, withLabel } from './labels.js';
+import { EPISODE_NO_BLOCK_CTE, withLabel } from './labels.js';
 
 /** The non-filler items of a movie block whose show type is not Movies. */
 export function offTypeItems(block, items) {
@@ -35,7 +35,7 @@ export function offTypeItems(block, items) {
  * Full validation of one block: its row, its labelled items and every number the
  * UI shows. Returns null when the block is gone.
  */
-export function validateBlock(blockId) {
+export function validateBlock(blockId, { windows = null, labels = true } = {}) {
   const block = db.prepare(`
     SELECT sb.*,
            COALESCE(s.start_time, bt.start_time) AS start_time,
@@ -56,8 +56,17 @@ export function validateBlock(blockId) {
 
   // Items carry season/episode_no so the UI can name them "Show · S01E02"
   // instead of exposing the internal `chapter` ordering key.
-  const items = db.prepare(`
-    WITH ${EPISODE_NO_CTE}
+  // A gate that only needs the verdict (labels: false) skips the episode
+  // numbering, which is most of what a validation costs.
+  const items = !labels ? db.prepare(`
+    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
+           st.code AS show_type_code
+    FROM ScheduleItem si
+    JOIN Resource r ON r.id = si.resource_id
+    LEFT JOIN ShowType st ON st.id = r.show_type_id
+    WHERE si.block_id = ? ORDER BY si.play_order
+  `).all(blockId) : db.prepare(`
+    WITH ${EPISODE_NO_BLOCK_CTE}
     SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
            en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
     FROM ScheduleItem si
@@ -66,11 +75,24 @@ export function validateBlock(blockId) {
     LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
     LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE si.block_id = ? ORDER BY si.play_order
-  `).all(blockId).map(withLabel);
+  `).all(blockId, blockId).map(withLabel);
 
   // The window is the slot as the operator left it: a shifted boundary with the
   // block before or after moves where this one starts or ends.
-  const win = block.channel_id != null ? shiftedWindow(block.id, block.channel_id, block.target_date) : null;
+  // `windows` (a Map cache) lets a caller judging many blocks compute each
+  // channel-day's windows once instead of once per block.
+  let win = null;
+  if (block.channel_id != null) {
+    if (windows) {
+      const k = `${block.channel_id}|${block.target_date}`;
+      if (!windows.has(k)) {
+        windows.set(k, new Map(linkShifts(channelDayBlocks(block.channel_id, block.target_date)).map((r) => [r.id, r])));
+      }
+      win = windows.get(k).get(block.id) ?? null;
+    } else {
+      win = shiftedWindow(block.id, block.channel_id, block.target_date);
+    }
+  }
   const slotSeconds = blockDurationSeconds(block.start_time, block.end_time);
   const blockSeconds = win?.blockSeconds ?? slotSeconds;
   const totalSeconds = items.reduce((s, i) => s + i.duration, 0);
@@ -153,8 +175,9 @@ export function unfitBlocksInRange(from, to, channelIds = []) {
   `).all(...params);
 
   const bad = [];
+  const windows = new Map();
   for (const r of rows) {
-    const v = validateBlock(r.id);
+    const v = validateBlock(r.id, { windows, labels: false });
     // An overridden block goes to air: the operator has already looked at this
     // exact problem and decided it is the best the catalogue can do.
     if (v && !v.approvable) bad.push({ ...r, reason: blockProblem(v) });

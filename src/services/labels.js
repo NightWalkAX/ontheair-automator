@@ -30,6 +30,33 @@ export const EPISODE_NO_CTE = `
   )
 `;
 
+/**
+ * EpisodeNo for the clips of ONE block — bind the block id as the FIRST
+ * parameter of the statement. EPISODE_NO_CTE window-numbers the whole non-filler
+ * catalogue (~40k rows, ~70ms on the production library) every time it runs;
+ * per block that was what made validating a week take 47s and a push or the
+ * printable schedule freeze the app for a minute. Numbering only the
+ * (channel, subject, season) partitions the block actually touches gives the
+ * same numbers, because a row's number depends on its partition alone.
+ */
+export const EPISODE_NO_BLOCK_CTE = `
+  EpParts AS (
+    SELECT DISTINCT r.channel_id AS ch, r.subject AS subj, r.season AS sea
+    FROM ScheduleItem si JOIN Resource r ON r.id = si.resource_id
+    WHERE si.block_id = ? AND r.is_filler = 0
+  ),
+  EpisodeNo AS (
+    SELECT r.id,
+           ROW_NUMBER() OVER (
+             PARTITION BY r.channel_id, COALESCE(r.subject, ''), COALESCE(r.season, -1)
+             ORDER BY r.chapter, r.id
+           ) AS episode_no
+    FROM Resource r
+    JOIN EpParts p ON p.ch = r.channel_id AND r.subject IS p.subj AND r.season IS p.sea
+    WHERE r.is_filler = 0
+  )
+`;
+
 const pad2 = (n) => String(n).padStart(2, '0');
 
 /**

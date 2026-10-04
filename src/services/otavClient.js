@@ -41,7 +41,7 @@ import { db } from '../db.js';
 import {
   createScheduleBatch, flushScheduleBatch, inspectPaths, prepareDaySchedule,
 } from './otavSchedule.js';
-import { EPISODE_NO_CTE, withLabel } from './labels.js';
+import { EPISODE_NO_BLOCK_CTE, withLabel } from './labels.js';
 import { NULL_PROGRESS } from './pushProgress.js';
 import { localDate } from '../dates.js';
 import { log } from '../logger.js';
@@ -542,7 +542,7 @@ class OtavClient {
  */
 function blockItems(blockId) {
   return db.prepare(`
-    WITH ${EPISODE_NO_CTE}
+    WITH ${EPISODE_NO_BLOCK_CTE}
     SELECT si.play_order, r.file_path, r.name, r.duration,
            r.subject, r.season, r.chapter, r.is_filler, en.episode_no,
            ov.display_name AS display_name, st.code AS show_type_code
@@ -553,7 +553,7 @@ function blockItems(blockId) {
     LEFT JOIN ShowType st ON st.id = r.show_type_id
     WHERE si.block_id = ?
     ORDER BY si.play_order
-  `).all(blockId).map(withLabel);
+  `).all(blockId, blockId).map(withLabel);
 }
 
 const DEFAULT_PLAYLIST_PATTERN = '{channel} {date}';

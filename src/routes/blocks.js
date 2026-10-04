@@ -8,7 +8,7 @@ import {
   linkShifts, maxShiftSeconds, populateBlock, shiftedWindow, balanceDay,
 } from '../services/scheduling.js';
 import { blockProblem, validateBlock } from '../services/blockValidation.js';
-import { EPISODE_NO_CTE, clipLabel, withLabel } from '../services/labels.js';
+import { EPISODE_NO_BLOCK_CTE, clipLabel, withLabel } from '../services/labels.js';
 
 export const router = Router();
 
@@ -560,7 +560,7 @@ router.get('/export', (req, res) => {
   linkShifts(blocks); // a shifted block airs at its shifted time
 
   const itemsOf = db.prepare(`
-    WITH ${EPISODE_NO_CTE}
+    WITH ${EPISODE_NO_BLOCK_CTE}
     SELECT r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
            en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
     FROM ScheduleItem si
@@ -608,7 +608,7 @@ router.get('/export', (req, res) => {
       if (!dayBlocks || !dayBlocks.length) continue;
       body += `<h2>${esc(dayLabel(d))}</h2>`;
       for (const b of dayBlocks) {
-        const rows = itemsOf.all(b.id);
+        const rows = itemsOf.all(b.id, b.id);
         const mains = [];
         let offset = 0; // seconds from block start, counting fillers too
         const blockStart = (() => { const [h, m] = b.start_time.split(':').map(Number); return h * 3600 + m * 60; })() + b.start_shift;
@@ -1001,8 +1001,9 @@ router.post('/approve-week', (req, res) => {
   `).all(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), ...ids);
 
   const approved = [], blocked = [];
+  const windows = new Map(); // each channel-day's windows, computed once
   for (const { id } of drafts) {
-    const v = validateBlock(id);
+    const v = validateBlock(id, { windows, labels: false });
     if (v.approvable) {
       recordBlockPlays(v); // these are drafts, so always a first approval
       db.prepare("UPDATE ScheduledBlock SET status='approved' WHERE id=?").run(id);
