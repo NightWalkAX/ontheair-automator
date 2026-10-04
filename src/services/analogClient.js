@@ -269,14 +269,37 @@ export class AnalogClient {
 
 // --- File names on the device ---------------------------------------------------
 
-/** `filePath`'s name on the device: no spaces or accents, ≤31 characters, `_n` to disambiguate. */
+/**
+ * `filePath`'s name on the device: spaces, accents and punctuation become `_`,
+ * ≤31 characters, `_n` to disambiguate. A long name is shortened by WORDS, not
+ * cut at 31: the first word and every word with a digit (episode, grade, part)
+ * always stay, then words from the END — the end is what tells one episode from
+ * the next ("Grade 5 - English Language- Commas Pt 1" → Grade_5_Commas_Pt_1,
+ * where a plain cut left Grade_5_-_English_Language for every lesson).
+ */
 export function deviceFileName(filePath, n = 0) {
   const ext = extname(filePath).toLowerCase();
-  let stem = basename(filePath, extname(filePath)).normalize('NFKD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^A-Za-z0-9._()-]+/g, '_').replace(/_+/g, '_').replace(/^[_.-]+|[_.-]+$/g, '');
-  if (!stem) stem = 'clip';
+  const words = basename(filePath, extname(filePath)).normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/['’`]/g, '').split(/[^A-Za-z0-9.()]+/).map((w) => w.replace(/^\.+|\.+$/g, '')).filter(Boolean);
+  if (!words.length) words.push('clip');
   const suffix = n ? `_${n}` : '';
-  return stem.slice(0, MAX_NAME - ext.length - suffix.length).replace(/[_.-]+$/, '') + suffix + ext;
+  const budget = MAX_NAME - ext.length - suffix.length;
+  const join = (ws) => ws.join('_');
+  if (join(words).length <= budget) return join(words) + suffix + ext;
+  const keep = new Set([0]);
+  const fits = () => join([...keep].sort((a, b) => a - b).map((i) => words[i])).length <= budget;
+  for (let i = 1; i < words.length; i++) {
+    if (!/\d/.test(words[i])) continue;
+    keep.add(i);
+    if (!fits()) { keep.delete(i); break; }
+  }
+  for (let i = words.length - 1; i > 0; i--) {
+    if (keep.has(i)) continue;
+    keep.add(i);
+    if (!fits()) { keep.delete(i); break; }
+  }
+  const stem = join([...keep].sort((a, b) => a - b).map((i) => words[i]));
+  return stem.slice(0, budget).replace(/[_.-]+$/, '') + suffix + ext;
 }
 
 /** Same clip? Lengths within max(3s, 1%) — the device measures frames differently. */

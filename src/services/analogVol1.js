@@ -93,12 +93,14 @@ export async function scanVol1() {
   for (const r of lib) if (r.type !== 'program_guide' && !libBy.has(r.filename)) libBy.set(r.filename, r);
   const cfg = analogConfig();
 
-  // The share side: every catalogued file, by name key, with its length.
+  // The share side: every catalogued file by name key — its full name and the
+  // shortened name the automator would give it on the device — with its length.
   const byKey = new Map();
   for (const r of db.prepare('SELECT file_path, MAX(duration) AS duration FROM Resource GROUP BY file_path').all()) {
-    const k = nameKey(deviceFileName(r.file_path));
-    if (!byKey.has(k)) byKey.set(k, []);
-    byKey.get(k).push(r);
+    for (const k of new Set([nameKey(r.file_path), nameKey(deviceFileName(r.file_path))])) {
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r);
+    }
   }
   const mappedTo = new Map(db.prepare('SELECT device_filename, file_path FROM AnalogFile').all()
     .map((r) => [r.device_filename, r.file_path]));
@@ -366,6 +368,40 @@ async function catalogueArchive(channelId, roots) {
   return n;
 }
 
+// --- Does it fit? --------------------------------------------------------------
+
+/**
+ * Whether the files `paths` still need on the device fit on Vol1, keeping
+ * analog.minFreeGb free. Sizes come from the share (stat), free space from the
+ * device. Also says how much deleting the aired programmes would give back, so
+ * a "doesn't fit" comes with what to do about it.
+ * { files, toCopy, bytes, unreadable[], free, margin, after, fits, short, reclaimable }
+ */
+export async function spaceFor(client, channelId, paths) {
+  const plan = await planFiles(client, paths);
+  const todo = plan.filter((p) => p.state === 'missing');
+  const sizes = new Map();
+  const unreadable = [];
+  await Promise.all(todo.map(async (p) => {
+    const st = await stat(localizePath(p.file_path)).catch(() => null);
+    if (st) sizes.set(p.file_path, st.size);
+    else unreadable.push(p.file_path);
+  }));
+  const bytes = [...sizes.values()].reduce((n, b) => n + b, 0);
+  const disks = await client.disk();
+  const vol = disks.find((d) => /vol1/i.test(String(d.volume))) || disks[0] || null;
+  const margin = analogConfig().minFreeGb * 1073741824;
+  const free = vol ? Number(vol.free) : null;
+  const after = free == null ? null : free - bytes;
+  const fits = after == null ? null : after >= margin;
+  let reclaimable = 0;
+  if (fits === false) reclaimable = (await cleanupPlan(client, channelId).catch(() => ({ bytes: 0 }))).bytes;
+  return {
+    files: plan.length, toCopy: todo.length, bytes, unreadable, free, margin, after, fits,
+    short: fits === false ? margin - after : 0, reclaimable, sizes: Object.fromEntries(sizes),
+  };
+}
+
 // --- Clean-up ------------------------------------------------------------------
 
 /**
@@ -474,16 +510,19 @@ async function runRoutine(client, ch, r) {
   r.step = 'checking what the week needs';
   const paths = filesForRange(ch.id, r.from, r.to, ['approved', 'exported']).map((f) => f.file_path);
   if (!paths.length) throw new AnalogError(`no approved analog blocks between ${r.from} and ${r.to} — approve the week first`);
+  const space = await spaceFor(client, ch.id, paths);
+  r.space = space;
   const plan = await planFiles(client, paths);
   const todo = plan.filter((p) => p.state === 'missing');
-  let need = 0;
-  for (const p of todo) need += (await stat(localizePath(p.file_path)).catch(() => null))?.size ?? 0;
-  const vol = (await client.disk()).find((d) => /vol1/i.test(d.volume)) || (await client.disk())[0];
-  const margin = analogConfig().minFreeGb * 1073741824;
-  say(`${paths.length} clip(s) in the week, ${todo.length} to copy (${gb(need)}); ${vol ? `${gb(vol.free)} free` : 'free space unknown'}`);
-  if (vol && vol.free - need < margin) {
-    throw new AnalogError(`not enough room: copying ${gb(need)} would leave ${gb(vol.free - need)} free, under the `
-      + `${analogConfig().minFreeGb} GB margin — archive more of Vol1 (programmes only leave once they are on the share), or delete movies by hand`);
+  say(`${paths.length} clip(s) in the week, ${todo.length} to copy (${gb(space.bytes)}); `
+    + `${space.free != null ? `${gb(space.free)} free on Vol1, ${gb(space.after)} after copying` : 'free space unknown'}`);
+  if (space.unreadable.length) {
+    throw new AnalogError(`${space.unreadable.length} file(s) the week needs can't be read on the share: ${space.unreadable.slice(0, 5).join(', ')}`);
+  }
+  if (space.fits === false) {
+    throw new AnalogError(`does not fit: copying ${gb(space.bytes)} would leave ${gb(space.after)} free on Vol1, `
+      + `${gb(space.short)} under the ${analogConfig().minFreeGb} GB margin — archive more of Vol1 so its aired `
+      + 'programmes can go, or delete movies by hand');
   }
   guard();
 

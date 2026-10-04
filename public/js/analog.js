@@ -113,18 +113,39 @@ async function loadGrid() {
   $('#anGridCount').textContent = `${d.events.length} event(s) · ${fmt(total)}`;
 }
 
+function renderSpace(sp) {
+  const box = $('#anSpace');
+  box.innerHTML = '';
+  if (!sp) return;
+  const gb = (b) => `${((b || 0) / 1073741824).toFixed(1)} GB`;
+  if (!sp.toCopy) {
+    box.append(badge(['tx-ok', 'nothing to copy']), document.createTextNode(` ${sp.free != null ? `${gb(sp.free)} free on Vol1` : ''}`));
+    return;
+  }
+  const head = sp.fits === false ? badge(['tx-failed', "doesn't fit"]) : sp.fits ? badge(['tx-ok', 'fits']) : badge(['tx-blocked', 'free space unknown']);
+  const text = `${sp.toCopy} file(s) to copy, ${gb(sp.bytes)} · ${sp.free != null ? `${gb(sp.free)} free on Vol1 → ${gb(sp.after)} after` : ''}`
+    + ` · margin ${gb(sp.margin)}`
+    + (sp.fits === false ? ` · ${gb(sp.short)} short${sp.reclaimable ? ` — "Delete aired programmes" frees ${gb(sp.reclaimable)}` : ' — archive Vol1 so aired programmes can go'}` : '')
+    + (sp.unreadable.length ? ` · ${sp.unreadable.length} not readable on the share` : '');
+  box.append(head, document.createTextNode(` ${text}`));
+}
+
 async function checkFiles() {
   const d = await api.get(`/api/analog/files?from=${$('#anFrom').value}&to=${$('#anTo').value}`);
   const tb = $('#anFiles tbody');
   tb.innerHTML = '';
-  if (!d.files.length) emptyRow(tb, 4, 'The analog channel has no blocks in these dates.');
+  if (!d.files.length) emptyRow(tb, 5, 'The analog channel has no blocks in these dates.');
   for (const f of d.files) {
-    tb.append(row(el('span', { textContent: f.name, title: f.file_path }), f.device_filename || '—',
+    const dev = el('span', { textContent: f.device_filename || '—',
+      title: f.device_filename ? `${f.file_path.split('/').pop()} → ${f.device_filename}` : '' });
+    tb.append(row(el('span', { textContent: f.name, title: f.file_path }), dev,
+      f.state === 'missing' ? (f.size != null ? mbText(f.size) : 'unreadable') : '',
       badge(STATE[f.state] || ['', f.state]), f.first_date));
   }
+  renderSpace(d.space);
   const missing = d.files.filter((f) => f.state === 'missing').length;
-  $('#anUploadBtn').disabled = !missing;
-  $('#anUploadBtn').textContent = missing ? `Upload ${missing} missing` : 'Nothing to upload';
+  $('#anUploadBtn').disabled = !missing || d.space?.fits === false;
+  $('#anUploadBtn').textContent = !missing ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload ${missing} missing`;
 }
 
 function renderUpload(u) {

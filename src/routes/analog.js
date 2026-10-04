@@ -11,7 +11,7 @@ import {
   deleteDeviceFiles, deviceFiles, isConfigured, planFiles, rollbackAnalog, startUpload, uploadStatus,
 } from '../services/analogClient.js';
 import {
-  archiveStatus, cancelArchive, cancelRoutine, cleanupPlan, routineStatus, runCleanup, scanVol1, setKind,
+  archiveStatus, cancelArchive, cancelRoutine, cleanupPlan, routineStatus, runCleanup, scanVol1, setKind, spaceFor,
   startArchive, startRoutine, vol1Rows, vol1Summary,
 } from '../services/analogVol1.js';
 
@@ -173,9 +173,14 @@ router.get('/files', device(async ({ ch, client }, req) => {
   const from = DATE.test(String(req.query.from || '')) ? String(req.query.from) : localDate();
   const to = DATE.test(String(req.query.to || '')) ? String(req.query.to) : addDays(from, 6);
   const rows = filesForRange(ch.id, from, to);
-  const plan = await planFiles(client, rows.map((r) => r.file_path));
+  const paths = rows.map((r) => r.file_path);
+  const plan = await planFiles(client, paths);
   const byPath = new Map(plan.map((p) => [p.file_path, p]));
-  return { ok: true, from, to, files: rows.map((r) => ({ ...r, ...byPath.get(r.file_path) })) };
+  const { sizes, ...space } = await spaceFor(client, ch.id, paths);
+  return {
+    ok: true, from, to, space,
+    files: rows.map((r) => ({ ...r, ...byPath.get(r.file_path), size: sizes[r.file_path] ?? null })),
+  };
 }));
 
 // POST /api/analog/upload { from, to } | { paths: [...] } — upload what the device is missing.
@@ -190,7 +195,16 @@ router.post('/upload', async (req, res) => {
     paths = filesForRange(r.ch.id, from, to).map((f) => f.file_path);
   }
   try {
-    res.json({ ok: true, upload: await startUpload(paths) });
+    // Refuse before a single byte moves if it won't fit with the margin kept:
+    // a copy that dies at 507 half way has filled the disk for nothing.
+    const { sizes, ...space } = await spaceFor(r.client, r.ch.id, paths);
+    if (space.fits === false) {
+      const gb = (x) => `${(x / 1073741824).toFixed(1)} GB`;
+      return res.status(507).json({ ok: false, space,
+        error: `does not fit on Vol1: ${gb(space.bytes)} to copy, ${gb(space.free)} free — it would leave ${gb(space.after)}, `
+          + `under the ${gb(space.margin)} margin. ${space.reclaimable ? `Deleting the aired programmes frees ${gb(space.reclaimable)}.` : 'Archive Vol1 so aired programmes can be deleted.'}` });
+    }
+    res.json({ ok: true, space, upload: await startUpload(paths) });
   } catch (err) {
     res.status(err.status ? 502 : 409).json({ ok: false, error: String(err.message || err) });
   }

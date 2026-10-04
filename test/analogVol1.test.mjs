@@ -242,10 +242,24 @@ test('week routine: copies what the approved days need inside the free-space mar
   let r = await j('POST', '/api/analog/routine', { from: tomorrow, to: tomorrow });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   await until(() => vol1.routineStatus().running);
-  assert.match(vol1.routineStatus().error, /not enough room/);
+  assert.match(vol1.routineStatus().error, /does not fit/);
+  assert.equal(fake.state.uploads.length, 0);
+
+  // The files panel says so too, and the upload button's route refuses before copying a byte.
+  let f = await j('GET', `/api/analog/files?from=${tomorrow}&to=${tomorrow}`);
+  assert.equal(f.status, 200, JSON.stringify(f.data));
+  assert.equal(f.data.space.toCopy, 2);
+  assert.equal(f.data.space.fits, false);
+  assert.ok(f.data.space.short > 0);
+  assert.ok(f.data.files.every((x) => x.state !== 'missing' || x.size > 0), 'missing files carry their size');
+  r = await j('POST', '/api/analog/upload', { from: tomorrow, to: tomorrow });
+  assert.equal(r.status, 507);
+  assert.match(r.data.error, /does not fit on Vol1/);
   assert.equal(fake.state.uploads.length, 0);
 
   assert.equal((await j('PUT', '/api/analog/settings', { minFreeGb: 1 })).status, 200);
+  f = await j('GET', `/api/analog/files?from=${tomorrow}&to=${tomorrow}`);
+  assert.equal(f.data.space.fits, true);
   fake.state.onAir.clear(); // the new week replaces the on-air one
   r = await j('POST', '/api/analog/routine', { from: tomorrow, to: tomorrow });
   await until(() => vol1.routineStatus().running);

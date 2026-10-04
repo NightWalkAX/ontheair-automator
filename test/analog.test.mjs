@@ -20,6 +20,8 @@ copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), process.env
   // Windows = slots, so the fixture's arithmetic is the whole story.
   const cfg = JSON.parse(readFileSync(process.env.SCHEDULER_CONFIG, 'utf8'));
   cfg.schedule = { ...(cfg.schedule || {}), extendIntoGaps: false };
+  // The fake device has 20 GB free; the free-space margin has its own test (analogVol1).
+  cfg.analog = { ...(cfg.analog || {}), minFreeGb: 0 };
   writeFileSync(process.env.SCHEDULER_CONFIG, JSON.stringify(cfg));
 }
 
@@ -71,6 +73,10 @@ test('device names: no spaces or accents, at most 31 characters, suffix to disam
   const long = analog.deviceFileName('/m/Math Intervention Program 020 Grade 4 Part 1.mov');
   assert.ok(long.length <= 31, long);
   assert.match(long, /^[A-Za-z0-9._()-]+\.mov$/);
+  // Shortened by words, keeping the first word, the numbers and the end — not cut at 31.
+  assert.equal(analog.deviceFileName('/m/Grade 5 - English Language- Commas Pt 1.mov'), 'Grade_5_Commas_Pt_1.mov');
+  assert.equal(analog.deviceFileName("/m/Diff'rent Strokes S01E03.mp4"), 'Diffrent_Strokes_S01E03.mp4');
+  assert.match(analog.deviceFileName('/m/Cosmos A Spacetime Odyssey 01 Standing Up in the Milky Way.mov'), /^Cosmos_01_.*Milky_Way\.mov$/);
   const second = analog.deviceFileName('/m/Math Intervention Program 020 Grade 4 Part 1.mov', 2);
   assert.ok(second.endsWith('_2.mov') && second.length <= 31, second);
 });
