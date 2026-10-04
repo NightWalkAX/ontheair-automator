@@ -3,6 +3,7 @@
 
 import { Router } from 'express';
 import { db, withTx } from '../db.js';
+import { checkWeek } from '../services/dayCoverage.js';
 import {
   blockDurationSeconds, channelDayBlocks, fillerRunLimit, fitTolerance, fitsTolerance, generateWeek,
   linkShifts, maxShiftSeconds, populateBlock, shiftedWindow, balanceDay,
@@ -419,7 +420,7 @@ router.get('/', (req, res) => {
   const params = [dates[0], dates[6]];
   if (channelId != null) { clauses.push('COALESCE(sb.channel_id, bt.channel_id) = ?'); params.push(channelId); }
   const rows = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, sb.override_reason, sb.end_shift_seconds,
+    SELECT sb.id, sb.target_date, sb.status, sb.slot_id, sb.override_reason, sb.end_shift_seconds, sb.end_shift_auto,
            COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
            bt.name AS template_name, bt.weekday, bt.content_type,
            COALESCE(s.start_time, bt.start_time) AS start_time,

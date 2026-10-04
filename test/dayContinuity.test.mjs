@@ -323,6 +323,11 @@ test('scope: approve-week, generate and counterparts honour ?channels=', async (
     assert.deepEqual(cp.data.counterparts.map((r) => r.id), [by]);
     assert.deepEqual(cp.data.none, [z], 'Z has no block for that airing');
 
+    const chk = await call('GET', `/api/blocks/week-check?week=${date}&channels=${x}`);
+    assert.equal(chk.status, 200, JSON.stringify(chk.data));
+    assert.deepEqual(chk.data.channels.map((c) => c.id), [x]);
+    assert.ok(chk.data.channels[0].days[0].problems.some((p) => p.kind === 'draft'));
+
     const wk = await call('POST', `/api/blocks/approve-week?week=${date}&channels=${x}`);
     assert.deepEqual(wk.data.approved, [bx], 'only the chosen channel is approved');
     assert.equal(db.prepare('SELECT status FROM ScheduledBlock WHERE id = ?').get(by).status, 'draft');
