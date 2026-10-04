@@ -33,6 +33,7 @@ import { db, withTx } from '../db.js';
 import { log as fileLog, progressLogger } from '../logger.js';
 import { loadConfig, updateConfig, localizePath, delocalizePath } from '../config.js';
 import { repointExportedDays } from './otavClient.js';
+import { localDate } from '../dates.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -861,7 +862,7 @@ export function replaceBlockers(item) {
   const target = transcodeConfig().target;
   const sameName = extname(item.file_path).toLowerCase() === String(target.container).toLowerCase();
   if (sameName) return [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDate();
   const rows = db.prepare(`
     SELECT DISTINCT sb.target_date, c.name AS channel
     FROM ScheduleItem si

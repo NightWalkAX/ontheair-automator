@@ -350,6 +350,28 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   optional feature's dependency out of the import graph of `src/app.js`. `setup.sh` now installs
   whenever ANY package.json dependency is missing, not only when `node_modules` is absent.
 
+## Day continuity (why channels went black)
+
+OTAV plays each channel-day as ONE non-looping playlist behind ONE schedule event that starts at
+the day's first block. Whenever the playlist ends before the next day's event starts, the channel
+is black until then; that is the failure mode to guard against, not per-block fit. Found in the
+production data of 2026-10-04:
+
+- **`dayBlocks()` (`otavClient.js`) orders a day by the SLOT's start and groups it by the BLOCK's
+  channel** (`COALESCE(sb.channel_id, bt.channel_id)`). It used `bt.start_time`/`bt.channel_id`,
+  which aired every repeat slot right behind its primary and pushed a shared template's blocks into
+  its owner's playlist: Elevate's days ended around 23:33 and stayed black until 06:00.
+- **Today is on air.** A push clears and refills the day's playlist and resyncs, which cuts air
+  for a few seconds. `POST /api/otav/push?date=<today>` answers 409 `needsConfirm: 'today'` until
+  `includeToday=1`; a week/range push holds today back (`held` in the response). "Today" is
+  `localDate()` (`src/dates.js`) — never `toISOString()`, which is tomorrow from 20:00 in Guyana.
+- **A clip whose file is gone shortens the day by its whole length** (OTAV skips it). The push
+  refuses with the list (`missingFilesInRange()`, async `stat`s — a sync walk over SMB would
+  freeze the app), switchable with `otav.verifyFilesBeforePush: false`; the generator never picks a
+  file Air Spec recorded as `missing` (`ON_DISK_SQL` in `scheduling.js`).
+- Every push result is written to `automator.log` (`[otav]`), and a malformed OTAV reply
+  (`ERR_ASSERTION`, seen on `/scheduler/resynchronize`) is no longer reported as "cannot reach".
+
 ## OnTheAir Video REST API (integration target)
 
 Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>/...` (per `ChannelType` row) — this project talks to 6 of them independently, not one shared instance.

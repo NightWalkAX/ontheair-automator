@@ -20,6 +20,16 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 // a series got assigned to it and whatever a Resource row claims about itself.
 export const MOVIES_CODE = 'movies';
 
+// --- Clips whose file is gone ----------------------------------------------
+// Air Spec records a catalogued file it found missing from the share
+// (TranscodeItem.status 'missing'). OTAV skips a clip it cannot open, so a
+// scheduled missing file shortens the day by its whole length and the channel
+// goes black that much sooner. The engine never picks one. Missing is reported
+// and never deleted (a share hiccup must not shrink the catalogue), so this
+// filter is what keeps a known-gone file off the air until it is back.
+export const ON_DISK_SQL = `NOT EXISTS (SELECT 1 FROM TranscodeItem ti
+  WHERE ti.file_path = r.file_path AND ti.status = 'missing')`;
+
 // --- Fit tolerance (shared truth for the engine, the API and the UI) ---------
 // A block's `diff` is blockSeconds - totalSeconds: positive = underrun (dead
 // air at the end), negative = overrun (the block runs past its slot).
@@ -266,7 +276,7 @@ function ruleFor(showCode, isSerial) {
  * and capped at maxDuration so a single main item can never overrun the slot.
  */
 function candidates(channelId, subject, maxDuration, showCode = null) {
-  const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1'];
+  const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
   const params = [channelId];
   if (subject) { clauses.push('r.subject = ?'); params.push(subject); }
   if (maxDuration) { clauses.push('r.duration <= ?'); params.push(maxDuration); }
@@ -305,7 +315,7 @@ function serialIterator(channelId, subject, block, showCode = null) {
  * something else contributes nothing rather than contributing the wrong thing.
  */
 function seriesParts(channelId, subject, showCode = null) {
-  const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1'];
+  const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
   const params = [channelId, subject];
   if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
   return db.prepare(`
@@ -367,7 +377,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
       SELECT r.* FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = 'movies'
+        AND st.code = 'movies' AND ${ON_DISK_SQL}
     `).all(channelId, blockSecs);
   } else {
     if (!scope.length) return [];
@@ -379,7 +389,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
       SELECT r.* FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = ? AND r.subject IN (${marks})
+        AND st.code = ? AND r.subject IN (${marks}) AND ${ON_DISK_SQL}
     `).all(channelId, blockSecs, MOVIES_CODE, ...scope);
   }
   if (!all.length) return [];
@@ -742,7 +752,7 @@ export function pickMainContent(template, block, blockSecs) {
  */
 export function makeFillerPacker(channelId) {
   const fillers = db.prepare(
-    'SELECT * FROM Resource WHERE channel_id = ? AND is_filler = 1 AND approved = 1'
+    `SELECT r.* FROM Resource r WHERE r.channel_id = ? AND r.is_filler = 1 AND r.approved = 1 AND ${ON_DISK_SQL}`
   ).all(channelId);
 
   const byDur = new Map();

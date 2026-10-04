@@ -5,7 +5,8 @@ import {
   pushApprovedBlocks, pushApprovedRange, checkChannel, diagnoseChannel, isPushRunning,
 } from '../services/otavClient.js';
 import { cancelJob, finishJob, getJob, startJob, subscribe } from '../services/pushProgress.js';
-import { unfitBlocksInRange } from '../services/blockValidation.js';
+import { missingFilesInRange, unfitBlocksInRange } from '../services/blockValidation.js';
+import { localDate } from '../dates.js';
 import { loadConfig } from '../config.js';
 
 export const router = Router();
@@ -55,8 +56,25 @@ router.post('/push', async (req, res) => {
       : DATE.test(from) && DATE.test(to) ? [from, to]
       : DATE.test(date) ? [date, date]
       : null;
+    // TODAY is on air. A push clears and refills the day's playlist and then
+    // resynchronises the scheduler, which cuts air for a few seconds every time
+    // (seen at 14:04, 14:05 and 20:44 on the production logs). So today is only
+    // pushed when the operator says so: a single-day push of today needs
+    // ?includeToday=1, and a week/range push skips it unless told otherwise.
+    const today = localDate();
+    const includeToday = ['1', 'true', 'yes'].includes(String(q.includeToday ?? '').toLowerCase());
+    if (DATE.test(date) && !DATE.test(week) && date === today && !includeToday) {
+      return res.status(409).json({
+        ok: false,
+        needsConfirm: 'today',
+        error: `${today} is on air right now — pushing it rebuilds the playing playlist and cuts air for a few seconds. Confirm to push it anyway.`,
+      });
+    }
+    const excludeDates = includeToday ? [] : [today];
     if (range) {
-      const unfit = unfitBlocksInRange(range[0], range[1], channelIds);
+      // A held-back day is not going out, so it is not judged either.
+      const unfit = unfitBlocksInRange(range[0], range[1], channelIds)
+        .filter((b) => !excludeDates.includes(b.target_date));
       if (unfit.length) {
         return res.status(409).json({
           ok: false,
@@ -64,12 +82,26 @@ router.post('/push', async (req, res) => {
           blocks: unfit,
         });
       }
+      // A clip whose file is gone is skipped by OTAV, the day runs short and the
+      // channel goes black before the next day's event. Refuse rather than air it.
+      if (loadConfig().otav?.verifyFilesBeforePush !== false) {
+        const missing = (await missingFilesInRange(range[0], range[1], channelIds))
+          .map((m) => ({ ...m, blocks: m.blocks.filter((b) => !excludeDates.includes(b.target_date)) }))
+          .filter((m) => m.blocks.length);
+        if (missing.length) {
+          return res.status(409).json({
+            ok: false,
+            error: `${missing.length} scheduled file(s) are not on disk — the day would run short and go black. Replace those clips first.`,
+            missing,
+          });
+        }
+      }
     }
 
     const deadlineMs = Math.max(60, Number(loadConfig().otav?.pushTimeoutSeconds) || 900) * 1000;
     job = JOB_ID.test(jobId) ? startJob(jobId, { deadlineMs, label: week || date || `${from}..${to}` }) : null;
     const progress = job || undefined;
-    const opts = { ...(progress ? { progress } : {}), ...(channelIds.length ? { channelIds } : {}) };
+    const opts = { ...(progress ? { progress } : {}), ...(channelIds.length ? { channelIds } : {}), excludeDates };
     const send = (payload) => {
       if (job) finishJob(job.id, { ok: payload.ok !== false, summary: payload, error: payload.error || null });
       return payload;

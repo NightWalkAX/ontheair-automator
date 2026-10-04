@@ -43,6 +43,10 @@ import {
 } from './otavSchedule.js';
 import { EPISODE_NO_CTE, withLabel } from './labels.js';
 import { NULL_PROGRESS } from './pushProgress.js';
+import { localDate } from '../dates.js';
+import { log } from '../logger.js';
+
+const l = log('otav');
 
 /**
  * Node's fetch throws a bare "fetch failed" TypeError and hides the real
@@ -61,6 +65,14 @@ function describeFetchError(err, base) {
     ENOTFOUND: 'hostname not found (DNS)',
     ECONNRESET: 'connection reset by the host',
   };
+  // undici asserts on a status line it cannot parse: OTAV was reached and
+  // answered, just not in valid HTTP (seen on /scheduler/resynchronize). Saying
+  // "cannot reach … check api_ip" there sent the operator after the wrong fault —
+  // and the request may well have been acted on.
+  if (code === 'ERR_ASSERTION' || /statusCode/.test(String(cause?.message))) {
+    return `OTAV at ${base} answered with a malformed HTTP response (${cause?.message || err}); `
+      + 'the request may still have been carried out [ERR_ASSERTION]';
+  }
   const detail = hints[code] || cause?.message || String(err);
   return `cannot reach OTAV at ${base}: ${detail}${code ? ` [${code}]` : ''}. Check the channel's api_ip/api_port.`;
 }
@@ -581,19 +593,35 @@ export function dayPlaylistName(channel, targetDate) {
     .trim();
 }
 
-/** Blocks of one date that have cleared review, with their channel's settings. */
-function dayBlocks(targetDate) {
+/**
+ * Blocks of one date that have cleared review, with their channel's settings,
+ * in AIR order.
+ *
+ * The block's own channel and its own slot decide both, never the template's:
+ * OTAV plays the day as ONE continuous playlist, so the order clips are appended
+ * in IS the on-air order. Sorting by the template's start_time put every repeat
+ * airing (the 17:00 / 00:00 slots) right behind its primary, and grouping by the
+ * template's channel pushed a shared template's blocks into another channel's
+ * playlist — which is how a day's content ran out hours before the next day's
+ * event and the channel went black overnight.
+ */
+export function dayBlocks(targetDate) {
   return db.prepare(`
-    SELECT sb.id AS block_id, bt.channel_id, bt.start_time,
+    SELECT sb.id AS block_id,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           COALESCE(s.start_time, bt.start_time)  AS start_time,
+           COALESCE(s.end_time, bt.end_time)      AS end_time,
+           COALESCE(s.slot_order, 0)              AS slot_order,
            c.name AS channel_name, c.api_ip, c.api_port,
            c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
            c.schedule_path, c.playlist_dir, c.playlist_template,
            c.logo_filename, c.logo_enabled
     FROM ScheduledBlock sb
     JOIN BlockTemplate bt ON bt.id = sb.template_id
-    JOIN ChannelType   c  ON c.id = bt.channel_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    JOIN ChannelType   c  ON c.id = COALESCE(sb.channel_id, bt.channel_id)
     WHERE sb.target_date = ? AND sb.status IN ('approved', 'exported')
-    ORDER BY bt.channel_id, bt.start_time
+    ORDER BY channel_id, start_time, slot_order, sb.id
   `).all(targetDate);
 }
 
@@ -925,6 +953,15 @@ async function pushDays(dates, progress = NULL_PROGRESS, channelIds = null) {
       }
     }
   }
+  // The push report used to live only in the browser that asked for it, so a
+  // day that went out half-filled left no trace on the Mac. One line per
+  // channel-day: what the operator would need to tell a short day from a failed one.
+  for (const { targetDate, result } of rows) {
+    const line = `${result.channel} ${targetDate}: ${result.pushed ?? 0} clip(s), ${result.blocks ?? 0} block(s)`
+      + ` → playlist "${result.playlist}"${aborted ? ` (run ${aborted.reason})` : ''}`;
+    if (result.ok === false || result.error) l.warn(`${line} FAILED: ${result.error}`);
+    else l.info(line);
+  }
   // Report stays date-major (channels within a day in channel order), which is
   // what the push report renders, even though the run is channel-major.
   const days = dates.filter((d) => nonEmpty.has(d)).map((targetDate) => ({
@@ -967,21 +1004,26 @@ export function pushApprovedBlocks(targetDate, { progress = NULL_PROGRESS, chann
  * failures: an empty Wednesday is normal for a Mon/Tue/Thu template. Days pushed
  * before are pushed again, so a week push refreshes what already aired out.
  */
-export function pushApprovedRange(fromDate, toDate, { progress = NULL_PROGRESS, channelIds = null } = {}) {
+export function pushApprovedRange(fromDate, toDate, {
+  progress = NULL_PROGRESS, channelIds = null, excludeDates = [],
+} = {}) {
   return serialized(async () => {
     const dates = [];
     for (let d = new Date(`${fromDate}T00:00:00Z`); d <= new Date(`${toDate}T00:00:00Z`);
          d.setUTCDate(d.getUTCDate() + 1)) {
       dates.push(d.toISOString().slice(0, 10));
     }
-    const days = await pushDays(dates, progress, channelIds);
+    // Dates the caller holds back (today, which is on air) are reported, not pushed.
+    const held = dates.filter((d) => excludeDates.includes(d));
+    const days = await pushDays(dates.filter((d) => !held.includes(d)), progress, channelIds);
     const pushed = new Set(days.map((d) => d.targetDate));
     return {
       from: fromDate,
       to: toDate,
       days,
       aborted: days.aborted || null,
-      skipped: dates.filter((d) => !pushed.has(d)),
+      held,
+      skipped: dates.filter((d) => !pushed.has(d) && !held.includes(d)),
       // Flat per-channel-per-day view, for reports that just want a list.
       channels: days.flatMap((d) => d.channels.map((c) => ({ ...c, date: d.targetDate }))),
     };
@@ -1106,7 +1148,7 @@ export function repointExportedDays(oldPath, newPath, {
   durationChanged = false,
   repush = true,
   imminentMinutes = 10,
-  today = new Date().toISOString().slice(0, 10),
+  today = localDate(),
   commit = async () => ({}),
   onLog = () => {},
 } = {}) {

@@ -16,7 +16,9 @@
 // `fits || overridden`. `fits` keeps meaning "passes the rules", so a forced
 // block never reads as a healthy one anywhere in the UI.
 
+import { stat } from 'node:fs/promises';
 import { db } from '../db.js';
+import { localizePath } from '../config.js';
 import {
   MOVIES_CODE, blockDurationSeconds, fillerRunLimit, fitTolerance, fitsTolerance,
   maxFillerRunSeconds, maxShiftSeconds, shiftedWindow,
@@ -158,4 +160,62 @@ export function unfitBlocksInRange(from, to, channelIds = []) {
     if (v && !v.approvable) bad.push({ ...r, reason: blockProblem(v) });
   }
   return bad;
+}
+
+/**
+ * Clips scheduled in a date range whose file is not on disk. OTAV skips a clip
+ * it cannot open, so every missing file shortens its day by that clip's length
+ * and the channel goes black that much earlier before the next day's event —
+ * which is exactly how MoE Central lost 19:42 → 00:00 on 2026-10-02. Nothing
+ * else in the pipeline looks at the disk once a clip is catalogued.
+ *
+ * Async on purpose: one stat per distinct file over SMB is seconds for a week,
+ * and a synchronous walk would freeze the whole app (and the signal monitor
+ * with it) for that long. Returns [{ file_path, error, seconds, blocks }].
+ * `statuses` defaults to what a push sends.
+ */
+export async function missingFilesInRange(from, to, channelIds = [], {
+  statuses = ['approved', 'exported'], concurrency = 16,
+} = {}) {
+  const clauses = ['sb.target_date BETWEEN ? AND ?',
+    `sb.status IN (${statuses.map(() => '?').join(',')})`];
+  const params = [from, to, ...statuses];
+  if (channelIds.length) {
+    clauses.push(`COALESCE(sb.channel_id, bt.channel_id) IN (${channelIds.map(() => '?').join(',')})`);
+    params.push(...channelIds);
+  }
+  const rows = db.prepare(`
+    SELECT r.file_path, r.duration, sb.id AS block_id, sb.target_date,
+           COALESCE(sb.channel_id, bt.channel_id) AS channel_id, bt.name AS template_name
+    FROM ScheduleItem si
+    JOIN ScheduledBlock sb ON sb.id = si.block_id
+    JOIN BlockTemplate bt  ON bt.id = sb.template_id
+    JOIN Resource r        ON r.id = si.resource_id
+    WHERE ${clauses.join(' AND ')}
+  `).all(...params);
+
+  const byFile = new Map();
+  for (const r of rows) {
+    let e = byFile.get(r.file_path);
+    if (!e) byFile.set(r.file_path, (e = { file_path: r.file_path, seconds: 0, blocks: new Map() }));
+    e.seconds += Number(r.duration) || 0;
+    e.blocks.set(r.block_id, { id: r.block_id, target_date: r.target_date, channel_id: r.channel_id, template_name: r.template_name });
+  }
+  const files = [...byFile.values()];
+  const missing = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < files.length) {
+      const f = files[next++];
+      try {
+        const st = await stat(localizePath(f.file_path));
+        if (!st.isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOTFILE' });
+      } catch (err) {
+        missing.push({ file_path: f.file_path, error: err.code || String(err.message || err),
+          seconds: f.seconds, blocks: [...f.blocks.values()] });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+  return missing.sort((a, b) => a.file_path.localeCompare(b.file_path));
 }

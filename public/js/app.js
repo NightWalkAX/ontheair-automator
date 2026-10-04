@@ -14,7 +14,7 @@ const api = {
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || r.status);
+    if (!r.ok) throw Object.assign(new Error(data.error || r.status), { status: r.status, data });
     return data;
   },
 };
@@ -33,6 +33,11 @@ const el = (tag, props = {}, ...kids) => {
   for (const k of kids) n.append(k);
   return n;
 };
+
+// This Mac's calendar date. toISOString() is UTC, which in Guyana is already
+// tomorrow from 20:00 on.
+const localToday = (d = new Date()) => [d.getFullYear(), d.getMonth() + 1, d.getDate()]
+  .map((n, i) => String(n).padStart(i ? 2 : 4, '0')).join('-');
 
 // ---- Toasts ----------------------------------------------------------------
 const ICONS = { ok: '✓', bad: '✕', info: 'ℹ' };
@@ -509,6 +514,17 @@ async function pushToAir(btn, { scope }) {
     if (!ok) return;
   }
 
+  // A single-day push of TODAY rebuilds the playlist that is playing; the server
+  // refuses it until the operator confirms (409 needsConfirm), and a week push
+  // holds today back unless it is asked for explicitly.
+  if (scope === 'day' && day === localToday()) {
+    const ok = await confirmDialog('Push the day on air?',
+      `${day} is on air right now. Pushing it rebuilds the playing playlist and cuts air for a few seconds. Push it anyway?`,
+      { confirmLabel: 'Push today', danger: true });
+    if (!ok) return;
+    query += '&includeToday=1';
+  }
+
   const job = `push-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await withBusy(btn, async () => {
     const ui = pushProgressDialog('Pushing to air', {
@@ -523,6 +539,23 @@ async function pushToAir(btn, { scope }) {
     try {
       r = await api.send('POST', `/api/otav/push?${query}&job=${job}`);
     } catch (e) {
+      es.close();
+      ui.close();
+      // Refusals that come with a list: show the list, not just the headline.
+      if (e.data?.missing?.length) {
+        reportDialog('Files missing from disk', e.data.missing.map((m) => ({
+          name: m.file_path,
+          ok: false,
+          detail: `${fmt(m.seconds)} of air · ${m.blocks.map((b) => `${b.target_date} ${b.template_name}`).join(', ')}`,
+        })));
+        return;
+      }
+      if (e.data?.blocks?.length) {
+        reportDialog('Blocks that cannot go to air', e.data.blocks.map((b) => ({
+          name: `${b.target_date} · ${b.template_name}`, ok: false, detail: b.reason,
+        })));
+        return;
+      }
       ui.fail(e.message || String(e));
       throw e;
     } finally {
@@ -542,6 +575,10 @@ async function pushToAir(btn, { scope }) {
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
     const skipped = (r.skipped || []).length;
+    if ((r.held || []).length) {
+      toast(`${r.held.join(', ')} is on air and was not pushed. Push that day on its own to rebuild it.`,
+        'info', 'Today held back');
+    }
     if (r.aborted) {
       toast(r.aborted.reason === 'cancelled'
         ? 'Push cancelled — the days already listed as pushed did go out'
