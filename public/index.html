@@ -33,29 +33,49 @@
       <p>Generate weekly drafts, review each block for exact-duration fit, then approve and push to the OTAV instances.</p>
     </div>
 
-    <div class="toolbar">
-      <label class="field"><span>Week starting</span>
-        <input type="date" id="weekStart" />
-      </label>
-      <button id="btnGenerate" title="Build this week's drafts from the templates, for every channel">✨ Generate drafts</button>
-      <button id="btnApproveWeek" class="ghost" title="Approve every draft in this week that fits its block, on every channel">✓ Approve fitting drafts</button>
-      <button id="btnReload" class="ghost">↻ Reload</button>
-      <button id="btnDownload" class="ghost" title="Printable schedule for this week, every channel in one document">⬇︎ Download schedule</button>
+    <!-- Sticky so the week and its actions stay in reach while scrolling a
+         long day. Every action asks which channels it applies to (the one on
+         screen, or that one + others) — see scopeDialog() in core.js. -->
+    <div class="toolbar sched-bar">
+      <div class="tb-group">
+        <span class="tb-caption">Week</span>
+        <button id="btnPrevWeek" class="ghost icon-btn" title="Previous week" aria-label="Previous week">‹</button>
+        <label class="field"><span>Week starting</span>
+          <input type="date" id="weekStart" aria-label="Week starting" title="Week starting" />
+        </label>
+        <button id="btnNextWeek" class="ghost icon-btn" title="Next week" aria-label="Next week">›</button>
+        <button id="btnThisWeek" class="ghost mini" title="Back to the week starting today">Today</button>
+      </div>
+      <div class="tb-group">
+        <button id="btnGenerate" title="Build drafts for this week from the templates">✨ Generate drafts…</button>
+        <button id="btnApproveWeek" class="ghost" title="Approve every draft that fits its block">✓ Approve fitting…</button>
+        <button id="btnCheckWeek" class="ghost" title="Will any day end before the next one starts? (black on air)">🩺 Check week…</button>
+        <button id="btnDownload" class="ghost" title="Printable schedule for this week">⬇︎ Download…</button>
+        <button id="btnReload" class="ghost icon-btn" title="Reload" aria-label="Reload">↻</button>
+      </div>
       <span class="spacer"></span>
-      <label class="field"><span>Push date</span>
-        <input type="date" id="pushDate" />
-      </label>
-      <button id="btnPush" class="danger">📡 Push day</button>
-      <button id="btnPushWeek" class="danger">📡 Push week</button>
+      <div class="tb-group">
+        <span class="tb-caption">Push</span>
+        <label class="field"><span>Push date</span>
+          <input type="date" id="pushDate" aria-label="Day to push" title="Day to push" />
+        </label>
+        <button id="btnPush" class="danger">📡 Push day…</button>
+        <button id="btnPushWeek" class="danger">📡 Push week…</button>
+      </div>
     </div>
 
     <div id="channelStrip" class="channel-strip"></div>
 
+    <!-- One cell per day: does the pushed playlist reach the next day's event? -->
+    <div id="weekHealth" class="week-health" aria-live="polite"></div>
+
     <div class="legend">
-      <span><i class="fits"></i> Fits tolerance</span>
+      <span><i class="fits"></i> Fits</span>
       <span><i class="misfit"></i> Off tolerance</span>
+      <span><i class="forced"></i> Forced</span>
       <span><i class="approved"></i> Approved</span>
-      <span><i class="exported"></i> Exported</span>
+      <span><i class="exported"></i> On OTAV</span>
+      <span>↔ moved automatically · ⤓ covers a gap</span>
     </div>
 
     <div id="scheduleGrid" class="grid"></div>
@@ -135,6 +155,7 @@
         <select id="catChannel"></select>
       </label>
       <button id="btnCatReload" class="ghost">↻ Reload</button>
+      <button id="btnHolidays" class="ghost" title="Seasons for seasonal films: Christmas, Halloween, Valentine's… — create them and set their dates">🎄 Seasons…</button>
       <button id="btnResetNextUps" class="ghost" title="Set every series' next-up back to its first episode, so the next generated schedule starts each show from episode 1">⏮ Reset all next-ups to Ep 1</button>
       <span class="spacer"></span>
       <label class="field cat-search-field"><span>Search</span>
@@ -517,6 +538,18 @@
            the catalogue can fix. The boundary is shared with the neighbour. -->
       <div id="blockShift" class="block-shift"></div>
       <div class="modal-actions">
+        <!-- Approve / Force / Regenerate run on this block, or also on the same
+             airing on other channels (block.js: blockScopeIds). -->
+        <label class="scope-inline" title="Which channels Approve, Force and Regenerate apply to">
+          <span>Apply to</span>
+          <select id="blockScope">
+            <option value="only">This channel</option>
+            <option value="more">This + other channels…</option>
+          </select>
+          <span id="blockScopeNames" class="muted"></span>
+        </label>
+        <span class="spacer"></span>
+        <button id="btnRegenBlock" class="ghost" type="button" title="Rebuild this block from its template">↻ Regenerate</button>
         <button id="btnSaveItems" class="ghost">Save order</button>
         <!-- For a block with no solution: a hole no clip in the catalogue fills,
              a filler run nothing shorter breaks up. Hidden while the block
@@ -654,6 +687,8 @@
         </div>
       </div>
       <div class="modal-actions">
+        <button id="chmDelete" class="danger ghost-danger" type="button" title="Delete this channel and everything that belongs only to it">🗑 Delete channel…</button>
+        <span class="spacer"></span>
         <button id="chmSave" class="primary">Save channel</button>
       </div>
     </div>

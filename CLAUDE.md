@@ -91,6 +91,21 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
 4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.
 5. Pushes approved schedules to 6 separate **Softron OnTheAir Video (OTAV)** instances over their REST APIs.
 
+## Frontend layout (public/js)
+
+ES modules, no bundler, loaded from `main.js`: `core.js` (api, `$`/`el`, toasts, dialogs,
+`debounce`, the cached `getChannels()` / `getResources(channelId)` with `invalidate*()`, and
+`scopeDialog()` — the "only this channel / this + others" picker every scheduling action uses,
+remembered per action in localStorage), `schedule.js` (week grid, Air-check strip, toolbar, push),
+`block.js` (block editor drawer: library, items, shift, approve/force/regenerate with the "Apply
+to" scope select, unsaved-changes guard), `media.js`, `catalog.js` (incl. seasons), `setup.js`
+(incl. channel delete), `airspec.js`, `monitor.js`. Split mechanically from the old 4,200-line
+`app.js` by AST: only cross-module names are exported, and a binding another module assigns goes
+through a `set_x()` setter (imports are read-only). Performance rules that came out of it: an
+action on one block repaints its card (`refreshCards()`), never the week; the channel catalogue is
+cached per channel and invalidated by `loadCatalog()`; search boxes are debounced; a catalogue
+checkbox updates its rows in place; the monitor stops polling while the browser tab is hidden.
+
 ## Intended technology stack (per SEED.md)
 
 Portable, non-containerized, **macOS-native** app — the whole project folder (code + SQLite data) must be copyable via USB drive and runnable on any Mac with minimal setup. No Docker, no build step required to run.

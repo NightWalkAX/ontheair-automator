@@ -278,10 +278,15 @@ $('#rosterRules').addEventListener('submit', (e) => {
 
 // Poll fast while the tab is open, slowly otherwise — the red dot on the tab
 // button is how an alert is noticed from another tab of the UI.
+// Nothing at all while the browser tab is hidden: a background tab polling
+// every few seconds is load on the server for nobody to see; it catches up the
+// moment the tab is shown again.
 export function scheduleMonitorPoll() {
   clearTimeout(monTimer);
+  if (document.hidden) return;
   const open = $('#tab-monitor').classList.contains('active');
   monTimer = setTimeout(async () => {
+    if (document.hidden) return;
     if (open) await refreshMonitor();
     else {
       try {
@@ -292,6 +297,7 @@ export function scheduleMonitorPoll() {
     scheduleMonitorPoll();
   }, open ? 3000 : 30000);
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleMonitorPoll(); });
 scheduleMonitorPoll();
 
 $('#monEnabled').addEventListener('change', async (e) => {

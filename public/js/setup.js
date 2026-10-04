@@ -1,4 +1,4 @@
-import { $, $$, api, confirmDialog, el, fmt, reportDialog, toast, withBusy } from './core.js';
+import { $, $$, api, confirmDialog, el, fmt, reportDialog, toast, withBusy, closeDialog, invalidateChannels, invalidateResources } from './core.js';
 
 // ---- Channels & Templates --------------------------------------------------
 export async function populateSelect(sel, url, labelKey) {
@@ -637,8 +637,55 @@ $('#chmSave').addEventListener('click', (e) => withBusy(e.currentTarget, async (
     is_active: $('#chmActive').checked ? 1 : 0,
   };
   await api.send('PUT', `/api/channels/${chEditing}`, body);
+  invalidateChannels();
   $('#channelModal').classList.add('hidden');
   toast('Channel saved', 'ok');
+  await loadSetupTab();
+}));
+// Deleting a channel takes its catalogue, blocks, history and roots with it, so
+// the operator sees exactly how much first (GET …/delete-preview) and types the
+// channel's name to confirm. Templates shared with other channels survive.
+$('#chmDelete').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (chEditing == null) return;
+  const p = await api.get(`/api/channels/${chEditing}/delete-preview`);
+  const name = p.channel.name;
+  const lines = [
+    `${p.resources} catalogue entr${p.resources === 1 ? 'y' : 'ies'}, ${p.mediaRoots} media root(s), ${p.series} series`,
+    `${Object.entries(p.blocks).map(([k, n]) => `${n} ${k}`).join(', ') || 'no'} block(s) and ${p.playHistory} play-history row(s)`,
+    `${p.templatesDeleted} template(s) that air only here`,
+  ];
+  if (p.templatesKept.length) lines.push(`Kept for the other channels: ${p.templatesKept.map((t) => t.name).join(', ')}`);
+  if (p.monitorFeeds.length) lines.push(`Signal monitor feeds lose their link: ${p.monitorFeeds.join(', ')}`);
+  if (p.exportedFromToday) lines.push(`⚠ ${p.exportedFromToday} block(s) from today on are already on its OTAV — that Mac keeps airing them.`);
+
+  const confirmed = await new Promise((resolve) => {
+    $('#dialogTitle').textContent = `Delete ${name}?`;
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    content.append(el('p', { className: 'dialog-msg', textContent: 'This permanently removes:' }));
+    const ul = el('ul', { className: 'del-list' });
+    for (const l of lines) ul.append(el('li', { textContent: l }));
+    content.append(ul);
+    content.append(el('p', { className: 'dialog-msg', textContent: `Files on disk are not touched. Type “${name}” to confirm.` }));
+    const input = el('input', { type: 'text', className: 'dialog-note', placeholder: name });
+    content.append(input);
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: 'danger', textContent: 'Delete channel', disabled: true });
+    input.addEventListener('input', () => { ok.disabled = input.value.trim() !== name; });
+    cancel.onclick = () => { closeDialog(); resolve(false); };
+    ok.onclick = () => { closeDialog(); resolve(true); };
+    actions.append(cancel, ok);
+    $('#dialog').classList.remove('hidden');
+    input.focus();
+  });
+  if (!confirmed) return;
+  await api.send('DELETE', `/api/channels/${chEditing}${p.exportedFromToday ? '?force=1' : ''}`);
+  invalidateChannels();
+  invalidateResources(chEditing);
+  $('#channelModal').classList.add('hidden');
+  toast(`${name} deleted`, 'ok');
   await loadSetupTab();
 }));
 $('#chmClose').addEventListener('click', () => $('#channelModal').classList.add('hidden'));
@@ -658,6 +705,7 @@ $('#channelForm').addEventListener('submit', async (e) => {
   const btn = e.target.querySelector('button[type="submit"]');
   await withBusy(btn, async () => {
     await api.send('POST', '/api/channels', formToObj(e.target));
+    invalidateChannels();
     e.target.reset();
     toast('Channel added', 'ok');
     await loadSetupTab();

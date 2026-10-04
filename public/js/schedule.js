@@ -1,8 +1,15 @@
 import { fmtShift, openBlock } from './block.js';
-import { $, api, closeDialog, confirmDialog, el, fmt, localToday, reportDialog, toast, withBusy } from './core.js';
+import {
+  $, api, closeDialog, confirmDialog, el, fmt, getChannels, localToday, reportDialog, scopeDialog, toast, withBusy,
+} from './core.js';
 
 // ---- Schedule Review -------------------------------------------------------
-function isoToday() { return new Date().toISOString().slice(0, 10); }
+// The grid shows ONE channel at a time (the chip strip, remembered like the
+// theme). Every action in the toolbar asks which channels it applies to: the one
+// on screen, or that one plus others — it used to act on every channel while
+// showing one, which only a tooltip admitted.
+const isoToday = () => localToday();
+const addDays = (d, n) => { const x = new Date(`${d}T00:00:00`); x.setDate(x.getDate() + n); return localToday(x); };
 $('#weekStart').value = isoToday();
 $('#pushDate').value = isoToday();
 
@@ -17,59 +24,68 @@ function showGridSkeleton() {
   }
 }
 
-// Per-channel filtering of the schedule/generator. The grid shows ONE channel
-// at a time: an all-channels view is six times the blocks for a week nobody can
-// read across anyway, and each card costs a query on the server. The choice is
-// remembered like the theme, so a reload doesn't bounce back to the first one.
 const SCHEDULE_CHANNEL_KEY = 'otav.scheduleChannel';
 export let scheduleChannels = [];
 let currentScheduleChannel = Number(localStorage.getItem(SCHEDULE_CHANNEL_KEY)) || null;
 
+/** The channel on screen. */
+export function currentChannelId() { return currentScheduleChannel; }
+
 async function renderChannelStrip() {
-  try { scheduleChannels = await api.get('/api/channels'); } catch { scheduleChannels = []; }
+  try { scheduleChannels = await getChannels(); } catch { scheduleChannels = []; }
   if (!scheduleChannels.length) return;
   // A remembered channel that has since been deleted (or nothing remembered)
-  // falls back to the first one rather than loading every channel at once.
+  // falls back to the first active one.
   if (!scheduleChannels.some((c) => c.id === currentScheduleChannel)) {
-    currentScheduleChannel = scheduleChannels[0].id;
+    currentScheduleChannel = (scheduleChannels.find((c) => c.is_active) || scheduleChannels[0]).id;
     localStorage.setItem(SCHEDULE_CHANNEL_KEY, String(currentScheduleChannel));
   }
   const strip = $('#channelStrip');
   strip.innerHTML = '';
-  if (scheduleChannels.length <= 1) return; // no point showing a strip for a single channel
+  if (scheduleChannels.length <= 1) return;
   for (const c of scheduleChannels) {
     const b = el('button', {
-      className: `chip ${currentScheduleChannel === c.id ? 'active' : ''}`,
+      className: `chip ${currentScheduleChannel === c.id ? 'active' : ''}${c.is_active ? '' : ' inactive'}`,
       textContent: c.name,
+      title: c.is_active ? '' : 'Inactive channel',
     });
     b.onclick = () => {
+      if (currentScheduleChannel === c.id) return;
       currentScheduleChannel = c.id;
       localStorage.setItem(SCHEDULE_CHANNEL_KEY, String(c.id));
-      loadSchedule();
+      for (const x of strip.children) x.classList.toggle('active', x === b);
+      loadSchedule({ strip: false });
     };
     strip.append(b);
   }
 }
 
-function scheduleChannelQuery() {
-  return currentScheduleChannel != null ? `&channel_id=${currentScheduleChannel}` : '';
-}
+const weekValue = () => $('#weekStart').value || isoToday();
 
-export async function loadSchedule() {
+// Cards by block id, so an action on one block repaints that card instead of
+// rebuilding the week.
+const cards = new Map();
+let gridToken = 0;
+
+export async function loadSchedule({ strip = true } = {}) {
+  const token = ++gridToken; // a slow answer for a channel no longer on screen is dropped
   showGridSkeleton();
-  await renderChannelStrip();
+  if (strip || !scheduleChannels.length) await renderChannelStrip();
   let data;
   try {
-    const week = $('#weekStart').value || isoToday();
-    data = await api.get(`/api/blocks?week=${week}${scheduleChannelQuery()}`);
+    data = await api.get(`/api/blocks?week=${weekValue()}&channel_id=${currentScheduleChannel}`);
   } catch (e) {
+    if (token !== gridToken) return;
     $('#scheduleGrid').innerHTML = '';
     $('#scheduleGrid').append(emptyState('⚠️', 'Could not load schedule', e.message));
     return;
   }
+  if (token !== gridToken) return;
   const { week: dates, blocks } = data;
   const grid = $('#scheduleGrid');
   grid.innerHTML = '';
+  cards.clear();
+  loadWeekHealth(dates[0]);
 
   if (!blocks.length) {
     grid.append(emptyState('🗓️', 'No blocks for this week yet', 'Click “Generate drafts” to build the weekly schedule from your templates.'));
@@ -84,6 +100,7 @@ export async function loadSchedule() {
     const dObj = new Date(d + 'T00:00:00');
     const weekend = [0, 6].includes(dObj.getDay());
     const col = el('div', { className: `day-col ${weekend ? 'weekend' : ''}` });
+    col.dataset.date = d;
     const dow = dObj.toLocaleDateString(undefined, { weekday: 'short' });
     const head = el('div', { className: `day-head ${d === today ? 'today' : ''}` });
     head.append(el('span', { textContent: dow }), el('small', { textContent: d.slice(5) }));
@@ -93,44 +110,81 @@ export async function loadSchedule() {
     if (!dayBlocks.length) {
       col.append(el('div', { className: 'muted', style: 'font-size:11.5px;padding:6px', textContent: '—' }));
     }
-    for (const b of dayBlocks) {
-      const card = el('div', {
-        className: `block-card ${b.fits ? 'fits' : 'misfit'}${b.overridden ? ' forced' : ''} ${b.status}`,
-        tabIndex: 0,
-      });
-      card.append(el('div', { className: 'b-title', textContent: `${b.channel_name}: ${b.template_name}` }));
-      const moved = b.start_shift || b.end_shift;
-      card.append(el('div', {
-        className: 'b-meta',
-        textContent: `${moved ? `${b.effective_start.slice(0, 5)}–${b.effective_end.slice(0, 5)}` : `${b.start_time}–${b.end_time}`} · ${b.content_type}`,
-      }));
-      const badges = el('div', { className: 'b-badges' });
-      // One badge, but the reason matters: "off 0:00" on a block whose duration
-      // is perfect and whose filler run is half an hour reads as a bug.
-      const why = b.fits ? 'fits'
-        : !b.durationFits ? `off ${fmt(b.diff)}`
-        : b.fillerFits === false ? `filler ${fmt(b.fillerRun)}`
-        : `${b.offTypeCount} not movies`;
-      badges.append(el('span', {
-        className: `badge ${b.fits ? 'ok' : b.overridden ? 'warn' : 'bad'}`,
-        textContent: b.overridden ? `forced · ${why}` : why,
-      }));
-      badges.append(el('span', { className: 'badge status', textContent: b.status }));
-      if (b.is_mirror) badges.append(el('span', { className: 'badge', textContent: '🔁 repeat' }));
-      if (moved) {
-        badges.append(el('span', {
-          className: 'badge warn',
-          textContent: `⇆ ${[b.start_shift && `start ${fmtShift(b.start_shift)}`, b.end_shift && `end ${fmtShift(b.end_shift)}`].filter(Boolean).join(' · ')}`,
-          title: `Slot ${b.start_time}–${b.end_time}, moved to ${b.effective_start}–${b.effective_end}`,
-        }));
-      }
-      card.append(badges);
-      card.addEventListener('click', () => openBlock(b.id));
-      card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBlock(b.id); } });
-      col.append(card);
-    }
+    for (const b of dayBlocks) col.append(blockCard(b));
     grid.append(col);
   }
+}
+
+/** One block's card. Kept in `cards` so updateCard() can swap it in place. */
+function blockCard(b) {
+  const card = el('div', {
+    className: `block-card ${b.fits ? 'fits' : 'misfit'}${b.overridden ? ' forced' : ''} ${b.status}`,
+    tabIndex: 0,
+  });
+  card.dataset.id = b.id;
+  const moved = b.start_shift || b.end_shift || b.extend_seconds;
+  const top = el('div', { className: 'b-top' });
+  top.append(el('span', { className: 'b-time', textContent: moved
+    ? `${b.effective_start.slice(0, 5)}–${b.effective_end.slice(0, 5)}`
+    : `${b.start_time}–${b.end_time}` }));
+  top.append(el('span', { className: `b-status s-${b.status}`, textContent: b.status === 'exported' ? 'on OTAV' : b.status }));
+  card.append(top);
+  card.append(el('div', { className: 'b-title', textContent: b.template_name }));
+  const badges = el('div', { className: 'b-badges' });
+  // One verdict, but the reason matters: "off 0:00" on a block whose duration is
+  // perfect and whose filler run is half an hour reads as a bug.
+  const why = b.fits ? 'fits'
+    : !b.durationFits ? `off ${fmt(b.diff)}`
+    : b.fillerFits === false ? `filler ${fmt(b.fillerRun)}`
+    : `${b.offTypeCount} not movies`;
+  badges.append(el('span', {
+    className: `badge ${b.fits ? 'ok' : b.overridden ? 'warn' : 'bad'}`,
+    textContent: b.overridden ? `forced · ${why}` : why,
+  }));
+  if (b.is_mirror) badges.append(el('span', { className: 'badge', textContent: '🔁 repeat', title: 'Copies the first airing of this template that day' }));
+  if (b.start_shift || b.end_shift) {
+    const auto = Number(b.end_shift_auto) === 1;
+    badges.append(el('span', {
+      className: `badge ${auto ? 'info' : 'warn'}`,
+      textContent: `↔ ${[b.start_shift && `start ${fmtShift(b.start_shift)}`, b.end_shift && `end ${fmtShift(b.end_shift)}`].filter(Boolean).join(' · ')}`,
+      title: `Slot ${b.start_time}–${b.end_time}, airs ${b.effective_start}–${b.effective_end}${auto ? ' (moved automatically)' : ''}`,
+    }));
+  }
+  if (b.extend_seconds) {
+    badges.append(el('span', {
+      className: 'badge info',
+      textContent: `⤓ +${fmtShift(b.extend_seconds).replace('+', '')}`,
+      title: `Nothing is scheduled after this block until ${b.effective_end}, so it covers that time too`,
+    }));
+  }
+  if (b.overlap_seconds) {
+    badges.append(el('span', { className: 'badge bad', textContent: '⚠ overlap', title: 'Another block claims the same time — fix the templates' }));
+  }
+  card.append(badges);
+  card.addEventListener('click', () => openBlock(b.id));
+  card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBlock(b.id); } });
+  cards.set(b.id, card);
+  return card;
+}
+
+/**
+ * Repaint some cards from the server without rebuilding the week (after an
+ * approve, a force, a shift). Shifts move neighbours too, so the caller passes
+ * every id it touched; the week health strip is refreshed with them.
+ */
+export async function refreshCards(ids = []) {
+  const wanted = ids.filter((id) => cards.has(id));
+  if (!wanted.length) return loadSchedule({ strip: false });
+  try {
+    const { blocks } = await api.get(`/api/blocks?week=${weekValue()}&channel_id=${currentScheduleChannel}`);
+    for (const b of blocks) {
+      const old = cards.get(b.id);
+      // Neighbours of a moved boundary change as well: repaint every card whose
+      // window or verdict differs, not just the ones asked for.
+      if (old) old.replaceWith(blockCard(b));
+    }
+  } catch { return loadSchedule({ strip: false }); }
+  loadWeekHealth(weekValue());
 }
 
 function emptyState(icon, title, hint) {
@@ -141,30 +195,134 @@ function emptyState(icon, title, hint) {
   return box;
 }
 
-$('#btnReload').addEventListener('click', (e) => withBusy(e.currentTarget, loadSchedule));
-// The channel strip filters the GRID, not these two: they are week-wide
-// actions, and both covered every channel before the strip lost its "All"
-// chip — generating one channel at a time would leave the other five empty
-// without saying so, and the printable schedule is meant to be the combined
-// document (which is also what the weeklyDraft cron generates).
-$('#btnDownload').addEventListener('click', () => {
-  // Printable schedule (fillers excluded), every channel in one document.
-  const week = $('#weekStart').value || isoToday();
-  window.open(`/api/blocks/export?week=${week}`, '_blank');
+// ---- Week health ("no black screens") ------------------------------------------
+// One cell per day for the channel on screen: does what a push would send
+// reach the next day's event? The full list is a click away.
+let healthToken = 0;
+const KIND_LABEL = {
+  'not-generated': 'not generated', 'missing-blocks': 'blocks missing', draft: 'draft (left out of a push)',
+  overlap: 'overlapping blocks', unfit: 'off tolerance', 'missing-file': 'file missing', black: 'black at end of day',
+  overrun: 'runs into next day', 'next-unknown': 'next day not scheduled',
+};
+async function loadWeekHealth(week) {
+  const token = ++healthToken;
+  const box = $('#weekHealth');
+  box.classList.add('loading');
+  let rep;
+  try {
+    rep = await api.get(`/api/blocks/week-check?week=${week}&channels=${currentScheduleChannel}`);
+  } catch (e) {
+    if (token === healthToken) { box.classList.remove('loading'); box.textContent = ''; }
+    return;
+  }
+  if (token !== healthToken) return;
+  box.classList.remove('loading');
+  renderHealth(box, rep);
+}
+
+function renderHealth(box, rep) {
+  box.innerHTML = '';
+  const ch = rep.channels[0];
+  if (!ch) return;
+  box.append(el('span', { className: 'wh-label', textContent: 'Air check' }));
+  for (const d of ch.days) {
+    const blocking = d.problems.filter((p) => p.blocking);
+    const warn = d.problems.filter((p) => !p.blocking);
+    const black = d.problems.find((p) => p.kind === 'black' || p.kind === 'overrun');
+    const cell = el('button', {
+      className: `wh-day ${blocking.length ? 'bad' : warn.length ? 'warn' : 'ok'}`,
+      type: 'button',
+    });
+    const dow = new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' });
+    cell.append(el('strong', { textContent: dow }));
+    cell.append(el('span', {
+      textContent: !d.problems.length ? `✓ ends ${String(d.playlistEnd || '').slice(0, 5)}`
+        : black ? `${black.kind === 'black' ? '⬛' : '⏩'} ${fmt(black.seconds)}`
+        : blocking.length ? `⚠ ${blocking.length}` : `• ${warn.length}`,
+    }));
+    cell.title = d.problems.map((p) => `${KIND_LABEL[p.kind] || p.kind}: ${p.message}`).join('\n') || 'Covers the whole day';
+    cell.onclick = () => showDayProblems(ch.name, d);
+    box.append(cell);
+  }
+}
+
+function showDayProblems(channelName, d) {
+  const rows = d.problems.length ? d.problems.map((p) => ({
+    name: KIND_LABEL[p.kind] || p.kind, ok: !p.blocking, detail: p.message,
+  })) : [{ name: 'Covers the whole day', ok: true, detail: `playlist ${d.playlistStart || '—'} → ${d.playlistEnd || '—'}` }];
+  reportDialog(`${channelName} · ${d.date}${d.playlistEnd ? ` · ends ${d.playlistEnd}` : ''}`, rows);
+}
+
+// ---- Toolbar ---------------------------------------------------------------------
+$('#btnReload').addEventListener('click', (e) => withBusy(e.currentTarget, () => loadSchedule()));
+$('#btnPrevWeek').addEventListener('click', () => { $('#weekStart').value = addDays(weekValue(), -7); loadSchedule({ strip: false }); });
+$('#btnNextWeek').addEventListener('click', () => { $('#weekStart').value = addDays(weekValue(), 7); loadSchedule({ strip: false }); });
+$('#btnThisWeek').addEventListener('click', () => { $('#weekStart').value = isoToday(); loadSchedule({ strip: false }); });
+$('#weekStart').addEventListener('change', () => loadSchedule({ strip: false }));
+
+/** Ask which channels an action covers. Null = cancelled. */
+async function pickScope(action, title, message, opts = {}) {
+  const channels = (await getChannels()).filter((c) => c.is_active || c.id === currentScheduleChannel);
+  return scopeDialog({ title, message, action, current: currentScheduleChannel, channels, ...opts });
+}
+const namesOf = (ids) => ids.map((id) => scheduleChannels.find((c) => c.id === id)?.name ?? `#${id}`).join(', ');
+
+$('#btnDownload').addEventListener('click', async () => {
+  const ids = await pickScope('download', 'Download schedule', `Printable schedule for the week of ${weekValue()} (fillers left out).`, { confirmLabel: 'Open' });
+  if (!ids) return;
+  window.open(`/api/blocks/export?week=${weekValue()}&channels=${ids.join(',')}`, '_blank');
 });
-$('#btnGenerate').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  const r = await api.send('POST', `/api/blocks/generate?weekStart=${$('#weekStart').value}`);
-  const n = r.results?.length ?? 0;
-  toast(`Generated ${n} draft block${n === 1 ? '' : 's'} across every channel`, 'ok', 'Drafts ready');
-  await loadSchedule();
-}));
-$('#btnApproveWeek').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  const r = await api.send('POST', `/api/blocks/approve-week?week=${$('#weekStart').value}`);
-  const blocked = r.blocked.length;
-  toast(`Approved ${r.approved.length} block${r.approved.length === 1 ? '' : 's'}` + (blocked ? `, ${blocked} still off tolerance` : ''),
-        blocked ? 'info' : 'ok', 'Week approval');
-  await loadSchedule();
-}));
+$('#btnGenerate').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ids = await pickScope('generate', 'Generate drafts',
+    `Rebuilds every DRAFT block of the week of ${weekValue()} from the templates. Approved and pushed blocks are kept; drafts you edited by hand are rebuilt.`,
+    { confirmLabel: 'Generate', danger: true });
+  if (!ids) return;
+  await withBusy(btn, async () => {
+    const r = await api.send('POST', `/api/blocks/generate?weekStart=${weekValue()}&channels=${ids.join(',')}`);
+    const n = r.results?.length ?? 0;
+    toast(`Generated ${n} draft block${n === 1 ? '' : 's'} on ${namesOf(ids)}`, 'ok', 'Drafts ready');
+    await loadSchedule({ strip: false });
+  }).catch(() => {}); // withBusy already showed the error
+});
+$('#btnApproveWeek').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ids = await pickScope('approve-week', 'Approve fitting drafts',
+    `Approves every draft of the week of ${weekValue()} that passes the rules (or is forced).`, { confirmLabel: 'Approve' });
+  if (!ids) return;
+  await withBusy(btn, async () => {
+    const r = await api.send('POST', `/api/blocks/approve-week?week=${weekValue()}&channels=${ids.join(',')}`);
+    const blocked = r.blocked.length;
+    toast(`Approved ${r.approved.length} block${r.approved.length === 1 ? '' : 's'} on ${namesOf(ids)}`
+      + (blocked ? `, ${blocked} still off tolerance` : ''), blocked ? 'info' : 'ok', 'Week approval');
+    await loadSchedule({ strip: false });
+  }).catch(() => {}); // withBusy already showed the error
+});
+$('#btnCheckWeek').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ids = await pickScope('check-week', 'Check the week for black',
+    'Simulates what a push sends for each day and reports anything that would make a channel end its day early — or run into the next one.',
+    { confirmLabel: 'Check' });
+  if (!ids) return;
+  await withBusy(btn, async () => {
+    const rep = await api.get(`/api/blocks/week-check?week=${weekValue()}&channels=${ids.join(',')}`);
+    const rows = [];
+    for (const c of rep.channels) {
+      for (const d of c.days) {
+        const blocking = d.problems.filter((p) => p.blocking);
+        rows.push({
+          name: `${c.name} · ${d.date}`,
+          ok: !blocking.length,
+          detail: blocking.length
+            ? blocking.map((p) => p.message).join(' · ')
+            : d.problems.length ? d.problems.map((p) => p.message).join(' · ')
+            : `covers the day · ends ${d.playlistEnd}`,
+        });
+      }
+    }
+    reportDialog(rep.ok ? 'No black on air this week' : 'Days that would end early (or late)', rows);
+  }).catch(() => {}); // withBusy already showed the error
+});
 // ---- Push progress ---------------------------------------------------------
 // A week push is thousands of sequential REST calls against 6 OTAV instances
 // and can run for minutes. The operator gets the real step count, the clip
@@ -261,66 +419,6 @@ function pushProgressDialog(title, { onCancel }) {
   };
 }
 
-// Which channels the last push targeted — the dialog reopens on that choice, so
-// pushing the same subset day after day doesn't mean re-ticking it every time.
-let lastPushChannels = null;
-
-// Push confirmation + channel picker. Resolves to an array of channel ids, or
-// null when the operator cancels. An empty selection is not a valid push, so
-// the confirm button stays disabled until at least one instance is ticked.
-async function pushChannelDialog(message, channels) {
-  return new Promise((resolve) => {
-    $('#dialogTitle').textContent = 'Push to Air';
-    const content = $('#dialogContent');
-    content.innerHTML = '';
-    content.append(el('p', { className: 'dialog-msg', textContent: message }));
-
-    // First push of a session goes out to EVERY instance unless the operator
-    // says otherwise. This used to fall back to the schedule grid's channel
-    // when one was picked — which was fine while the grid defaulted to "all
-    // channels", but the grid now always has one selected, and inheriting it
-    // would silently narrow every first push to a single instance.
-    const remembered = lastPushChannels && lastPushChannels.filter((id) => channels.some((c) => c.id === id));
-    const preset = remembered && remembered.length ? remembered : channels.map((c) => c.id);
-    const list = el('div', { className: 'push-channels' });
-    const boxes = channels.map((c) => {
-      const input = el('input', { type: 'checkbox', value: String(c.id) });
-      input.checked = preset.includes(c.id);
-      const row = el('label', { className: 'chk push-channel' }, input,
-        el('span', { textContent: c.name }));
-      list.append(row);
-      return input;
-    });
-    const bulk = el('div', { className: 'push-channel-bulk' });
-    const all = el('button', { className: 'ghost', type: 'button', textContent: 'All' });
-    const none = el('button', { className: 'ghost', type: 'button', textContent: 'None' });
-    bulk.append(all, none);
-    content.append(bulk, list);
-
-    const actions = $('#dialogActions');
-    actions.innerHTML = '';
-    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
-    const ok = el('button', { className: 'danger', textContent: 'Push to Air' });
-    const selected = () => boxes.filter((b) => b.checked).map((b) => Number(b.value));
-    const sync = () => { ok.disabled = selected().length === 0; };
-    for (const b of boxes) b.addEventListener('change', sync);
-    all.onclick = () => { for (const b of boxes) b.checked = true; sync(); };
-    none.onclick = () => { for (const b of boxes) b.checked = false; sync(); };
-    cancel.onclick = () => { closeDialog(); resolve(null); };
-    ok.onclick = () => {
-      const ids = selected();
-      if (!ids.length) return;
-      lastPushChannels = ids;
-      closeDialog();
-      resolve(ids);
-    };
-    actions.append(cancel, ok);
-    sync();
-    $('#dialog').classList.remove('hidden');
-    ok.focus();
-  });
-}
-
 // A template repeating on several weekdays yields one block per date, and each
 // date is its own playlist — so pushing a single day airs only that day.
 async function pushToAir(btn, { scope }) {
@@ -329,23 +427,14 @@ async function pushToAir(btn, { scope }) {
   const what = scope === 'week' ? `the week starting ${week} (7 days)` : day;
 
   // Pushing rebuilds the day's playlist on every instance it touches, so the
-  // operator chooses which instances this run is allowed to touch.
-  let channels = scheduleChannels;
-  if (!channels.length) {
-    try { channels = scheduleChannels = await api.get('/api/channels'); } catch { channels = []; }
-  }
-  let query = scope === 'week' ? `week=${week}` : `date=${day}`;
-  if (channels.length) {
-    const picked = await pushChannelDialog(
-      `This pushes all approved blocks for ${what} to the channels you select below.`, channels);
-    if (!picked) return;
-    if (picked.length < channels.length) query += `&channels=${picked.join(',')}`;
-  } else {
-    const ok = await confirmDialog('Push to Air',
-      `This pushes all approved blocks for ${what} to the live OTAV instances. Continue?`,
-      { confirmLabel: 'Push to Air', danger: true });
-    if (!ok) return;
-  }
+  // operator chooses which instances this run is allowed to touch — the channel
+  // on screen, or that one + others, like every other action.
+  const picked = await pickScope(`push-${scope}`, 'Push to Air',
+    `Pushes every approved block of ${what} to OTAV, rebuilding each day's playlist.`
+    + (scope === 'week' ? ' Today is on air and is held back; push it on its own if it must change.' : ''),
+    { confirmLabel: 'Push to Air', danger: true });
+  if (!picked) return;
+  let query = `${scope === 'week' ? `week=${week}` : `date=${day}`}&channels=${picked.join(',')}`;
 
   // A single-day push of TODAY rebuilds the playlist that is playing; the server
   // refuses it until the operator confirms (409 needsConfirm), and a week push
@@ -357,7 +446,11 @@ async function pushToAir(btn, { scope }) {
     if (!ok) return;
     query += '&includeToday=1';
   }
+  return runPush(btn, query, { scope });
+}
 
+/** Run one push with live progress; `query` is the complete push query. */
+async function runPush(btn, query, { scope }) {
   const job = `push-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await withBusy(btn, async () => {
     const ui = pushProgressDialog('Pushing to air', {
@@ -381,6 +474,17 @@ async function pushToAir(btn, { scope }) {
           ok: false,
           detail: `${fmt(m.seconds)} of air · ${m.blocks.map((b) => `${b.target_date} ${b.template_name}`).join(', ')}`,
         })));
+        return;
+      }
+      // Days that would end early: show why, and let the operator push anyway.
+      if (e.data?.gaps && e.data.problems?.length) {
+        reportDialog('This push would leave black on air', e.data.problems.map((p) => ({
+          name: `${p.channel} · ${p.date}`, ok: false, detail: p.message,
+        })));
+        const actions = $('#dialogActions');
+        const anyway = el('button', { className: 'danger', textContent: 'Push anyway' });
+        anyway.onclick = () => { closeDialog(); runPush(btn, `${query}&allowGaps=1`, { scope }); };
+        actions.prepend(anyway);
         return;
       }
       if (e.data?.blocks?.length) {
@@ -422,7 +526,7 @@ async function pushToAir(btn, { scope }) {
             failed ? 'bad' : 'ok', 'Push complete');
     }
     await loadSchedule();
-  });
+  }).catch(() => {}); // withBusy already showed the error
 }
 
 $('#btnPush').addEventListener('click', (e) => pushToAir(e.currentTarget, { scope: 'day' }));

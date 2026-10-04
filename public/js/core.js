@@ -54,8 +54,48 @@ export function toast(message, kind = 'info', title = '') {
   close.onclick = dismiss;
   t.append(close);
   host.append(t);
-  if (kind !== 'bad') setTimeout(dismiss, 4200);
+  // Errors stay longer but no longer forever, and at most a few pile up: a
+  // column of stale red boxes hid the page and said nothing new.
+  setTimeout(dismiss, kind === 'bad' ? 9000 : 4200);
+  const all = [...host.children].filter((x) => !x.classList.contains('leaving'));
+  for (const old of all.slice(0, Math.max(0, all.length - 4))) old.remove();
   return t;
+}
+
+// ---- Small utilities ----------------------------------------------------------
+/** Run `fn` once input has been quiet for `ms` (search boxes, number fields). */
+export function debounce(fn, ms = 200) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// Read-mostly data every tab asks for. The channel list used to be fetched on
+// every grid reload and the whole channel catalogue on every block opened —
+// most of what made the review UI feel slow. Both are cached and invalidated
+// by whatever changes them.
+let channelsCache = null;
+let channelsAt = 0;
+/** Every channel (cached for a minute, or until invalidateChannels()). */
+export async function getChannels({ fresh = false } = {}) {
+  if (!fresh && channelsCache && Date.now() - channelsAt < 60_000) return channelsCache;
+  channelsCache = await api.get('/api/channels');
+  channelsAt = Date.now();
+  return channelsCache;
+}
+export function invalidateChannels() { channelsCache = null; }
+
+const resourcesCache = new Map(); // channel id -> { at, rows }
+/** A channel's catalogue as GET /api/resources returns it (cached for 5 minutes). */
+export async function getResources(channelId, { fresh = false } = {}) {
+  const hit = resourcesCache.get(channelId);
+  if (!fresh && hit && Date.now() - hit.at < 300_000) return hit.rows;
+  const rows = await api.get(`/api/resources?channel_id=${channelId}`);
+  resourcesCache.set(channelId, { at: Date.now(), rows });
+  return rows;
+}
+/** Drop the cached catalogue of one channel (or of all of them). */
+export function invalidateResources(channelId = null) {
+  if (channelId == null) resourcesCache.clear(); else resourcesCache.delete(channelId);
 }
 
 // ---- Generic dialog (confirm / report) -------------------------------------
@@ -153,3 +193,77 @@ $('#themeToggle').addEventListener('click', () => {
   applyTheme(next);
 });
 
+
+// ---- Channel scope picker ------------------------------------------------------
+// Every scheduling action asks the same question: just the channel on screen,
+// or that channel and others too? The answer is remembered per action, so
+// "approve on Discover + Elevate" every week is one click after the first time.
+// Resolves to an array of channel ids (the current one first), or null on cancel.
+const SCOPE_KEY = (action) => `otav.scope.${action}`;
+export function scopeDialog({ title, message = '', action, current, channels, confirmLabel = 'Continue', danger = false, extra = null, mode = null }) {
+  return new Promise((resolve) => {
+    const cur = channels.find((c) => c.id === current) || channels[0];
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(SCOPE_KEY(action)) || '{}'); } catch { /* ignore */ }
+    $('#dialogTitle').textContent = title;
+    const content = $('#dialogContent');
+    content.innerHTML = '';
+    if (message) content.append(el('p', { className: 'dialog-msg', textContent: message }));
+
+    const name = `scope-${Date.now()}`;
+    const only = el('input', { type: 'radio', name, value: 'only' });
+    const more = el('input', { type: 'radio', name, value: 'more' });
+    const wrap = el('div', { className: 'scope-pick' });
+    wrap.append(
+      el('label', { className: 'scope-opt' }, only, el('span', {}, el('strong', { textContent: `Only ${cur?.name ?? 'this channel'}` }),
+        el('small', { className: 'muted', textContent: 'The channel open in the schedule' }))),
+      el('label', { className: 'scope-opt' }, more, el('span', {}, el('strong', { textContent: `${cur?.name ?? 'This channel'} + other channels` }),
+        el('small', { className: 'muted', textContent: 'Pick which ones below' }))),
+    );
+    const list = el('div', { className: 'push-channels scope-list' });
+    const others = channels.filter((c) => c.id !== cur?.id);
+    const preset = new Set(Array.isArray(saved.others) ? saved.others : []);
+    const boxes = others.map((c) => {
+      const input = el('input', { type: 'checkbox', value: String(c.id) });
+      input.checked = preset.has(c.id);
+      list.append(el('label', { className: 'chk push-channel' }, input, el('span', { textContent: c.name })));
+      return input;
+    });
+    const bulk = el('div', { className: 'push-channel-bulk' });
+    const all = el('button', { className: 'ghost mini', type: 'button', textContent: 'All' });
+    const none = el('button', { className: 'ghost mini', type: 'button', textContent: 'None' });
+    bulk.append(all, none);
+    const othersBox = el('div', { className: 'scope-others' }, bulk, list);
+    content.append(wrap, othersBox);
+    if (extra) content.append(extra);
+    ((mode ?? saved.mode) === 'more' && others.length ? more : only).checked = true;
+    if (!others.length) more.disabled = true;
+
+    const actions = $('#dialogActions');
+    actions.innerHTML = '';
+    const cancel = el('button', { className: 'ghost', textContent: 'Cancel' });
+    const ok = el('button', { className: danger ? 'danger' : 'primary', textContent: confirmLabel });
+    const picked = () => (more.checked ? boxes.filter((b) => b.checked).map((b) => Number(b.value)) : []);
+    const sync = () => {
+      othersBox.classList.toggle('disabled', !more.checked);
+      for (const b of boxes) b.disabled = !more.checked;
+      ok.disabled = more.checked && picked().length === 0;
+    };
+    for (const x of [only, more, ...boxes]) x.addEventListener('change', sync);
+    all.onclick = () => { for (const b of boxes) b.checked = true; sync(); };
+    none.onclick = () => { for (const b of boxes) b.checked = false; sync(); };
+    cancel.onclick = () => { closeDialog(); resolve(null); };
+    ok.onclick = () => {
+      const ids = [cur.id, ...picked()];
+      try {
+        localStorage.setItem(SCOPE_KEY(action), JSON.stringify({ mode: more.checked ? 'more' : 'only', others: boxes.filter((b) => b.checked).map((b) => Number(b.value)) }));
+      } catch { /* private mode: just don't remember */ }
+      closeDialog();
+      resolve(ids);
+    };
+    actions.append(cancel, ok);
+    sync();
+    $('#dialog').classList.remove('hidden');
+    ok.focus();
+  });
+}

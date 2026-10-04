@@ -1,5 +1,7 @@
-import { $, $$, api, closeDialog, confirmDialog, confirmWithNote, el, fmt, toast, withBusy } from './core.js';
-import { loadSchedule } from './schedule.js';
+import {
+  $, $$, api, closeDialog, confirmDialog, confirmWithNote, debounce, el, fmt, getChannels, getResources, scopeDialog, toast, withBusy,
+} from './core.js';
+import { currentChannelId, loadSchedule, refreshCards, scheduleChannels } from './schedule.js';
 
 // ---- Block editor modal ----------------------------------------------------
 let currentBlock = null;
@@ -47,12 +49,21 @@ function libFiltered() {
 export async function openBlock(id) {
   let v;
   try {
-    v = await api.get(`/api/blocks/${id}`);
-    allResources = await api.get(`/api/resources?channel_id=${v.block.channel_id}`);
+    // The block and the channel's catalogue load together; the catalogue is
+    // cached per channel, so the second block opened is instant.
+    const guess = currentChannelId();
+    const [vv, res] = await Promise.all([
+      api.get(`/api/blocks/${id}`),
+      guess != null ? getResources(guess) : Promise.resolve(null),
+    ]);
+    v = vv;
+    allResources = v.block.channel_id === guess && res ? res : await getResources(v.block.channel_id);
   } catch (e) { return toast(e.message, 'bad', 'Error'); }
   currentBlock = v;
   currentItems = v.items.map((i) => ({ ...i }));
+  markSaved();
   currentMirror = (v.block.slot_order || 0) > 0;
+  syncScopeControl();
 
   $('#modalTitle').textContent = `${v.block.template_name} — ${v.block.target_date}`;
   renderModalMeta();
@@ -77,7 +88,7 @@ function renderModalMeta() {
   $('#modalMeta').textContent = (moved
     ? `airs ${v.effectiveStart}–${v.effectiveEnd} (slot ${v.block.start_time}–${v.block.end_time})`
     : `${v.block.start_time}–${v.block.end_time}`)
-    + ` · block ${fmt(v.blockSeconds)} · channel ${v.block.channel_id}`
+    + ` · block ${fmt(v.blockSeconds)} · ${scheduleChannels.find((c) => c.id === v.block.channel_id)?.name ?? `channel ${v.block.channel_id}`}`
     + (currentMirror ? ' · 🔁 mirrored airing (read-only — edit the primary airing)' : '');
 }
 
@@ -481,7 +492,8 @@ async function applyShift(edge, seconds, btn) {
       toast(`${n.template_name} now airs ${n.effectiveStart}–${n.effectiveEnd}`
         + (n.fits ? '' : ` and ${n.problem} — open it to adjust`), n.fits ? 'ok' : 'bad', 'Block moved');
     } else toast(`Block now airs ${v.effectiveStart}–${v.effectiveEnd}`, 'ok', 'Block moved');
-    loadSchedule();
+    markSaved();
+    refreshCards([id, n?.id].filter(Boolean));
   }).catch(() => {});
 }
 
@@ -603,10 +615,12 @@ function clearLibDuration() {
   for (const id of DUR_IDS) $('#' + id).value = '';
   libDurMin = null; libDurMax = null;
 }
-for (const id of DUR_IDS) $('#' + id).addEventListener('input', readLibDuration);
+const readLibDurationSoon = debounce(readLibDuration, 250);
+for (const id of DUR_IDS) $('#' + id).addEventListener('input', readLibDurationSoon);
 $('#btnLibDurClear').addEventListener('click', () => { clearLibDuration(); renderLibrary(); });
 
-$('#libSearch').addEventListener('input', (e) => { libSearch = e.currentTarget.value; renderLibrary(); });
+const renderLibrarySoon = debounce(renderLibrary, 200);
+$('#libSearch').addEventListener('input', (e) => { libSearch = e.currentTarget.value; renderLibrarySoon(); });
 $('#libType').addEventListener('change', (e) => { libType = e.currentTarget.value; renderLibrary(); });
 $('#libSubject').addEventListener('change', (e) => { libSubject = e.currentTarget.value; renderLibrary(); });
 $('#btnLibAll').addEventListener('click', () => { libFiltered().forEach((r) => libSel.add(r.id)); renderLibrary(); });
@@ -643,26 +657,86 @@ $('#btnSaveItems').addEventListener('click', (e) => withBusy(e.currentTarget, as
   const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
   const v = await api.send('PUT', `/api/blocks/${currentBlock.block.id}/items`, { items });
   currentBlock = v; currentItems = v.items.map((i) => ({ ...i })); renderItems();
+  markSaved();
+  renderModalMeta();
   toast('Order saved', 'ok');
+  refreshCards([currentBlock.block.id]);
 }));
 // A template can air the same content several times a day, and the repeats
 // mirror it clip for clip — so a force applies to all of them and the toast
 // says so, or the operator goes looking for the midnight repeat by hand.
 const alsoAirings = (n) => (n > 0 ? ` (and ${n} more airing${n > 1 ? 's' : ''} that day)` : '');
 
+// ---- Block actions, with channel scope -----------------------------------------
+// Approve, force and regenerate act on this block — or also on the same airing
+// (template + slot + date) on other channels, per the "Apply to" select next to
+// the buttons. Each counterpart goes through the same endpoint and keeps its own
+// verdict, so one that does not pass is reported, never pushed through.
+let blockScopeIds = [];   // extra channels; empty = this channel only
+
+function syncScopeControl() {
+  const sel = $('#blockScope');
+  if (!sel) return;
+  sel.value = blockScopeIds.length ? 'more' : 'only';
+  $('#blockScopeNames').textContent = blockScopeIds.length ? `+ ${blockScopeIds.length} channel(s)` : '';
+}
+$('#blockScope')?.addEventListener('change', async (e) => {
+  if (e.currentTarget.value === 'only') { blockScopeIds = []; syncScopeControl(); return; }
+  const channels = (await getChannels()).filter((c) => c.is_active || c.id === currentBlock.block.channel_id);
+  // The dialog shares #dialog with nothing else open here; the modal stays put.
+  const ids = await scopeDialog({
+    title: 'Apply block actions to', action: 'block', current: currentBlock.block.channel_id, channels,
+    message: 'Approve, Force and Regenerate will also run on the same airing on these channels (same template, slot and date).',
+    confirmLabel: 'Use these channels', mode: 'more',
+  });
+  blockScopeIds = ids ? ids.slice(1) : [];
+  syncScopeControl();
+});
+
+/** Ids of this airing on the scoped channels (not this block), plus who has none. */
+async function counterparts() {
+  if (!blockScopeIds.length) return { ids: [], none: [] };
+  const r = await api.get(`/api/blocks/${currentBlock.block.id}/counterparts?channels=${blockScopeIds.join(',')}`);
+  return { ids: r.counterparts.map((c) => c.id), names: r.counterparts, none: r.none };
+}
+
+/** Run `fn(id)` on each counterpart; returns a one-line summary. */
+async function onCounterparts(fn) {
+  const { ids, names = [], none = [] } = await counterparts();
+  let ok = 0;
+  const failed = [];
+  for (const id of ids) {
+    try { await fn(id); ok++; } catch (err) {
+      failed.push(`${names.find((n) => n.id === id)?.channel_name ?? id}: ${err.message}`);
+    }
+  }
+  if (!ids.length && !none.length) return { line: '', touched: [] };
+  const parts = [];
+  if (ok) parts.push(`${ok} other channel(s) too`);
+  if (failed.length) parts.push(`refused on ${failed.join('; ')}`);
+  if (none.length) parts.push(`${none.length} channel(s) don't air it that day`);
+  return { line: parts.length ? ` — ${parts.join(', ')}` : '', touched: ids, bad: failed.length > 0 };
+}
+
+const saveOnScreen = () => api.send('PUT', `/api/blocks/${currentBlock.block.id}/items`, {
+  items: currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 })),
+});
+
 $('#btnOverrideBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const id = currentBlock.block.id;
   if (currentBlock.overridden) {
     currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: false });
     currentItems = currentBlock.items.map((i) => ({ ...i }));
+    markSaved();
     renderItems();
-    toast(`Force removed${alsoAirings(currentBlock.siblings)} — refused again until it passes`, 'ok');
+    const more = await onCounterparts((cid) => api.send('POST', `/api/blocks/${cid}/override`, { enabled: false }));
+    toast(`Force removed${alsoAirings(currentBlock.siblings)}${more.line} — refused again until it passes`, 'ok');
+    refreshCards([id]);
     return;
   }
   // Save what is on screen first: the recorded reason must describe the block
   // as the operator is actually leaving it, not as the server last saw it.
-  const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
-  await api.send('PUT', `/api/blocks/${id}/items`, { items });
+  if (!currentMirror) await saveOnScreen();
   const { ok, note } = await confirmWithNote(
     'Force this block',
     'This block does not meet the rules and will be approved and pushed anyway. '
@@ -672,27 +746,66 @@ $('#btnOverrideBlock').addEventListener('click', (e) => withBusy(e.currentTarget
   if (!ok) return;
   currentBlock = await api.send('POST', `/api/blocks/${id}/override`, { enabled: true, reason: note });
   currentItems = currentBlock.items.map((i) => ({ ...i }));
+  markSaved();
   renderItems();
-  toast(`Block forced${alsoAirings(currentBlock.siblings)} — it can now be approved`, 'ok');
+  const more = await onCounterparts((cid) => api.send('POST', `/api/blocks/${cid}/override`, { enabled: true, reason: note }));
+  toast(`Block forced${alsoAirings(currentBlock.siblings)}${more.line} — it can now be approved`, more.bad ? 'info' : 'ok');
+  refreshCards([id]);
 }));
+
 $('#btnApproveBlock').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   // Persist current edits first, then approve.
-  const items = currentItems.map((i) => ({ resource_id: i.resource_id, is_manual_override: i.is_manual_override ? 1 : 0 }));
-  await api.send('PUT', `/api/blocks/${currentBlock.block.id}/items`, { items });
-  await api.send('POST', `/api/blocks/${currentBlock.block.id}/approve`);
-  $('#modal').classList.add('hidden');
-  toast('Block approved', 'ok');
-  await loadSchedule();
+  const id = currentBlock.block.id;
+  if (!currentMirror) await saveOnScreen();
+  await api.send('POST', `/api/blocks/${id}/approve`);
+  const more = await onCounterparts((cid) => api.send('POST', `/api/blocks/${cid}/approve`));
+  markSaved();
+  closeBlockModal(true);
+  toast(`Block approved${more.line}`, more.bad ? 'info' : 'ok');
+  refreshCards([id]);
 }));
-$('#modalClose').addEventListener('click', () => $('#modal').classList.add('hidden'));
-$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').classList.add('hidden'); });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    $('#modal').classList.add('hidden');
-    $('#seriesModal')?.classList.add('hidden');
-    // #templateModal has its own Esc handler — it confirms before discarding edits.
-    $('#channelModal')?.classList.add('hidden');
-    closeDialog();
+
+$('#btnRegenBlock')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ok = await confirmDialog('Regenerate this block',
+    'Rebuilds the block from its template: clips you pinned by hand stay, everything else is picked again, and a force is cleared.'
+    + (blockScopeIds.length ? ' Also on the selected channels.' : ''),
+    { confirmLabel: 'Regenerate' });
+  if (!ok) return;
+  await withBusy(btn, async () => {
+    const id = currentBlock.block.id;
+    await api.send('POST', `/api/blocks/${id}/regenerate`);
+    const more = await onCounterparts((cid) => api.send('POST', `/api/blocks/${cid}/regenerate`));
+    toast(`Block rebuilt${more.line}`, 'ok');
+    await openBlock(id);
+    refreshCards([id]);
+  }).catch(() => {}); // withBusy already showed the error
+});
+
+// ---- Closing the editor ---------------------------------------------------------
+// Esc or a click outside used to drop unsaved edits without a word. They ask now.
+let savedSnapshot = '';
+const snapshot = () => JSON.stringify(currentItems.map((i) => [i.resource_id, i.is_manual_override ? 1 : 0]));
+function markSaved() { savedSnapshot = snapshot(); }
+const isDirty = () => !currentMirror && !$('#modal').classList.contains('hidden') && snapshot() !== savedSnapshot;
+
+async function closeBlockModal(force = false) {
+  if (!force && isDirty()) {
+    const ok = await confirmDialog('Discard changes?', 'This block has edits that are not saved.', { confirmLabel: 'Discard', danger: true });
+    if (!ok) return;
   }
+  $('#modal').classList.add('hidden');
+}
+$('#modalClose').addEventListener('click', () => closeBlockModal());
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeBlockModal(); });
+window.addEventListener('beforeunload', (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  // One layer at a time: the dialog on top closes first, then the editor.
+  if (!$('#dialog').classList.contains('hidden')) { closeDialog(); return; }
+  if (!$('#modal').classList.contains('hidden')) { closeBlockModal(); return; }
+  $('#seriesModal')?.classList.add('hidden');
+  // #templateModal has its own Esc handler — it confirms before discarding edits.
+  $('#channelModal')?.classList.add('hidden');
 });
 
