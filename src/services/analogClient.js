@@ -54,7 +54,28 @@ export function analogConfig() {
     programGuideTitle: String(a.programGuideTitle || 'Program Guide'),
     requestTimeoutSeconds: Number(a.requestTimeoutSeconds) > 0 ? Number(a.requestTimeoutSeconds) : 30,
     publishTimeoutSeconds: Number(a.publishTimeoutSeconds) > 0 ? Number(a.publishTimeoutSeconds) : 300,
+    // Vol1 housekeeping (analogVol1.js).
+    archiveDir: String(a.archiveDir || '/Volumes/Public/Broadcast/Analog Archive'),
+    minFreeGb: Number(a.minFreeGb) >= 0 && a.minFreeGb !== null && a.minFreeGb !== '' ? Number(a.minFreeGb) : 50,
+    fillerMaxSeconds: Number(a.fillerMaxSeconds) > 0 ? Number(a.fillerMaxSeconds) : 660,
+    fillerPrefixes: Array.isArray(a.fillerPrefixes) && a.fillerPrefixes.length ? a.fillerPrefixes.map(String)
+      : ['PSA', 'PROMO', 'FILL', 'NDMA', 'Infobits', 'IsGuyTing', 'FortsMon', 'GMCS', 'CATS', 'StartingPoint', 'QOD', 'FunFacts'],
   };
+}
+
+// The device's FTP serves one transfer at a time (analog-automator holds a lock
+// around every FTP call), so a multi-GB archive download would hold a push or an
+// upload for half an hour. Whoever needs the device calls wantDevice(): the
+// archive job aborts its current download (it resumes later with a Range) and
+// waits until deviceWanted() is false again.
+const deviceListeners = new Set();
+let deviceClaims = 0;
+export function onDeviceWanted(fn) { deviceListeners.add(fn); return () => deviceListeners.delete(fn); }
+export function deviceWanted() { return deviceClaims > 0 || inFlight > 0 || !!job?.running; }
+export async function claimDevice(fn) {
+  deviceClaims++;
+  for (const f of deviceListeners) { try { f(); } catch { /* a listener must not stop the claim */ } }
+  try { return await fn(); } finally { deviceClaims--; }
 }
 
 /** The one analog ChannelType row (seeded by db.js), or null on a DB without it. */
@@ -161,6 +182,55 @@ export class AnalogClient {
   asrun(day) { return this.request('GET', `/playback/asrun${day ? `?day=${day}` : ''}`); }
   recover(force = false) { return this.request('POST', '/playback/recover', { body: { force: !!force } }); }
   recoverLog(limit = 50) { return this.request('GET', `/playback/recover/log?limit=${limit}`); }
+
+  /**
+   * Stream one device file into `out` (a writable stream), starting at byte
+   * `offset` (GET /storage/files/<name>/content, Range: bytes=offset-). Resolves
+   * with the bytes written. The API can't change its status once the body has
+   * started, so a transfer cut short is caught here by counting against
+   * Content-Length — the caller resumes from what landed.
+   */
+  download(name, out, { offset = 0, signal } = {}) {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({
+        host: this.host, port: this.port, method: 'GET',
+        path: `/api/v1/storage/files/${encodeURIComponent(name)}/content`,
+        headers: { 'X-API-Key': this.key, ...(offset ? { Range: `bytes=${offset}-` } : {}) },
+        signal,
+      }, (res) => {
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          let text = '';
+          res.on('data', (c) => { text += c; });
+          res.on('end', () => {
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+            const hint = res.statusCode === 404 && /no route|Not Found/i.test(String(data?.detail ?? data))
+              ? ' — the analog API is too old to download; deploy analog-automator with GET /storage/files/{name}/content' : '';
+            reject(new AnalogError(`download of ${name} → ${res.statusCode}: ${detailText(data?.detail ?? data)}${hint}`,
+              { status: res.statusCode }));
+          });
+          return;
+        }
+        if (offset && res.statusCode !== 206) { res.destroy(); return reject(new AnalogError(`download of ${name}: the API ignored the resume offset`)); }
+        const expected = Number(res.headers['content-length']);
+        let got = 0;
+        res.on('data', (c) => { got += c.length; });
+        res.on('error', (err) => reject(new AnalogError(`download of ${name} failed: ${err.code || err.message}`)));
+        res.on('aborted', () => reject(new AnalogError(`download of ${name} cut short at ${got} bytes`)));
+        res.pipe(out, { end: false });
+        res.on('end', () => {
+          if (Number.isFinite(expected) && got !== expected) {
+            return reject(Object.assign(new AnalogError(`download of ${name} cut short at ${got} of ${expected} bytes`), { partial: got }));
+          }
+          resolve(got);
+        });
+      });
+      req.on('error', (err) => reject(err.name === 'AbortError'
+        ? Object.assign(new AnalogError('download interrupted'), { cancelled: true })
+        : new AnalogError(`download of ${name} failed: ${err.code || err.message}`)));
+      req.end();
+    });
+  }
 
   /**
    * Stream one local file to the device disk (PUT /storage/files/<name>).
@@ -341,6 +411,7 @@ let queue = Promise.resolve();
 let inFlight = 0;
 function serialized(fn) {
   inFlight++;
+  for (const f of deviceListeners) { try { f(); } catch { /* see claimDevice */ } }
   const run = queue.then(fn);
   queue = run.then(() => {}, () => {});
   run.then(() => {}, () => {}).finally(() => { inFlight--; });
@@ -551,10 +622,20 @@ export function deleteDeviceFiles(filenames, { force = false } = {}) {
     if (!isConfigured(ch)) throw new AnalogError('the analog channel has no address or API key');
     const client = new AnalogClient(ch);
     const byName = new Map((await deviceFiles(client, ch.id)).map((f) => [f.filename, f]));
+    const safeOnShare = new Set(db.prepare(
+      "SELECT filename FROM AnalogDeviceFile WHERE archive IN ('matched', 'archived') AND share_path IS NOT NULL"
+    ).all().map((r) => r.filename));
     const out = { deleted: [], refused: [], failed: [] };
     for (const name of [...new Set(filenames.map(String))]) {
       const f = byName.get(name);
       if (!f) { out.failed.push({ filename: name, error: 'not on the device disk' }); continue; }
+      // Nothing leaves the device without a copy on the share: a file the
+      // automator uploaded has one by definition (AnalogFile), anything else
+      // only once the Vol1 archive matched or archived it. Force doesn't skip this.
+      if (!f.file_path && !safeOnShare.has(name)) {
+        out.refused.push({ filename: name, reason: 'no copy on the share yet — archive it first (Vol1 inventory)', unsafe: true });
+        continue;
+      }
       const reasons = [];
       if (f.in_schedule) reasons.push('in the schedule on air');
       if (f.upcoming?.approved) reasons.push(`approved/pushed blocks use it from ${f.upcoming.first}`);
@@ -563,6 +644,7 @@ export function deleteDeviceFiles(filenames, { force = false } = {}) {
         await client.deleteFile(name, force);
         out.deleted.push({ filename: name, size: f.size });
         db.prepare('UPDATE AnalogFile SET uploaded_at = NULL, size = NULL WHERE device_filename = ?').run(name);
+        db.prepare('UPDATE AnalogDeviceFile SET gone_at = ? WHERE filename = ?').run(new Date().toISOString(), name);
         l.warn(`deleted ${name} from the device disk (${Math.round((f.size || 0) / 1048576)} MB)`
           + `${reasons.length ? ` — FORCED: ${reasons.join('; ')}` : ''}`);
       } catch (err) {
@@ -607,11 +689,12 @@ export async function startUpload(paths) {
     uploaded: [], failed: [], unsupported: plan.filter((p) => p.state === 'unsupported').map((p) => p.file_path),
     stoppedBy: null, controller: new AbortController(),
   };
+  for (const f of deviceListeners) { try { f(); } catch { /* see claimDevice */ } }
   runUpload(client, todo, job).catch((err) => { l.error('upload job crashed', err); });
   return uploadStatus();
 }
 
-async function runUpload(client, todo, j) {
+export async function runUpload(client, todo, j) {
   const record = db.prepare('UPDATE AnalogFile SET size = ?, uploaded_at = ? WHERE file_path = ?');
   const sized = [];
   for (const p of todo) {

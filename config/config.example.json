@@ -41,7 +41,11 @@
     "folderId": null,
     "programGuideTitle": "Program Guide",
     "requestTimeoutSeconds": 30,
-    "publishTimeoutSeconds": 300
+    "publishTimeoutSeconds": 300,
+    "archiveDir": "/Volumes/Public/Broadcast/Analog Archive",
+    "minFreeGb": 50,
+    "fillerMaxSeconds": 660,
+    "fillerPrefixes": ["PSA", "PROMO", "FILL", "NDMA", "Infobits", "IsGuyTing", "FortsMon", "GMCS", "CATS", "StartingPoint", "QOD", "FunFacts"]
   },
   "ffmpegPath": "ffmpeg",
   "transcode": {

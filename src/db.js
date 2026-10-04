@@ -655,6 +655,27 @@ function analogSchema() {
       size            INTEGER,
       uploaded_at     TEXT
     );
+
+    -- What is on the device disk (Vol1), as last scanned, and what became of
+    -- each file: kept as a filler or a movie, or a programme that may go once it
+    -- is safe on the share. Nothing is deleted from the device until share_path
+    -- holds a verified copy (archive = matched | archived).
+    CREATE TABLE IF NOT EXISTS AnalogDeviceFile (
+      filename      TEXT PRIMARY KEY,
+      size          INTEGER,
+      modified      TEXT,
+      title         TEXT,          -- device library title, when in the library
+      folder_path   TEXT,          -- device library folder (Library/Cartoon …)
+      length_s      REAL,          -- the device's own measure
+      kind          TEXT NOT NULL, -- 'filler' | 'movie' | 'program'
+      kind_reason   TEXT,
+      kind_manual   INTEGER NOT NULL DEFAULT 0,
+      share_path    TEXT,          -- the copy on the share (catalogue file or archive)
+      archive       TEXT NOT NULL DEFAULT 'pending', -- pending|matched|archived|failed
+      archive_error TEXT,
+      scanned_at    TEXT,
+      gone_at       TEXT           -- no longer on the device disk
+    );
   `);
 }
 

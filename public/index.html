@@ -536,6 +536,52 @@
         </tr></thead><tbody><tr><td colspan="6" class="muted">Press Load to list the device disk.</td></tr></tbody></table>
       </div>
     </div>
+
+    <div class="split" style="margin-top:16px">
+      <div class="panel" id="anVol1Panel">
+        <h3>🗄 Vol1 inventory</h3>
+        <p class="muted" style="margin:0 0 8px"><strong>Fillers</strong> and <strong>movies</strong> stay on the device; <strong>programmes</strong> leave once they have aired and nothing from today on needs them. Nothing leaves the device without a checked copy on the share: a file already in the catalogue (same name and length) is <em>matched</em>, anything else is <em>archived</em> to <code id="anArchiveDir">…</code> (size and length verified) and catalogued for this channel, still known by its device name. The kind is a first guess — correct it here and it sticks.</p>
+        <div class="be-filters">
+          <button id="anVol1Scan" class="ghost">Scan Vol1</button>
+          <button id="anVol1Archive" class="primary">Archive to the share</button>
+          <button id="anVol1ArchiveCancel" class="ghost" hidden>Stop archiving</button>
+          <button id="anVol1Cleanup" class="danger">Delete aired programmes…</button>
+        </div>
+        <div id="anVol1Summary" class="muted" style="margin:6px 0">Not scanned yet.</div>
+        <div id="anVol1ArchiveState" class="muted" style="margin:6px 0"></div>
+        <div class="be-filters">
+          <input id="anVol1Search" type="search" placeholder="Search…" aria-label="Search Vol1" />
+          <select id="anVol1Kind" aria-label="Kind"><option value="">every kind</option><option value="filler">fillers</option><option value="movie">movies</option><option value="program">programmes</option></select>
+          <select id="anVol1State" aria-label="On the share"><option value="">any state</option><option value="pending">not on the share</option><option value="matched">matched</option><option value="archived">archived</option><option value="failed">failed</option></select>
+          <span class="spacer"></span>
+          <select id="anVol1SetKind" aria-label="Set kind of selected"><option value="">set kind of selected…</option><option value="filler">filler (keep)</option><option value="movie">movie (keep)</option><option value="program">programme</option></select>
+        </div>
+        <div class="modal-scroll" style="max-height:420px">
+          <table id="anVol1"><thead><tr>
+            <th><input type="checkbox" id="anVol1All" aria-label="Select all shown" /></th>
+            <th>File</th><th>Folder</th><th>Length</th><th>Size</th><th>Kind</th><th>On the share</th>
+          </tr></thead><tbody><tr><td colspan="7" class="muted">Press Scan Vol1.</td></tr></tbody></table>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>🔁 Week routine</h3>
+        <p class="muted" style="margin:0 0 8px">Once the analog week is approved: scan Vol1 → delete the programmes that aired → copy what the week needs (keeping the margin below free) → push the days → delete what the old week used. Today is never pushed by the routine; use Push to Air for it.</p>
+        <div class="be-filters">
+          <input id="anRtFrom" type="date" aria-label="From" />
+          <input id="anRtTo" type="date" aria-label="To" />
+          <button id="anRtRun" class="primary">Run the week routine</button>
+          <button id="anRtCancel" class="ghost" hidden>Cancel</button>
+        </div>
+        <div id="anRtState" class="muted" style="margin:6px 0"></div>
+        <pre id="anRtLog" class="muted" style="white-space:pre-wrap;margin:0;max-height:260px;overflow:auto"></pre>
+        <h3 style="margin-top:16px">⚙ Vol1 settings</h3>
+        <div class="stack">
+          <label class="field">Archive folder on the share <input id="anArchiveDirInput" placeholder="/Volumes/Public/Broadcast/Analog Archive" /></label>
+          <label class="field">Keep free on Vol1 (GB) <input id="anMinFree" type="number" min="0" step="1" /></label>
+          <button id="anSaveVol1Settings" class="ghost">Save</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section id="tab-setup" class="tab">

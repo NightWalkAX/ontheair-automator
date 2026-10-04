@@ -13,6 +13,9 @@ export function startFakeAnalog({
   lengths = {},          // filename -> length_s the device measures once a file is added
   onAir = [],            // filenames the device's on-air schedule uses (in_schedule)
   folders = [{ folder_id: 5, name: 'Automator', path: 'Library/Automator', parent_id: null }],
+  contents = {},         // filename -> Buffer, served by GET /storage/files/<name>/content
+  free = 20e9,           // bytes free on Vol1
+  cutAfter = {},         // filename -> bytes after which the first download is cut short
 } = {}) {
   const lib = library.map((r) => ({ type: 'video', folder_id: 5, volume: 'Vol1', ...r }));
   const state = {
@@ -29,7 +32,12 @@ export function startFakeAnalog({
     nextId: 900000,
     onAir: new Set(onAir),
     deleted: [],          // { filename, force }
+    contents: { ...contents },
+    downloads: [],        // { filename, offset }
+    free,
+    cutAfter: { ...cutAfter },
   };
+  const sizeOf = (f) => state.contents[f]?.length ?? 1048576;
   const out = (r) => ({ ...r, length: `${r.length_s}s` });
 
   const server = createServer((req, res) => {
@@ -61,8 +69,26 @@ export function startFakeAnalog({
       }
       if (req.method === 'GET' && path === '/library/folders') return send(200, folders);
       if (req.method === 'GET' && path === '/storage/files') {
-        return send(200, [...state.disk].map((f) => ({ filename: f, size: 1048576, modified: '2026-10-01 10:00',
+        return send(200, [...state.disk].map((f) => ({ filename: f, size: sizeOf(f), modified: '2026-10-01 10:00',
           in_schedule: state.onAir.has(f), in_library: state.device.some((r) => r.filename === f) })));
+      }
+      if ((g = m(/^\/storage\/files\/([^/]+)\/content$/)) && req.method === 'GET') {
+        const name = decodeURIComponent(g[1]);
+        if (!state.disk.has(name)) return send(404, { detail: 'no existe' });
+        const body = state.contents[name] ?? Buffer.alloc(1048576, 1);
+        const range = /^bytes=(\d+)-$/.exec(req.headers.range || '');
+        const offset = range ? Number(range[1]) : 0;
+        state.downloads.push({ filename: name, offset });
+        const tail = body.subarray(offset);
+        res.writeHead(range ? 206 : 200, { 'Content-Type': 'application/octet-stream', 'Content-Length': tail.length,
+          ...(range ? { 'Content-Range': `bytes ${offset}-${body.length - 1}/${body.length}` } : {}) });
+        const cut = state.cutAfter[name];
+        if (cut != null && cut < tail.length) {
+          delete state.cutAfter[name];
+          res.write(tail.subarray(0, cut));
+          return setTimeout(() => res.destroy(), 20);
+        }
+        return res.end(tail);
       }
       if ((g = m(/^\/storage\/files\/([^/]+)$/)) && req.method === 'PUT') {
         const name = decodeURIComponent(g[1]);
@@ -70,6 +96,7 @@ export function startFakeAnalog({
         if (state.disk.has(name)) return send(409, { detail: `${name} ya existe en el disco del equipo` });
         if (Number(req.headers['content-length']) !== raw.length) return send(400, { detail: 'subida incompleta' });
         state.disk.add(name);
+        state.contents[name] = raw;
         state.uploads.push({ filename: name, bytes: raw.length });
         return send(201, { uploaded: name, bytes: raw.length, duration: '00:01:00:00' });
       }
@@ -82,7 +109,7 @@ export function startFakeAnalog({
         state.deleted.push({ filename: name, force });
         return send(200, { deleted: name });
       }
-      if (req.method === 'GET' && path === '/storage/disk') return send(200, [{ volume: 'Vol1', total: 100e9, free: 20e9, mpegs: 3000, used_pct: 80 }]);
+      if (req.method === 'GET' && path === '/storage/disk') return send(200, [{ volume: 'Vol1', total: 100e9, free: state.free, mpegs: 3000, used_pct: 80 }]);
       if (req.method === 'GET' && path === '/storage/audit') return send(200, { on_disk_not_in_library: [], library_missing_on_disk: [], scheduled_missing_on_disk: [] });
       if (req.method === 'POST' && path === '/schedule/draft/reset') {
         state.resets++;

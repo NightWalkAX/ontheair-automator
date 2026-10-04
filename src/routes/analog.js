@@ -10,6 +10,10 @@ import {
   AnalogClient, AnalogError, DAYS, analogChannel, analogConfig, cancelUpload, filesForRange, isAnalogPushRunning,
   deleteDeviceFiles, deviceFiles, isConfigured, planFiles, rollbackAnalog, startUpload, uploadStatus,
 } from '../services/analogClient.js';
+import {
+  archiveStatus, cancelArchive, cancelRoutine, cleanupPlan, routineStatus, runCleanup, scanVol1, setKind,
+  startArchive, startRoutine, vol1Rows, vol1Summary,
+} from '../services/analogVol1.js';
 
 export const router = Router();
 
@@ -66,7 +70,7 @@ router.get('/', (req, res) => {
   });
 });
 
-// PUT /api/analog/settings { folderId?, programGuideTitle?, daysAhead? } — config.json analog.*
+// PUT /api/analog/settings { folderId?, programGuideTitle?, daysAhead?, archiveDir?, minFreeGb? } — config.json analog.*
 router.put('/settings', (req, res) => {
   const b = req.body || {};
   const next = {};
@@ -79,6 +83,16 @@ router.put('/settings', (req, res) => {
     const n = Number(b.daysAhead);
     if (!Number.isInteger(n) || n < 0 || n > 6) return res.status(400).json({ error: 'daysAhead must be 0..6' });
     next.daysAhead = n;
+  }
+  if ('archiveDir' in b) {
+    const dir = String(b.archiveDir || '').trim();
+    if (!dir.startsWith('/')) return res.status(400).json({ error: 'archiveDir must be an absolute path on the share' });
+    next.archiveDir = dir.replace(/\/+$/, '');
+  }
+  if ('minFreeGb' in b) {
+    const n = Number(b.minFreeGb);
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: 'minFreeGb must be a number of GB' });
+    next.minFreeGb = n;
   }
   updateConfig((c) => { c.analog = { ...(c.analog || {}), ...next }; });
   res.json({ ok: true, settings: analogConfig() });
@@ -183,3 +197,59 @@ router.post('/upload', async (req, res) => {
 });
 router.get('/upload/status', (req, res) => res.json({ ok: true, upload: uploadStatus() }));
 router.post('/upload/cancel', (req, res) => res.json({ ok: cancelUpload(), upload: uploadStatus() }));
+
+// ---- Vol1 inventory, archive and the week routine (services/analogVol1.js) ----
+
+// GET /api/analog/vol1 — the last scan of the device disk, and the jobs.
+router.get('/vol1', (req, res) => res.json({
+  ok: true, summary: vol1Summary(), files: req.query.rows === '0' ? undefined : vol1Rows(),
+  archive: archiveStatus(), routine: routineStatus(), settings: analogConfig(),
+}));
+
+// POST /api/analog/vol1/scan — read the device disk + library, classify, match to the share.
+router.post('/vol1/scan', async (req, res) => {
+  if (!ready(res)) return;
+  try { res.json({ ok: true, summary: await scanVol1() }); } catch (err) { fail(res, err); }
+});
+
+// PUT /api/analog/vol1/kind { filenames, kind } — the operator's correction.
+router.put('/vol1/kind', (req, res) => {
+  const names = Array.isArray(req.body?.filenames) ? req.body.filenames.filter((n) => typeof n === 'string' && n) : [];
+  if (!names.length) return res.status(400).json({ ok: false, error: 'filenames is required' });
+  try { res.json({ ok: true, changed: setKind(names, String(req.body?.kind || '')) }); } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/analog/vol1/archive { filenames? } — copy to the share what isn't there yet.
+router.post('/vol1/archive', async (req, res) => {
+  if (!ready(res)) return;
+  const names = Array.isArray(req.body?.filenames) ? req.body.filenames.map(String) : null;
+  try { res.json({ ok: true, archive: await startArchive({ filenames: names }) }); } catch (err) {
+    res.status(409).json({ ok: false, error: err.message });
+  }
+});
+router.post('/vol1/archive/cancel', (req, res) => res.json({ ok: cancelArchive(), archive: archiveStatus() }));
+
+// GET /api/analog/vol1/cleanup — what would be deleted; POST { confirm: true } deletes it.
+router.get('/vol1/cleanup', device(async ({ ch, client }) => ({ ok: true, plan: await cleanupPlan(client, ch.id) })));
+router.post('/vol1/cleanup', async (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'send { "confirm": true } to delete' });
+  if (isAnalogPushRunning()) return res.status(409).json({ ok: false, error: 'a push to the analog device is running — wait for it' });
+  if (!ready(res)) return;
+  try { res.json({ ok: true, ...(await runCleanup()) }); } catch (err) { fail(res, err); }
+});
+
+// POST /api/analog/routine { from, to } — scan, delete what aired, copy the week, push, delete the old week.
+router.post('/routine', async (req, res) => {
+  if (!ready(res)) return;
+  const today = localDate();
+  const from = DATE.test(String(req.body?.from || '')) ? String(req.body.from) : addDays(today, 1);
+  const to = DATE.test(String(req.body?.to || '')) ? String(req.body.to) : addDays(today, analogConfig().daysAhead);
+  if (to < from) return res.status(400).json({ ok: false, error: 'to is before from' });
+  try { res.json({ ok: true, routine: await startRoutine({ from, to }) }); } catch (err) {
+    res.status(409).json({ ok: false, error: err.message });
+  }
+});
+router.get('/routine/status', (req, res) => res.json({ ok: true, routine: routineStatus() }));
+router.post('/routine/cancel', (req, res) => res.json({ ok: cancelRoutine(), routine: routineStatus() }));

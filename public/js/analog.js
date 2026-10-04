@@ -32,6 +32,8 @@ export async function loadAnalogTab() {
     $('#anTo').value = addDays(today, 6);
     $('#anAsrunDay').value = today;
     $('#anDay').value = DAYS[new Date(`${addDays(today, 1)}T00:00:00`).getDay()];
+    $('#anRtFrom').value = addDays(today, 1);
+    $('#anRtTo').value = addDays(today, 6);
   }
   info = await api.get('/api/analog');
   $('#anUnconfigured').hidden = info.configured;
@@ -42,7 +44,7 @@ export async function loadAnalogTab() {
   }
   renderUpload(info.upload);
   if (info.upload?.running) watchUpload();
-  await Promise.allSettled([refreshStatus(), loadDisk(), loadFolders(), loadBackups(), loadRecoverLog()]);
+  await Promise.allSettled([refreshStatus(), loadDisk(), loadFolders(), loadBackups(), loadRecoverLog(), loadVol1()]);
   scheduleAnalogPoll();
 }
 
@@ -317,6 +319,9 @@ async function deleteSelected() {
   if (!ok) return;
   let r = await api.send('POST', '/api/analog/storage/delete', { filenames: names });
   let deleted = r.deleted;
+  // A file with no copy on the share is never deleted, confirmed or not.
+  const unsafe = r.refused.filter((x) => x.unsafe);
+  r = { ...r, refused: r.refused.filter((x) => !x.unsafe), failed: r.failed.concat(unsafe.map((x) => ({ filename: x.filename, error: x.reason }))) };
   if (r.refused.length) {
     const lines = r.refused.slice(0, 8).map((x) => `${x.filename} (${x.reason})`).join('; ')
       + (r.refused.length > 8 ? `; and ${r.refused.length - 8} more` : '');
@@ -349,3 +354,195 @@ $('#anStorageAll').addEventListener('change', (e) => {
   renderStorage();
 });
 $('#anStorageDelete').addEventListener('click', busy(deleteSelected));
+
+// ---- Vol1 inventory, archive, clean-up and the week routine ------------------
+let vol1 = [];
+const vPicked = new Set();
+let archiveTimer = null;
+let routineTimer = null;
+const KIND = { filler: ['tx-ok', 'filler · keep'], movie: ['tx-converted', 'movie · keep'], program: ['tx-blocked', 'programme'] };
+const SHARE = {
+  pending: ['tx-missing', 'not on the share'], matched: ['tx-ok', 'matched'],
+  archived: ['tx-ok', 'archived'], failed: ['tx-failed', 'archive failed'],
+};
+const gbText = (b) => `${((b || 0) / 1073741824).toFixed(1)} GB`;
+
+function shownVol1() {
+  const q = $('#anVol1Search').value.trim().toLowerCase();
+  const kind = $('#anVol1Kind').value;
+  const st = $('#anVol1State').value;
+  return vol1.filter((f) => (!kind || f.kind === kind) && (!st || f.archive === st)
+    && (!q || `${f.filename} ${f.title || ''} ${f.folder_path || ''}`.toLowerCase().includes(q)));
+}
+
+function renderVol1() {
+  const tb = $('#anVol1 tbody');
+  tb.innerHTML = '';
+  const shown = shownVol1();
+  if (!shown.length) emptyRow(tb, 7, vol1.length ? 'Nothing matches.' : 'Press Scan Vol1.');
+  for (const f of shown.slice(0, 1500)) {
+    const cb = el('input', { type: 'checkbox', checked: vPicked.has(f.filename) });
+    cb.onchange = () => { if (cb.checked) vPicked.add(f.filename); else vPicked.delete(f.filename); };
+    const kind = badge(KIND[f.kind] || ['', f.kind]);
+    kind.title = f.kind_reason || '';
+    const share = badge(SHARE[f.archive] || ['', f.archive]);
+    share.title = f.archive_error || f.share_path || '';
+    tb.append(el('tr', {}, el('td', {}, cb), el('td', { textContent: f.filename, title: f.title || '' }),
+      el('td', { textContent: String(f.folder_path || '').replace(/^Library\/?/, '') }),
+      el('td', { textContent: f.length_s != null ? fmt(Math.round(f.length_s)) : '—' }),
+      el('td', { textContent: mbText(f.size) }), el('td', {}, kind), el('td', {}, share)));
+  }
+}
+
+function renderVol1Summary(s) {
+  if (!s?.scannedAt) { $('#anVol1Summary').textContent = 'Not scanned yet.'; return; }
+  const k = (x) => `${s.byKind[x]?.files ?? 0} (${gbText(s.byKind[x]?.bytes)})`;
+  const a = (x) => s.byArchive[x]?.files ?? 0;
+  $('#anVol1Summary').textContent = `${s.files} file(s), ${gbText(s.bytes)} · fillers ${k('filler')} · movies ${k('movie')} · programmes ${k('program')}`
+    + ` · on the share: ${a('matched')} matched, ${a('archived')} archived, ${a('pending')} not yet${a('failed') ? `, ${a('failed')} failed` : ''}`
+    + ` · scanned ${String(s.scannedAt).replace('T', ' ').slice(0, 16)}`;
+}
+
+function renderArchive(a) {
+  const box = $('#anVol1ArchiveState');
+  $('#anVol1ArchiveCancel').hidden = !a?.running;
+  $('#anVol1Archive').disabled = !!a?.running;
+  if (!a || (!a.running && !a.finishedAt)) { box.textContent = ''; return; }
+  box.textContent = a.running
+    ? `Archiving ${a.done + 1}/${a.total}: ${a.current || '…'} · ${gbText(a.bytesDone + (a.currentBytes || 0))} of ${gbText(a.bytesTotal)}${a.waiting ? ` — waiting: ${a.waiting}` : ''}`
+    : `Last archive: ${a.archived.length} of ${a.total} copied${a.cancelled ? ' (stopped)' : ''}${a.catalogued ? `, ${a.catalogued} catalogued` : ''}`;
+  if (a.failed.length) {
+    const more = el('button', { className: 'mini ghost', textContent: `${a.failed.length} failed` });
+    more.onclick = () => reportDialog('Files not archived', a.failed.map((f) => ({ name: f.filename, ok: false, detail: f.error })));
+    box.append(document.createTextNode(' '), more);
+  }
+}
+
+function renderRoutine(r) {
+  $('#anRtCancel').hidden = !r?.running;
+  $('#anRtRun').disabled = !!r?.running;
+  if (!r || (!r.running && !r.finishedAt)) { $('#anRtState').textContent = ''; $('#anRtLog').textContent = ''; return; }
+  const u = r.upload;
+  $('#anRtState').textContent = r.running
+    ? `${r.from} → ${r.to}: ${r.step}${u?.running ? ` (${u.done}/${u.total}, ${gbText(u.bytesDone)} of ${gbText(u.bytesTotal)})` : ''}`
+    : `${r.from} → ${r.to}: ${r.error ? `stopped — ${r.error}` : 'done'} (${String(r.finishedAt).replace('T', ' ').slice(0, 16)})`;
+  $('#anRtState').className = r.error ? 'tx-badge tx-failed' : 'muted';
+  $('#anRtLog').textContent = r.log.join('\n');
+}
+
+async function loadVol1() {
+  const d = await api.get('/api/analog/vol1');
+  vol1 = d.files || [];
+  for (const n of [...vPicked]) if (!vol1.some((f) => f.filename === n)) vPicked.delete(n);
+  $('#anArchiveDir').textContent = d.settings.archiveDir;
+  $('#anArchiveDirInput').value = d.settings.archiveDir;
+  $('#anMinFree').value = d.settings.minFreeGb;
+  renderVol1Summary(d.summary);
+  renderVol1();
+  renderArchive(d.archive);
+  renderRoutine(d.routine);
+  if (d.archive?.running) watchArchive();
+  if (d.routine?.running) watchRoutine();
+}
+
+function watchArchive() {
+  clearTimeout(archiveTimer);
+  archiveTimer = setTimeout(async () => {
+    const d = await api.get('/api/analog/vol1?rows=0').catch(() => null);
+    if (!d) return watchArchive();
+    renderArchive(d.archive);
+    renderVol1Summary(d.summary);
+    if (d.archive.running) watchArchive();
+    else {
+      toast(`${d.archive.archived.length} file(s) archived to the share`, d.archive.failed.length ? 'bad' : 'ok', 'Vol1');
+      loadVol1().catch(() => {});
+    }
+  }, 3000);
+}
+
+function watchRoutine() {
+  clearTimeout(routineTimer);
+  routineTimer = setTimeout(async () => {
+    const d = await api.get('/api/analog/routine/status').catch(() => null);
+    if (!d) return watchRoutine();
+    renderRoutine(d.routine);
+    if (d.routine.running) watchRoutine();
+    else {
+      toast(d.routine.error ? `Stopped: ${d.routine.error}` : 'Week copied and pushed', d.routine.error ? 'bad' : 'ok', 'Week routine');
+      Promise.allSettled([loadVol1(), loadDisk(), loadBackups()]);
+    }
+  }, 3000);
+}
+
+$('#anVol1Scan').addEventListener('click', busy(async () => {
+  const r = await api.send('POST', '/api/analog/vol1/scan');
+  toast(`${r.summary.files} file(s) on Vol1`, 'ok', 'Vol1 scanned');
+  await loadVol1();
+}));
+$('#anVol1Archive').addEventListener('click', busy(async () => {
+  const pending = vol1.filter((f) => f.archive === 'pending' || f.archive === 'failed');
+  const picked = pending.filter((f) => vPicked.has(f.filename));
+  const list = picked.length ? picked : pending;
+  if (!list.length) return toast('Everything on Vol1 is already on the share', 'ok', 'Vol1');
+  const bytes = list.reduce((n, f) => n + (f.size || 0), 0);
+  const ok = await confirmDialog(`Archive ${list.length} file(s) to the share?`,
+    `${gbText(bytes)} copied from the device to ${$('#anArchiveDir').textContent} — at the device's FTP speed this can take hours or days, so it runs in the background and can be stopped and resumed. It steps aside whenever a push or an upload needs the device.`,
+    { confirmLabel: 'Start archiving' });
+  if (!ok) return;
+  const r = await api.send('POST', '/api/analog/vol1/archive', picked.length ? { filenames: picked.map((f) => f.filename) } : {});
+  renderArchive(r.archive);
+  watchArchive();
+}));
+$('#anVol1ArchiveCancel').addEventListener('click', busy(async () => {
+  await api.send('POST', '/api/analog/vol1/archive/cancel');
+  toast('Stopping — the partial copy is kept and resumed next time', 'info', 'Vol1');
+}));
+$('#anVol1Cleanup').addEventListener('click', busy(async () => {
+  const { plan } = await api.get('/api/analog/vol1/cleanup');
+  if (!plan.delete.length) {
+    return toast(`Nothing to delete (${plan.kept.onAir} on air, ${plan.kept.upcoming} still scheduled, ${plan.kept.notArchived} not on the share yet)`, 'info', 'Vol1');
+  }
+  const ok = await confirmDialog(`Delete ${plan.delete.length} aired programme(s) from Vol1?`,
+    `Frees ${gbText(plan.bytes)}. Every one of them has a checked copy on the share and nothing from today on uses it. Kept: ${plan.kept.onAir} on air, ${plan.kept.upcoming} still scheduled, ${plan.kept.notArchived} not on the share yet; fillers and movies always stay.`,
+    { confirmLabel: 'Delete', danger: true });
+  if (!ok) return;
+  const r = await api.send('POST', '/api/analog/vol1/cleanup', { confirm: true });
+  toast(`${r.deleted.length} deleted, ${gbText(r.deleted.reduce((n, d) => n + (d.size || 0), 0))} freed`, r.failed.length ? 'bad' : 'ok', 'Vol1');
+  await Promise.allSettled([loadVol1(), loadDisk()]);
+}));
+$('#anVol1Search').addEventListener('input', debounce(renderVol1, 200));
+$('#anVol1Kind').addEventListener('change', renderVol1);
+$('#anVol1State').addEventListener('change', renderVol1);
+$('#anVol1All').addEventListener('change', (e) => {
+  for (const f of shownVol1()) { if (e.target.checked) vPicked.add(f.filename); else vPicked.delete(f.filename); }
+  renderVol1();
+});
+$('#anVol1SetKind').addEventListener('change', async (e) => {
+  const kind = e.target.value;
+  e.target.value = '';
+  if (!kind || !vPicked.size) { if (kind) toast('Select some files first', 'info', 'Vol1'); return; }
+  await api.send('PUT', '/api/analog/vol1/kind', { filenames: [...vPicked], kind });
+  for (const f of vol1) if (vPicked.has(f.filename)) { f.kind = kind; f.kind_manual = 1; f.kind_reason = 'set by hand'; }
+  renderVol1();
+  toast(`${vPicked.size} file(s) set to ${kind}`, 'ok', 'Vol1');
+});
+$('#anRtRun').addEventListener('click', busy(async () => {
+  const from = $('#anRtFrom').value;
+  const to = $('#anRtTo').value;
+  const ok = await confirmDialog(`Run the week routine for ${from} → ${to}?`,
+    'Deletes aired programmes that are safe on the share, copies what the approved days need, pushes those days to the device (replacing their weekdays) and then deletes what the old week used.',
+    { confirmLabel: 'Run' });
+  if (!ok) return;
+  const r = await api.send('POST', '/api/analog/routine', { from, to });
+  renderRoutine(r.routine);
+  watchRoutine();
+}));
+$('#anRtCancel').addEventListener('click', busy(async () => {
+  await api.send('POST', '/api/analog/routine/cancel');
+  toast('Cancelling after the current step', 'info', 'Week routine');
+}));
+$('#anSaveVol1Settings').addEventListener('click', busy(async () => {
+  await api.send('PUT', '/api/analog/settings', { archiveDir: $('#anArchiveDirInput').value.trim(), minFreeGb: Number($('#anMinFree').value) });
+  toast('Vol1 settings saved', 'ok');
+  await loadVol1();
+}));

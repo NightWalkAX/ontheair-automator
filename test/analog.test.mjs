@@ -238,7 +238,17 @@ test('device disk: list with what uses each file, delete the free ones, force th
   assert.ok(by['Show_C.mov'].upcoming.approved > 0, JSON.stringify(by['Show_C.mov']));
   assert.match(by['Show_C.mov'].file_path, /Show C\.mov$/);
 
-  let r = await j('POST', '/api/analog/storage/delete', { filenames: ['Old_Promo.mov', 'On_Air_Now.mov', 'Show_C.mov', 'Nope.mov'] });
+  // Nothing leaves the device without a copy on the share — not even forced.
+  let r = await j('POST', '/api/analog/storage/delete', { filenames: ['Old_Promo.mov'], force: true });
+  assert.deepEqual(r.data.deleted, []);
+  assert.equal(r.data.refused[0].unsafe, true);
+  assert.ok(fake.state.disk.has('Old_Promo.mov'));
+  for (const f of ['Old_Promo.mov', 'On_Air_Now.mov']) {
+    db.prepare(`INSERT INTO AnalogDeviceFile (filename, kind, archive, share_path) VALUES (?, 'program', 'archived', ?)`)
+      .run(f, `/share/${f}`);
+  }
+
+  r = await j('POST', '/api/analog/storage/delete', { filenames: ['Old_Promo.mov', 'On_Air_Now.mov', 'Show_C.mov', 'Nope.mov'] });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.deepEqual(r.data.deleted.map((d) => d.filename), ['Old_Promo.mov']);
   assert.deepEqual(r.data.refused.map((d) => d.filename).sort(), ['On_Air_Now.mov', 'Show_C.mov']);
