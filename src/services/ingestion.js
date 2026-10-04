@@ -157,7 +157,7 @@ function applySagaGrouping(rows) {
 }
 
 /** Probe a single file's duration (seconds, rounded) via ffprobe. */
-async function probeDuration(filePath) {
+export async function probeDuration(filePath) {
   // FFPROBE_PATH env overrides config, so tests can inject a fake probe.
   const ffprobePath = process.env.FFPROBE_PATH || loadConfig().ffprobePath;
   const { stdout } = await execFileAsync(ffprobePath || 'ffprobe', [
@@ -195,7 +195,7 @@ async function isDirectory(path) {
   }
 }
 
-async function collectVideoFiles(dir, acc = null, depth = 0, stats = null) {
+export async function collectVideoFiles(dir, acc = null, depth = 0, stats = null) {
   const walk = stats || {
     dirs: 0, unreadable: 0, loops: 0, startedAt: Date.now(), reported: 0, root: dir,
     seenDirs: new Set(), seenFiles: new Set(), files: [],

@@ -8,6 +8,7 @@ import { db } from '../db.js';
 import { loadConfig, localizePath } from '../config.js';
 import { mountShare, isMounted } from '../services/smbMount.js';
 import { scanAll, scanMediaRoot, recheckCatalog, cloneScannedResources } from '../services/ingestion.js';
+import { applyRepair, planRepair } from '../services/catalogRepair.js';
 
 /** Query/body flags arrive as "1", "true" or a real boolean. */
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -398,6 +399,28 @@ router.post('/recheck', async (req, res) => {
       force: truthy(req.body?.force ?? req.query.force),
     });
     res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// GET  /api/media/repair[?deep=1] — what the catalogue path repair would do.
+// POST /api/media/repair { deep }  — do it. Catalogued clips that are not at
+// their path any more are found again by name + length (see
+// services/catalogRepair.js) and every row re-pointed; aliases of one physical
+// file are folded together. Nothing on disk is touched; unmatched clips are
+// only reported. `deep` also walks the folders above the media roots, for
+// files somebody moved by hand.
+router.get('/repair', async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await planRepair({ deep: truthy(req.query.deep) })) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+router.post('/repair', async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await applyRepair({ deep: truthy(req.body?.deep ?? req.query.deep) })) });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }

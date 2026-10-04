@@ -86,6 +86,19 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
    fail on air. Missing clips are reported, never deleted (a share hiccup must not shrink the
    catalogue), and an unreadable file is reported separately from a missing one: "fix
    permissions" and "somebody deleted a film" are different problems.
+   **Catalogue path repair** (`src/services/catalogRepair.js`, "🩹 Repair missing clips…" in Media &
+   Roots, `scripts/cleanup/15-repair-missing-clips.js`). A clip that is not at its path any more is
+   usually somewhere else: production had folders whose names end in a space, which macOS also
+   shows over SMB under a mangled 8.3 name (`ANWHU2~D`), so one file was catalogued under 2–3 paths;
+   Air Spec converted one, re-pointed rows with THAT path and archived the original, orphaning the
+   rest; and the Christmas films were moved out of Broadcast/Movies by hand. The repair stats every
+   known path (async), matches a gone one by name key (basename without extension, alphanumerics
+   only — `.mp4` → `.mov` still matches) AND length (±max(3s,1%), probing when unknown) among
+   paths on disk (catalogue + Air Spec outputs, plus a walk of the folders above the roots with
+   `deep`), folds aliases of one physical file (same dev:ino; the clean path wins), and moves every
+   row — merging into an existing row of that channel (schedule items, play history, approval,
+   override and seasonal marks follow). Ambiguous and unmatched clips are only reported; days already
+   on OTAV that named an old path are listed for a re-push.
 2. Auto-generates weekly draft schedules from fixed block templates using rule-based content selection (sequential series/lesson playback, cooldown-based random movie selection, latest-episode-first for Sunday TV blocks).
 3. Fits filler clips into each block via a "knapsack" pass targeting 0s overrun / max 5s underrun.
 4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.

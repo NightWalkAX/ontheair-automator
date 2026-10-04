@@ -1,4 +1,4 @@
-import { $, $$, api, closeDialog, confirmDialog, el, fmt, toast, withBusy } from './core.js';
+import { $, $$, api, closeDialog, confirmDialog, el, fmt, invalidateResources, reportDialog, toast, withBusy } from './core.js';
 import { populateSelect } from './setup.js';
 
 // ---- Media & Roots ---------------------------------------------------------
@@ -129,6 +129,51 @@ $('#btnRecheck').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
   toast(parts.join(' · '), r.missing.length ? 'info' : 'ok', 'Re-check complete');
   if (r.missing.length || r.updated) await loadMediaTab().catch(() => {});
 }));
+// Catalogue path repair (services/catalogRepair.js): a clip that is not at its
+// path any more is usually somewhere else — converted by Air Spec, its folder
+// renamed, moved by hand. Preview first, then apply; nothing on disk is touched.
+async function showRepair(deep) {
+  const r = await api.get(`/api/media/repair${deep ? '?deep=1' : ''}`);
+  const short = (p) => String(p).replace(/^\/Volumes\/[^/]+\//, '');
+  const rows = [
+    ...r.relocate.map((x) => ({ name: short(x.from), ok: true, detail: `→ ${short(x.to)} (${x.rows} catalogue row(s))` })),
+    ...r.aliases.map((x) => ({ name: short(x.from), ok: true, detail: `same file as ${short(x.to)} — folded into it` })),
+    ...r.ambiguous.map((x) => ({ name: short(x.file_path), ok: false, detail: `several candidates: ${x.candidates.map(short).join(' · ')}` })),
+    ...r.notFound.map((x) => ({ name: short(x.file_path), ok: false, detail: x.nameMatches.length ? `same name but a different length at ${x.nameMatches.map(short).join(' · ')}` : 'not found anywhere' })),
+    ...r.unreadable.map((x) => ({ name: short(x.file_path), ok: false, detail: `unreadable (${x.error}) — is the share mounted?` })),
+  ];
+  // Nearly everything gone at once is the share not being mounted, not a
+  // catalogue problem — say so instead of listing six thousand files.
+  if (r.checked > 20 && r.notFound.length > r.checked / 2) {
+    rows.splice(0, rows.length, { name: `${r.notFound.length} of ${r.checked} catalogued clips are not on disk`, ok: false,
+      detail: 'That is almost everything: the share is probably not mounted on this Mac. Mount it (🔌 above) and try again.' });
+  }
+  const fixable = r.relocate.length + r.aliases.length;
+  reportDialog(`Repair: ${r.relocate.length} found elsewhere, ${r.aliases.length} alias(es), `
+    + `${r.notFound.length + r.ambiguous.length} unresolved${deep ? ' (deep search)' : ''}`,
+  rows.length ? rows : [{ name: `All ${r.checked} catalogued paths are on disk`, ok: true, detail: '' }]);
+  const actions = $('#dialogActions');
+  if (!deep && r.notFound.length) {
+    const deeper = el('button', { className: 'ghost', textContent: 'Search the share too…', title: 'Walk the folders above the media roots for files moved by hand (slower)' });
+    deeper.onclick = () => withBusy(deeper, () => showRepair(true)).catch(() => {});
+    actions.prepend(deeper);
+  }
+  if (fixable) {
+    const apply = el('button', { className: 'primary', textContent: `Re-point ${fixable} path(s)` });
+    apply.onclick = () => withBusy(apply, async () => {
+      const done = await api.send('POST', '/api/media/repair', { deep });
+      closeDialog();
+      invalidateResources();
+      toast(`${done.applied.rowsMoved} catalogue row(s) re-pointed, ${done.applied.rowsMerged} merged`
+        + (done.exportedDays.length ? ` — re-push ${done.exportedDays.length} day(s) already on OTAV: `
+          + done.exportedDays.slice(0, 4).map((d) => `${d.channel} ${d.target_date}`).join(', ') : ''),
+      'ok', 'Catalogue repaired');
+    }).catch(() => {});
+    actions.prepend(apply);
+  }
+}
+$('#btnRepair').addEventListener('click', (e) => withBusy(e.currentTarget, () => showRepair(false)).catch(() => {}));
+
 $('#btnAssignRoot').addEventListener('click', (e) => {
   const folder = selectedFolder || browsePath;
   if (!folder) return toast('Select a folder first', 'bad');
