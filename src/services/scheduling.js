@@ -472,7 +472,7 @@ export function isMovieBlock(template) {
  * block with no series assigned means ("just fill it with movies"). An empty list
  * means an empty pool: the operator named series and none of them feed this pass.
  */
-export function moviePool(template, block, blockSecs, channelId, subjects = undefined) {
+export function moviePool(template, block, blockSecs, channelId, subjects = undefined, { ignoreCooldown = false } = {}) {
   const scope = subjects === undefined
     ? templateSeries(template, channelId).map((s) => s.subject)
     : subjects;
@@ -516,6 +516,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
     ...cooldownEligible(channelId, all.filter((r) => !Number(r.in_season)), block.target_date),
   ];
   const unaired = all.filter((r) => !nearby.has(r.id));
+  if (ignoreCooldown) return unaired.length ? unaired : all;
   const fresh = cooled.filter((r) => !nearby.has(r.id));
   if (fresh.length) return fresh;
   if (cooled.length) return cooled;    // the whole catalogue already aired this week
@@ -639,17 +640,27 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
     if (items.length < limit) {
       const standalone = series.filter((sr) => sr.rule !== 'serial').map((sr) => sr.subject);
       const scope = series.length ? standalone : null; // null = every movie on the channel
-      let pool = moviePool(template, block, blockSecs, channelId, scope)
-        .filter((r) => !used.has(r.id));
-      // The pool sweeps in franchise members too, and picking those purely by fit
-      // would air "Narnia 2" with no "Narnia 1" before it — or start a second saga
-      // while the first is half aired. Standalone films always pass; an ordered
-      // part only when it belongs to the saga this block is already airing (at the
-      // part it is due), or, when no saga is in progress anywhere, when it is that
-      // franchise's opening part. Without the saga, only standalone films.
-      pool = saga
-        ? franchiseFilter(pool, channelId, block, saga)
-        : pool.filter((r) => !r.subject || Number(r.chapter) <= 0);
+      const allowed = (list) => {
+        const p = list.filter((r) => !used.has(r.id));
+        // Without a saga in this run: standalone films, plus — when no saga is
+        // mid-run anywhere — each franchise's OPENING part, which is how the next
+        // saga starts. While one IS mid-run (this is the "hold it for the next
+        // block" pass), nothing else may start: standalone films only.
+        if (saga) return franchiseFilter(p, channelId, block, saga);
+        if (!activeSubject) return franchiseFilter(p, channelId, block, null);
+        return p.filter((r) => !r.subject || Number(r.chapter) <= 0);
+      };
+      let pool = allowed(moviePool(template, block, blockSecs, channelId, scope));
+      // Everything the rules allow may still be cooling down while what is fresh
+      // is all later saga parts (production, 2026-10: 98 fresh titles, every one
+      // a part 2+). An empty block is worse than an early repeat: fall back to
+      // the allowed titles ignoring the cooldown (never the ±6-day repeat rule).
+      if (!pool.length) {
+        pool = allowed(moviePool(template, block, blockSecs, channelId, scope, { ignoreCooldown: true }));
+      }
+      // (The pool sweeps in franchise members too, and picking those purely by
+      // fit would air "Narnia 2" with no "Narnia 1" before it — or start a second
+      // saga while the first is half aired; allowed() above is what prevents it.)
       const room = blockSecs - (pos - startSecs);
       for (const r of preferSeasonal(pool, pos, room, limit - items.length)) place(r);
     }
