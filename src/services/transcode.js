@@ -870,6 +870,9 @@ export function replaceBlockers(item) {
     JOIN Resource r        ON r.id = si.resource_id
     LEFT JOIN ChannelType c ON c.id = sb.channel_id
     WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?
+      -- The analog device plays its OWN copy of the file (AnalogFile), so a
+      -- path changing on the share leaves its pushed days intact.
+      AND COALESCE(c.playout, 'otav') != 'analog'
     ORDER BY sb.target_date
   `).all(item.file_path, today);
   return rows.map((r) => `${r.channel || 'channel'} ${r.target_date}`);
@@ -886,6 +889,8 @@ function blockItem(itemId, item, message) {
 function pointCatalogue(item, finalCanonical) {
   // Seasonal marks are keyed by path too: they follow the file.
   db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(finalCanonical, item.file_path);
+  // So does its name on the analog device: the copy there is still this programme.
+  db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(finalCanonical, item.file_path);
   return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
     .run(finalCanonical, Math.round(item.out_duration || item.src_duration || 0), item.file_path).changes;
 }
@@ -894,7 +899,11 @@ function pointCatalogue(item, finalCanonical) {
 function catalogueSnapshot(filePath) {
   const rows = db.prepare('SELECT id, file_path, duration FROM Resource WHERE file_path = ?').all(filePath);
   const marks = db.prepare('SELECT holiday_id FROM HolidayFile WHERE file_path = ?').all(filePath);
+  const analog = db.prepare('SELECT device_filename FROM AnalogFile WHERE file_path = ?').get(filePath);
   return () => {
+    if (analog) {
+      db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE device_filename = ?').run(filePath, analog.device_filename);
+    }
     const back = db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE id = ?');
     for (const r of rows) back.run(r.file_path, r.duration, r.id);
     const mark = db.prepare('INSERT OR IGNORE INTO HolidayFile (file_path, holiday_id) VALUES (?, ?)');

@@ -540,7 +540,7 @@ class OtavClient {
  * clip name written into OTAV's playlist, so the schedule reads the same on air
  * as it does in the review UI.
  */
-function blockItems(blockId) {
+export function blockItems(blockId) {
   return db.prepare(`
     WITH ${EPISODE_NO_BLOCK_CTE}
     SELECT si.play_order, r.file_path, r.name, r.duration,
@@ -612,7 +612,7 @@ export function dayBlocks(targetDate) {
            COALESCE(s.start_time, bt.start_time)  AS start_time,
            COALESCE(s.end_time, bt.end_time)      AS end_time,
            COALESCE(s.slot_order, 0)              AS slot_order,
-           c.name AS channel_name, c.api_ip, c.api_port,
+           c.name AS channel_name, c.api_ip, c.api_port, c.playout,
            c.playlist_ref, c.playlist_name_pattern, c.api_username, c.api_password,
            c.schedule_path, c.playlist_dir, c.playlist_template,
            c.logo_filename, c.logo_enabled
@@ -900,6 +900,8 @@ async function pushDays(dates, progress = NULL_PROGRESS, channelIds = null) {
   for (const targetDate of dates) {
     for (const b of dayBlocks(targetDate)) {
       if (wanted && !wanted.has(b.channel_id)) continue;
+      // The analog channel is not an OTAV: analogClient.pushAnalogDays() takes it.
+      if (b.playout === 'analog') continue;
       nonEmpty.add(targetDate);
       let entry = perChannel.get(b.channel_id);
       if (!entry) perChannel.set(b.channel_id, (entry = { channel: b, days: new Map() }));
@@ -1034,6 +1036,7 @@ export function pushApprovedRange(fromDate, toDate, {
 export async function checkChannel(channelId) {
   const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
   if (!channel) throw new Error('channel not found');
+  if (channel.playout === 'analog') throw new Error(`${channel.name} is the analog channel, not an OTAV — use GET /api/analog/check`);
   const client = new OtavClient(channel);
   await client.authorize();
   return client.info();
@@ -1046,6 +1049,7 @@ export async function checkChannel(channelId) {
 export async function diagnoseChannel(channelId, targetDate, { probeCreate = false } = {}) {
   const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
   if (!channel) throw new Error('channel not found');
+  if (channel.playout === 'analog') throw new Error(`${channel.name} is the analog channel, not an OTAV — use GET /api/analog/check`);
   const client = new OtavClient(channel);
   await client.authorize();
   const out = await client.diagnose();
@@ -1098,6 +1102,8 @@ function exportedDaysFor(filePath, fromDate) {
     -- rather than quietly falling out of a set that must match replaceBlockers'.
     LEFT JOIN ChannelType c ON c.id  = sb.channel_id
     WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?
+      -- Not the analog channel: its device plays its own copy (AnalogFile).
+      AND COALESCE(c.playout, 'otav') != 'analog'
     ORDER BY sb.target_date, c.name
   `).all(filePath, fromDate);
 }

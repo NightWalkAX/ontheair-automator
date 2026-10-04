@@ -1,4 +1,6 @@
-// ChannelType CRUD — one row per OTAV instance (6 channels).
+// ChannelType CRUD — one row per playout: the OTAV instances, plus the ONE
+// analog channel (playout = 'analog'), which db.js seeds and which can be
+// edited (address, port, API key) but neither created again nor deleted.
 
 import { Router } from 'express';
 import { db, withTx } from '../db.js';
@@ -11,14 +13,22 @@ const l = log('channels');
 
 export const router = Router();
 
+// The analog API key never goes back to the browser: the editor shows whether
+// one is stored, and a save with the field blank keeps it (as the Gmail App
+// Password does on the monitor tab).
+export function publicChannel(row) {
+  const { api_key, ...rest } = row;
+  return { ...rest, has_api_key: !!api_key };
+}
+
 router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT * FROM ChannelType ORDER BY name').all());
+  res.json(db.prepare('SELECT * FROM ChannelType ORDER BY name').all().map(publicChannel));
 });
 
 router.get('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'not found' });
-  res.json(row);
+  res.json(publicChannel(row));
 });
 
 router.post('/', (req, res) => {
@@ -26,6 +36,9 @@ router.post('/', (req, res) => {
           schedule_path, playlist_dir, playlist_template, api_username, api_password,
           logo_filename, logo_enabled = 1 } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name is required' });
+  if (req.body?.playout && req.body.playout !== 'otav') {
+    return res.status(409).json({ error: 'there is exactly one analog channel and it already exists — edit it instead' });
+  }
   // Every optional column takes `?? null`, api_ip/api_port included: node:sqlite
   // refuses to bind `undefined`, so registering a channel before its Mac has an
   // address used to die on a 500 naming "SQLite parameter 3".
@@ -46,16 +59,20 @@ router.put('/:id', (req, res) => {
   const id = Number(req.params.id);
   const cur = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(id);
   if (!cur) return res.status(404).json({ error: 'not found' });
-  const m = { ...cur, ...req.body };
+  const { playout: _ignored, api_key: newKey, ...body } = req.body || {};
+  const m = { ...cur, ...body };
+  // Blank = keep the stored key; `clear_api_key: true` removes it.
+  const apiKey = req.body?.clear_api_key ? null
+    : (typeof newKey === 'string' && newKey.trim() ? newKey.trim() : cur.api_key);
   db.prepare(`
     UPDATE ChannelType SET name=?, is_active=?, api_ip=?, api_port=?, playlist_ref=?, playlist_name_pattern=?,
                            schedule_path=?, playlist_dir=?, playlist_template=?, api_username=?, api_password=?,
-                           logo_filename=?, logo_enabled=?
+                           logo_filename=?, logo_enabled=?, api_key=?
     WHERE id=?
   `).run(m.name, m.is_active ? 1 : 0, m.api_ip, m.api_port, m.playlist_ref, m.playlist_name_pattern ?? null,
          m.schedule_path ?? null, m.playlist_dir ?? null, m.playlist_template ?? null,
          m.api_username, m.api_password,
-         m.logo_filename ?? null, m.logo_enabled ? 1 : 0, id);
+         m.logo_filename ?? null, m.logo_enabled ? 1 : 0, apiKey ?? null, id);
   res.json({ ok: true });
 });
 
@@ -112,6 +129,9 @@ router.delete('/:id', (req, res) => {
   const id = Number(req.params.id);
   const p = deletePreview(id);
   if (!p) return res.status(404).json({ error: 'not found' });
+  if (db.prepare("SELECT 1 FROM ChannelType WHERE id = ? AND playout = 'analog'").get(id)) {
+    return res.status(409).json({ error: 'the analog channel is fixed and cannot be deleted — switch it off instead' });
+  }
   if (isPushRunning()) {
     return res.status(409).json({ error: 'a push is running — wait for it to finish before deleting a channel' });
   }

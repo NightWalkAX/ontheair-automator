@@ -102,7 +102,7 @@ An internal, on-premise TV broadcast scheduler for a government network. It:
 2. Auto-generates weekly draft schedules from fixed block templates using rule-based content selection (sequential series/lesson playback, cooldown-based random movie selection, latest-episode-first for Sunday TV blocks).
 3. Fits filler clips into each block via a "knapsack" pass targeting 0s overrun / max 5s underrun.
 4. Presents drafts in an admin review UI for manual reordering/swapping before approval. The week grid shows ONE channel at a time (chip strip, remembered in `localStorage`) and carries only each block's fit summary — `GET /api/blocks` takes those totals as one grouped `SUM`, and the clips load when a block is opened (`GET /api/blocks/:id`). Do not reintroduce a per-block `validateBlock()` call there: it labels every clip of every block and its `EPISODE_NO_CTE` window-numbers the whole non-filler catalogue per call, which was 613ms of SQL for one week of one channel. `Generate drafts`, `Approve fitting drafts` and `Download schedule` are week-wide and cover EVERY channel regardless of the chip — the chip filters the view, not the actions.
-5. Pushes approved schedules to 6 separate **Softron OnTheAir Video (OTAV)** instances over their REST APIs.
+5. Pushes approved schedules to 6 separate **Softron OnTheAir Video (OTAV)** instances over their REST APIs, and to the one **analog** channel's UltraNEXUS-HD through the analog-automator API (see "Analog channel" below).
 
 ## Frontend layout (public/js)
 
@@ -112,7 +112,7 @@ ES modules, no bundler, loaded from `main.js`: `core.js` (api, `$`/`el`, toasts,
 remembered per action in localStorage), `schedule.js` (week grid, Air-check strip, toolbar, push),
 `block.js` (block editor drawer: library, items, shift, approve/force/regenerate with the "Apply
 to" scope select, unsaved-changes guard), `media.js`, `catalog.js` (incl. seasons), `setup.js`
-(incl. channel delete), `airspec.js`, `monitor.js`. Split mechanically from the old 4,200-line
+(incl. channel delete), `airspec.js`, `monitor.js`, `analog.js` (the Analog tab). Split mechanically from the old 4,200-line
 `app.js` by AST: only cross-module names are exported, and a binding another module assigns goes
 through a `set_x()` setter (imports are read-only). Performance rules that came out of it: an
 action on one block repaints its card (`refreshCards()`), never the week; the channel catalogue is
@@ -468,6 +468,55 @@ validate block-by-block with labels in a loop.
   elsewhere is handed to another of its channels first (the cascade took it away from everybody),
   Air Spec's queue rows move to a surviving copy of the file, monitor feeds lose only the link, a
   running push refuses it, and blocks already pushed for today or later need `?force=1`.
+
+## Analog channel (UltraNEXUS-HD)
+
+The seventh channel is not an OTAV: a Leightronix UltraNEXUS-HD driven through the
+analog-automator REST API on the WinLGX PC (`docs/ANALOG_AUTOMATION_HANDOFF.md` — local only,
+it holds the production key; the API's own repo is NightWalkAX/analog-automator).
+`ChannelType.playout` is `'otav'` or `'analog'`; scheduling (templates, blocks, fillers,
+approval, `validateBlock()`) is identical and only the push destination differs.
+
+- **Fixed, one row.** `ensureAnalogChannel()` (db.js, called from `src/app.js` — NOT from
+  `initSchema()`, or every test database would lose id 1 to it) creates it inactive; a partial
+  unique index forbids a second; `DELETE /api/channels/:id` refuses it. The operator gives it
+  IP, port (default 8750) and `api_key` in the channel editor. **The key never goes back to the
+  browser** (`publicChannel()` → `has_api_key`); a PUT with it blank keeps it.
+- **Same Push to Air.** `POST /api/otav/push` splits the selection: OTAV channels to
+  `pushApprovedRange()` (whose `pushDays()` skips `playout = 'analog'`), the analog one to
+  `pushAnalogDays()` (`src/services/analogClient.js`), into one job and one report.
+- **The device holds ONE WEEK (Sun–Sat) that repeats.** Pushing date D replaces weekday(D), so
+  only today..today+`analog.daysAhead` (6) can go; later dates are held (they'd overwrite a
+  weekday that airs sooner), today needs the same `includeToday` confirmation as OTAV and is
+  then published with `confirm_today`. One run = draft reset → `PUT /schedule/draft/days/<wd>`
+  per date → ONE publish (the device backs itself up; the Analog tab can roll back).
+- **How a day is built** (`buildDayItems()`): each block's first clip is FIXED at its shifted
+  window start, the rest CHAINED; the hole a block leaves is the device's Program Guide resource
+  at exactly that length (`analog.programGuideTitle`), so nothing between blocks is black, and
+  an overrun is trimmed by the next fixed start. Chaining uses the DEVICE's lengths. The week
+  check therefore skips the playlist-end simulation (`black`/`overrun`) and the share's
+  missing-file check for this channel.
+- **Files live on the device disk.** `AnalogFile` maps a catalogue path to its device name
+  (no spaces/accents, ≤31 chars, `_n` on collision; a name already on the device is adopted only
+  when lengths agree). `planFiles()` → `ready | on-disk | missing | unsupported`. The push
+  refuses (409 `analogMissing`) while anything is missing and NEVER uploads by itself (Vol1 is
+  nearly full, ~2 MB/s): the upload is a background job (`startUpload()`, `POST
+  /api/analog/upload`) offered by the refusal dialog and the Analog tab. Files on disk but not in
+  the library are added at push time into `analog.folderId` (chosen in the tab). Air Spec and
+  catalogue repair carry the mapping when a path moves, and never block on or re-point analog
+  days — the device plays its own copy.
+- **Making room on Vol1** (the tab's "Files on the device disk" panel, `GET /api/analog/storage`,
+  `POST /api/analog/storage/delete { filenames, force }`, `deleteDeviceFiles()`): every file on
+  the device disk with what uses it — the device's on-air schedule (`in_schedule`) and the
+  automator's blocks from today on (`upcoming`, via `AnalogFile`). Either one refuses the delete
+  (`refused[]`) until the operator confirms a second time (`force`). Serialized with pushes, and
+  refused while one runs. The `AnalogFile` row is kept so the name stays stable; the file simply
+  reads `missing` and is uploaded again before its next push.
+- **Monitor:** a feed linked to the analog channel never gets an OTAV resync (the API recovers a
+  stopped player itself); "on air" comes from `/playback/live`. Manual recovery from the tab is
+  sent with `force: false` on purpose — a forced one replays the file on a healthy channel.
+- Tests: `test/analog.test.mjs` against `test/fake-analog.mjs`. Never point a test at the real
+  device; the handoff's rule for live checks is the Saturday sandbox + rollback.
 
 ## OnTheAir Video REST API (integration target)
 

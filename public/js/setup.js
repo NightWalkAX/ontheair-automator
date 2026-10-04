@@ -61,17 +61,19 @@ export async function loadSetupTab() {
           })),
         ]);
       });
-      const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe', title: 'Read-only: what this OTAV instance supports' });
-      probeBtn.onclick = probe(false);
+      const analog = c.playout === 'analog';
+      const probeBtn = el('button', { className: 'mini ghost', textContent: 'probe',
+        title: analog ? 'Read-only: health, disk and draft state of the analog API' : 'Read-only: what this OTAV instance supports' });
+      probeBtn.onclick = analog ? (e) => withBusy(e.currentTarget, () => analogProbe(c)) : probe(false);
       const probeDeepBtn = el('button', { className: 'mini ghost', textContent: 'probe+', title: 'Also tries every playlist-creation route against this instance (writes)' });
       probeDeepBtn.onclick = probe(true);
       const td = el('td'); td.style.textAlign = 'right';
-      td.append(editBtn, document.createTextNode(' '), seriesBtn, document.createTextNode(' '),
-                probeBtn, document.createTextNode(' '), probeDeepBtn);
+      td.append(editBtn, document.createTextNode(' '), seriesBtn, document.createTextNode(' '), probeBtn);
+      if (!analog) td.append(document.createTextNode(' '), probeDeepBtn);
       ct.append(el('tr', {},
-        el('td', { textContent: c.name }),
-        el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}` : '—' }),
-        el('td', { textContent: c.playlist_name_pattern || '{channel} {date}' }),
+        el('td', {}, document.createTextNode(c.name), ...(analog ? [document.createTextNode(' '), el('span', { className: 'badge status', textContent: 'analog' })] : [])),
+        el('td', { textContent: c.api_ip ? `${c.api_ip}:${c.api_port ?? ''}${analog && !c.has_api_key ? ' · no key' : ''}` : '—' }),
+        el('td', { textContent: analog ? 'device week (Sun–Sat)' : (c.playlist_name_pattern || '{channel} {date}') }),
         el('td', {}, el('span', { className: `badge ${c.is_active ? 'ok' : 'status'}`, textContent: c.is_active ? 'active' : 'off' })),
         td));
     }
@@ -599,10 +601,39 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('#templateModal').classList.contains('hidden')) closeTemplateModal();
 });
 
+/** The analog channel's probe: the analog API's health, disk and draft. */
+async function analogProbe(c) {
+  const d = await api.get('/api/analog/check');
+  const err = (x) => x?.error;
+  const disk = Array.isArray(d.disk) ? d.disk : [];
+  reportDialog(`Analog probe — ${c.name}`, [
+    { name: 'API', ok: !err(d.health), detail: err(d.health) || `${d.base} · device ${d.health.host}` },
+    { name: 'publish / uploads / recovery', ok: !err(d.health) && d.health.publish_enabled && d.health.storage_writes_enabled,
+      detail: err(d.health) ? '—' : `publish ${d.health.publish_enabled ? 'on' : 'OFF'} · uploads ${d.health.storage_writes_enabled ? 'on' : 'OFF'} · recovery ${d.health.recovery_enabled ? 'on' : 'off'} (auto ${d.health.auto_recover ? 'on' : 'off'})` },
+    { name: 'disk', ok: !err(d.disk) && disk.every((v) => (v.used_pct ?? 0) < 98),
+      detail: err(d.disk) || disk.map((v) => `${v.volume}: ${v.used_pct}% used, ${Math.round(v.free / 1073741824 * 10) / 10} GB free`).join(' · ') },
+    { name: 'draft', ok: !err(d.draft) && !d.draft.stale,
+      detail: err(d.draft) || (d.draft.stale ? 'the device was changed outside the API (WinLGX "Send image"?) — the next push starts again from what is on air' : 'in step with the device') },
+    { name: 'playback', ok: !err(d.playback) && d.playback.verdict === 'ok',
+      detail: err(d.playback) || `${d.playback.verdict} — ${d.playback.detail || ''}` },
+  ]);
+}
+
 // ---- Channel editor modal --------------------------------------------------
 let chEditing = null;
+let chEditingAnalog = false;
 function openChannelEditor(c) {
   chEditing = c.id;
+  chEditingAnalog = c.playout === 'analog';
+  $('#chmAnalogFields').hidden = !chEditingAnalog;
+  $('#chmOtavFields').hidden = chEditingAnalog;
+  $('#chmDelete').hidden = chEditingAnalog;
+  $('#chmApiKey').value = '';
+  $('#chmApiKeyState').textContent = c.has_api_key
+    ? 'A key is stored. Leave this blank to keep it; type a new one to replace it.'
+    : 'No key stored yet.';
+  $('#chmIp').placeholder = chEditingAnalog ? '172.20.0.30' : '192.168.0.10';
+  $('#chmPort').placeholder = chEditingAnalog ? '8750' : '8081';
   $('#chmTitle').textContent = `Edit channel — ${c.name}`;
   $('#chmName').value = c.name ?? '';
   $('#chmIp').value = c.api_ip ?? '';
@@ -636,6 +667,16 @@ $('#chmSave').addEventListener('click', (e) => withBusy(e.currentTarget, async (
     api_password: $('#chmPass').value || null,
     is_active: $('#chmActive').checked ? 1 : 0,
   };
+  if (chEditingAnalog) {
+    // Only what the analog channel has; the OTAV fields stay as stored.
+    for (const k of ['playlist_name_pattern', 'playlist_ref', 'logo_filename', 'logo_enabled', 'schedule_path',
+      'playlist_dir', 'playlist_template', 'api_username', 'api_password']) delete body[k];
+    const key = $('#chmApiKey').value.trim();
+    if (key) body.api_key = key;
+    if (body.is_active && !key && !setupChannels.find((c) => c.id === chEditing)?.has_api_key) {
+      toast('Switched on without an API key: pushes to the analog channel will fail until one is set.', 'info', 'Analog');
+    }
+  }
   await api.send('PUT', `/api/channels/${chEditing}`, body);
   invalidateChannels();
   $('#channelModal').classList.add('hidden');

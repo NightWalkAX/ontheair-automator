@@ -166,7 +166,9 @@ function exportedDaysNaming(paths) {
     SELECT DISTINCT sb.target_date, c.name AS channel FROM ScheduleItem si
     JOIN ScheduledBlock sb ON sb.id = si.block_id JOIN Resource r ON r.id = si.resource_id
     LEFT JOIN ChannelType c ON c.id = sb.channel_id
-    WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?`);
+    WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?
+      AND COALESCE(c.playout, 'otav') != 'analog' -- the analog device plays its own copy
+  `);
   const today = localDate();
   for (const p of paths) for (const d of q.all(p, today)) out.set(`${d.channel}|${d.target_date}`, d);
   return [...out.values()].sort((a, b) => a.target_date.localeCompare(b.target_date) || String(a.channel).localeCompare(b.channel));
@@ -196,6 +198,8 @@ function movePath(from, to, duration) {
   }
   db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(to, from);
   db.prepare('DELETE FROM HolidayFile WHERE file_path = ?').run(from);
+  // The analog device's copy is the same programme wherever the share keeps it.
+  db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(to, from);
   // The stale Air Spec row describes a file that is not there; the found path
   // has (or will get, on the next Air Spec scan) a row of its own.
   if (db.prepare('SELECT 1 FROM TranscodeItem WHERE file_path = ?').get(to)) {

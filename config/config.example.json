@@ -36,6 +36,13 @@
     "verifyFilesBeforePush": true,
     "blockOnGaps": true
   },
+  "analog": {
+    "daysAhead": 6,
+    "folderId": null,
+    "programGuideTitle": "Program Guide",
+    "requestTimeoutSeconds": 30,
+    "publishTimeoutSeconds": 300
+  },
   "ffmpegPath": "ffmpeg",
   "transcode": {
     "workDir": "/Volumes/Public/_transcode/work",

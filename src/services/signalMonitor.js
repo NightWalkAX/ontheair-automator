@@ -53,6 +53,7 @@ import { loadConfig, updateConfig } from '../config.js';
 import { log } from '../logger.js';
 import { sendMail, emailProblem, emailConfig } from './mailer.js';
 import { OtavClient } from './otavClient.js';
+import { AnalogClient, isConfigured as analogConfigured } from './analogClient.js';
 import { alertRecipients, rosterConfig } from './shiftRoster.js';
 
 const L = log('monitor');
@@ -478,6 +479,12 @@ async function onAirFor(channelId) {
   try {
     const channel = db.prepare('SELECT * FROM ChannelType WHERE id = ?').get(channelId);
     if (!channel?.api_ip) return null;
+    if (channel.playout === 'analog') {
+      if (!analogConfigured(channel)) return null;
+      const live = await new AnalogClient(channel).live();
+      const p = live?.player || {};
+      return p.filename ? `${p.filename}${p.position ? ` @ ${p.position}` : ''}` : null;
+    }
     const client = new OtavClient(channel);
     await client.authorize();
     const item = await client.currentItem();
@@ -507,6 +514,11 @@ const heldTimers = new Set();
 export function resyncPlan(ev, cfg, now = Date.now()) {
   if (!cfg.resync.enabled || !ev.source.channelId) return { try: false, why: null };
   if (ev.kind !== 'black' && ev.kind !== 'frozen') return { try: false, why: null };
+  // The analog device has no scheduler to resync, and analog-automator already
+  // restarts a stopped or frozen player on its own (45s, MPGPLAYX).
+  if (db.prepare("SELECT 1 FROM ChannelType WHERE id = ? AND playout = 'analog'").get(ev.source.channelId)) {
+    return { try: false, why: 'no resync: the analog device recovers a stopped player by itself' };
+  }
   const last = lastResyncAt.get(ev.source.channelId);
   if (last && now - last < cfg.resync.cooldownMinutes * 60_000) {
     return { try: false, why: `no resync: one was already sent at ${localTime(nowIso(last))}` };

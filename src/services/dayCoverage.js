@@ -19,6 +19,12 @@
 //   overrun         the pushed playlist runs past the next day's event
 //   next-unknown    the next day has nothing scheduled, so the end can't be judged
 //
+// The ANALOG channel (playout = 'analog') is judged on the first five only. Its
+// device anchors every block at its start time and fills whatever a block
+// leaves with the Program Guide (analogClient.buildDayItems), so "where the
+// playlist ends" is not a thing there; and its clips play from the device's
+// own disk, which the push checks itself, not from the share.
+//
 // The first seven (and black/overrun) stop a push; next-unknown is a warning —
 // the last day of whatever has been generated always has it.
 
@@ -65,7 +71,7 @@ function expectedSlots(channelId, date) {
  */
 export async function checkRange(from, to, channelIds = []) {
   const channels = db.prepare(
-    `SELECT id, name FROM ChannelType WHERE is_active = 1
+    `SELECT id, name, playout FROM ChannelType WHERE is_active = 1
      ${channelIds.length ? `AND id IN (${channelIds.map(() => '?').join(',')})` : ''} ORDER BY name`,
   ).all(...channelIds);
   const dates = [];
@@ -79,8 +85,9 @@ export async function checkRange(from, to, channelIds = []) {
     SELECT sb.override_reason, bt.name AS template_name, sb.template_id, sb.slot_id
     FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id WHERE sb.id = ?`);
 
-  const missing = channels.length
-    ? await missingFilesInRange(from, to, channels.map((c) => c.id), { statuses: ['draft', 'approved', 'exported'] })
+  const onShare = channels.filter((c) => c.playout !== 'analog');
+  const missing = onShare.length
+    ? await missingFilesInRange(from, to, onShare.map((c) => c.id), { statuses: ['draft', 'approved', 'exported'] })
     : [];
 
   const report = { from, to, ok: true, channels: [] };
@@ -132,7 +139,7 @@ export async function checkRange(from, to, channelIds = []) {
       // What a push sends: approved/exported, slot order, back to back from the
       // first such block's slot start (dayBlocks / pushChannelDays).
       const aired = rows.filter((r) => r.status === 'approved' || r.status === 'exported');
-      if (aired.length) {
+      if (aired.length && ch.playout !== 'analog') {
         const start = Math.min(...aired.map((r) => hhmm(r.start_time)));
         day.playlistStart = clock(start);
         const end = start + content;

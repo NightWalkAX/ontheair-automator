@@ -6,10 +6,14 @@ import {
 } from '../services/otavClient.js';
 import { cancelJob, finishJob, getJob, startJob, subscribe } from '../services/pushProgress.js';
 import { missingFilesInRange, unfitBlocksInRange } from '../services/blockValidation.js';
-import { localDate } from '../dates.js';
+import { addDays, localDate } from '../dates.js';
 import { blockingProblems, checkRange } from '../services/dayCoverage.js';
 import { db } from '../db.js';
 import { loadConfig } from '../config.js';
+import {
+  analogChannel, filesForRange, isAnalogPushRunning, isConfigured, planFiles, pushAnalogDays,
+  analogWindow, AnalogClient,
+} from '../services/analogClient.js';
 
 export const router = Router();
 
@@ -40,7 +44,7 @@ router.post('/push', async (req, res) => {
 
   // Second click while one is running: refuse instead of queueing behind a
   // 10-minute run, which the browser can only show as another dead spinner.
-  if (isPushRunning()) {
+  if (isPushRunning() || isAnalogPushRunning()) {
     return res.status(409).json({ ok: false, error: 'a push is already running — watch or cancel that one first' });
   }
 
@@ -73,6 +77,18 @@ router.post('/push', async (req, res) => {
       });
     }
     const excludeDates = includeToday ? [] : [today];
+    // The analog channel rides the same push but not the same pusher: OTAV
+    // channels go to pushApprovedRange (which skips it), the analog one to
+    // pushAnalogDays. Selected explicitly, or — with no selection — when active.
+    const analog = analogChannel();
+    const analogWanted = !!analog && (channelIds.length ? channelIds.includes(analog.id) : !!analog.is_active);
+    const otavIds = analog ? channelIds.filter((id) => id !== analog.id) : channelIds;
+    const otavWanted = !channelIds.length || otavIds.length > 0;
+    // Files on the share matter only to the OTAV channels; the analog device
+    // plays its own copies, checked below against its disk.
+    const shareIds = otavIds.length ? otavIds : db.prepare(
+      "SELECT id FROM ChannelType WHERE COALESCE(playout, 'otav') != 'analog'",
+    ).all().map((r) => r.id);
     if (range) {
       // A held-back day is not going out, so it is not judged either.
       const unfit = unfitBlocksInRange(range[0], range[1], channelIds)
@@ -108,8 +124,8 @@ router.post('/push', async (req, res) => {
       }
       // A clip whose file is gone is skipped by OTAV, the day runs short and the
       // channel goes black before the next day's event. Refuse rather than air it.
-      if (loadConfig().otav?.verifyFilesBeforePush !== false) {
-        const missing = (await missingFilesInRange(range[0], range[1], channelIds))
+      if (otavWanted && shareIds.length && loadConfig().otav?.verifyFilesBeforePush !== false) {
+        const missing = (await missingFilesInRange(range[0], range[1], shareIds))
           .map((m) => ({ ...m, blocks: m.blocks.filter((b) => !excludeDates.includes(b.target_date)) }))
           .filter((m) => m.blocks.length);
         if (missing.length) {
@@ -117,6 +133,32 @@ router.post('/push', async (req, res) => {
             ok: false,
             error: `${missing.length} scheduled file(s) are not on disk — the day would run short and go black. Replace those clips first.`,
             missing,
+          });
+        }
+      }
+    }
+
+    // A clip that is not on the analog device can't be scheduled there at all.
+    // Checked here so the operator gets the list (and an upload button) before
+    // anything is pushed. An unreachable device doesn't stop the OTAV push: the
+    // analog row of the report says what failed.
+    let analogDates = [];
+    if (range && analogWanted) {
+      const all = [];
+      for (let d = range[0]; d <= range[1]; d = addDays(d, 1)) all.push(d);
+      analogDates = all.filter((d) => !excludeDates.includes(d));
+      if (isConfigured(analog)) {
+        const { pushable } = analogWindow(analog.id, analogDates, { includeToday });
+        const paths = [...new Set(pushable.flatMap((d) => filesForRange(analog.id, d, d, ['approved', 'exported'])
+          .map((f) => f.file_path)))];
+        const plan = paths.length ? await planFiles(new AnalogClient(analog), paths).catch(() => null) : [];
+        const absent = (plan || []).filter((p) => p.state === 'missing' || p.state === 'unsupported');
+        if (absent.length) {
+          return res.status(409).json({
+            ok: false,
+            analogMissing: absent,
+            range: { from: pushable[0], to: pushable[pushable.length - 1] },
+            error: `${absent.length} file(s) are not on the ${analog.name} device yet — upload them first (Analog tab), then push again`,
           });
         }
       }
@@ -130,21 +172,41 @@ router.post('/push', async (req, res) => {
       if (job) finishJob(job.id, { ok: payload.ok !== false, summary: payload, error: payload.error || null });
       return payload;
     };
-    if (DATE.test(week)) {
-      const end = new Date(`${week}T00:00:00Z`);
-      end.setUTCDate(end.getUTCDate() + 6);
-      const r = await pushApprovedRange(week, end.toISOString().slice(0, 10), opts);
-      return res.json(send({ ok: true, ...r }));
+    if (DATE.test(from) && DATE.test(to) && to < from) {
+      if (job) finishJob(job.id, { ok: false, error: 'to must not precede from' });
+      return res.status(400).json({ error: 'to must not precede from' });
     }
-    if (DATE.test(from) && DATE.test(to)) {
-      if (to < from) {
-        if (job) finishJob(job.id, { ok: false, error: 'to must not precede from' });
-        return res.status(400).json({ error: 'to must not precede from' });
+    if (otavIds.length) opts.channelIds = otavIds;
+    else delete opts.channelIds;
+    // Analog after OTAV, so a slow device upload of the schedule never delays
+    // six channels; both report into the same job and the same push report.
+    const withAnalog = async (r) => {
+      if (!analogWanted) return r;
+      const a = await runAnalog(analog, analogDates, { progress: job || undefined, includeToday });
+      r.channels = [...(r.channels || []), ...a.rows];
+      if (r.days) {
+        for (const row of a.rows.filter((x) => x.date)) {
+          let day = r.days.find((d) => d.targetDate === row.date);
+          if (!day) r.days.push(day = { targetDate: row.date, channels: [] });
+          day.channels.push(row);
+        }
+        r.days.sort((x, y) => x.targetDate.localeCompare(y.targetDate));
+        const pushed = new Set(r.days.map((d) => d.targetDate));
+        if (r.skipped) r.skipped = r.skipped.filter((d) => !pushed.has(d));
       }
-      return res.json(send({ ok: true, ...(await pushApprovedRange(from, to, opts)) }));
+      r.analog = { held: a.held, backup: a.backup, missing: a.missing || null };
+      return r;
+    };
+    const empty = (extra) => ({ channels: [], aborted: null, ...extra });
+    if (DATE.test(week) || (DATE.test(from) && DATE.test(to))) {
+      const [a, b] = range;
+      const r = otavWanted ? await pushApprovedRange(a, b, opts)
+        : empty({ from: a, to: b, days: [], held: excludeDates.filter((d) => d >= a && d <= b), skipped: [] });
+      return res.json(send({ ok: true, ...(await withAnalog(r)) }));
     }
     if (DATE.test(date)) {
-      return res.json(send({ ok: true, ...(await pushApprovedBlocks(date, opts)) }));
+      const r = otavWanted ? await pushApprovedBlocks(date, opts) : empty({ targetDate: date });
+      return res.json(send({ ok: true, ...(await withAnalog(r)) }));
     }
     if (job) finishJob(job.id, { ok: false, error: 'missing date/week/range' });
     return res.status(400).json({ error: 'date=YYYY-MM-DD, week=YYYY-MM-DD, or from=&to= is required' });
@@ -154,6 +216,16 @@ router.post('/push', async (req, res) => {
     res.status(500).json({ ok: false, error });
   }
 });
+
+/** Push the analog channel's days, as push-report rows. Never throws. */
+async function runAnalog(analog, dates, { progress, includeToday }) {
+  try {
+    const r = await pushAnalogDays(dates, { ...(progress ? { progress } : {}), includeToday });
+    return { rows: r.days.map((d) => ({ ...d.result, date: d.date })), held: r.held, backup: r.backup };
+  } catch (err) {
+    return { rows: [{ channel: analog.name, ok: false, error: String(err.message || err) }], held: [], missing: err.missing };
+  }
+}
 
 // GET /api/otav/push/events?job=<id>[&after=<seq>] — SSE stream of push steps.
 // Events already recorded are replayed first, so the browser may attach at any

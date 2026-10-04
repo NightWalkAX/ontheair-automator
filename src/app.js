@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { requestLogger, log, logPath, tailLog } from './logger.js';
-import { initSchema } from './db.js';
+import { ensureAnalogChannel, initSchema } from './db.js';
 import { runPendingMigrations } from './migrations/index.js';
 import { loadConfig } from './config.js';
 import { startWeeklyDraftCron } from './cron/weeklyDraft.js';
@@ -26,6 +26,7 @@ import { router as otav } from './routes/otav.js';
 import { router as transcode } from './routes/transcode.js';
 import { router as monitor } from './routes/monitor.js';
 import { router as holidays } from './routes/holidays.js';
+import { router as analog } from './routes/analog.js';
 import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
@@ -34,6 +35,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
 initSchema();
+// The one analog channel (UltraNEXUS-HD) always exists; see analogClient.js.
+ensureAnalogChannel();
 // One-off data repairs for rows earlier bugs wrote. Each runs at most once,
 // recorded in data/.migrations.lock — see src/migrations/index.js. They run
 // BEFORE the routes are mounted, so nothing serves a half-repaired catalogue.
@@ -57,6 +60,7 @@ app.use('/api/otav', otav);
 app.use('/api/transcode', transcode);
 app.use('/api/monitor', monitor);
 app.use('/api/holidays', holidays);
+app.use('/api/analog', analog);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,

@@ -1,4 +1,5 @@
 import { loadTranscodeTab } from './airspec.js';
+import { loadAnalogTab, scheduleAnalogPoll } from './analog.js';
 import { loadCatalogTab } from './catalog.js';
 import { $, $$, toast } from './core.js';
 import { loadMediaTab } from './media.js';
@@ -17,6 +18,7 @@ $$('nav button').forEach((b) =>
     if (b.dataset.tab === 'catalog') loadCatalogTab();
     if (b.dataset.tab === 'setup') loadSetupTab();
     if (b.dataset.tab === 'transcode') loadTranscodeTab();
+    if (b.dataset.tab === 'analog') { loadAnalogTab().catch((e) => toast(e.message, 'bad', 'Analog')); scheduleAnalogPoll(); }
     if (b.dataset.tab === 'monitor') { loadMonitorTab().catch((e) => toast(e.message, 'bad', 'Error')); scheduleMonitorPoll(); }
   })
 );

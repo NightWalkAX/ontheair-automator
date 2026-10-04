@@ -430,7 +430,7 @@ async function pushToAir(btn, { scope }) {
   // operator chooses which instances this run is allowed to touch — the channel
   // on screen, or that one + others, like every other action.
   const picked = await pickScope(`push-${scope}`, 'Push to Air',
-    `Pushes every approved block of ${what} to OTAV, rebuilding each day's playlist.`
+    `Pushes every approved block of ${what} to air: each OTAV day's playlist is rebuilt, and the analog device's weekdays are replaced (today to six days ahead).`
     + (scope === 'week' ? ' Today is on air and is held back; push it on its own if it must change.' : ''),
     { confirmLabel: 'Push to Air', danger: true });
   if (!picked) return;
@@ -467,6 +467,28 @@ async function runPush(btn, query, { scope }) {
     } catch (e) {
       es.close();
       ui.close();
+      // Clips the analog device doesn't have yet: list them and offer the upload
+      // (it runs in the background; the Analog tab shows its progress).
+      if (e.data?.analogMissing?.length) {
+        reportDialog('Files not on the analog device yet', e.data.analogMissing.map((m) => ({
+          name: m.file_path,
+          ok: false,
+          detail: m.state === 'unsupported'
+            ? 'container the device does not play — convert it in Air Spec first'
+            : `uploads as ${m.device_filename}`,
+        })));
+        const paths = e.data.analogMissing.filter((m) => m.state === 'missing').map((m) => m.file_path);
+        if (paths.length) {
+          const up = el('button', { className: 'primary', textContent: `Upload ${paths.length} file(s) now` });
+          up.onclick = () => withBusy(up, async () => {
+            await api.send('POST', '/api/analog/upload', { paths });
+            closeDialog();
+            toast('Uploading in the background — follow it on the Analog tab, then push again.', 'info', 'Analog');
+          }).catch(() => {});
+          $('#dialogActions').prepend(up);
+        }
+        return;
+      }
       // Refusals that come with a list: show the list, not just the headline.
       if (e.data?.missing?.length) {
         reportDialog('Files missing from disk', e.data.missing.map((m) => ({
@@ -506,12 +528,16 @@ async function runPush(btn, query, { scope }) {
         ? `${c.pushed} clips → “${c.playlist}” (${{
             prepared: 'file written + event upserted', created: 'created', open: 'reused',
             schedule: 'opened from schedule', fallback: 'fallback playlist',
+            analog: 'replaced and published',
           }[c.source] || c.source || 'ok'})${c.logo ? ` · logo ${c.logo}` : ''}`
           + `${c.warning ? ` — ${c.warning}` : ''}${c.logo_warning ? ` — ${c.logo_warning}` : ''}`
         : c.error,
     })));
     const failed = r.channels.filter((c) => !c.ok).length;
     const skipped = (r.skipped || []).length;
+    for (const h of r.analog?.held || []) {
+      if (!(r.held || []).includes(h.date)) toast(`${h.date}: ${h.reason}`, 'info', 'Analog not pushed');
+    }
     if ((r.held || []).length) {
       toast(`${r.held.join(', ')} is on air and was not pushed. Push that day on its own to rebuild it.`,
         'info', 'Today held back');

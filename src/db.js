@@ -361,6 +361,13 @@ export function initSchema() {
   // Mac; the API can neither list nor upload logos.
   addColumnIfMissing('ChannelType', 'logo_filename', 'TEXT');
   addColumnIfMissing('ChannelType', 'logo_enabled', 'INTEGER NOT NULL DEFAULT 1');
+  // What plays the channel out: 'otav' (a Softron OnTheAir Video Mac, the six
+  // GLC channels) or 'analog' (the Leightronix UltraNEXUS-HD behind the
+  // analog-automator API — see src/services/analogClient.js). Scheduling is
+  // identical; only the push destination differs. api_key is the analog API's
+  // X-API-Key and is never sent back to the browser (routes/channels.js).
+  addColumnIfMissing('ChannelType', 'playout', "TEXT NOT NULL DEFAULT 'otav'");
+  addColumnIfMissing('ChannelType', 'api_key', 'TEXT');
   addColumnIfMissing('BlockTemplate', 'target_subject', 'TEXT');
   // content_type is retained for backward compatibility but no longer read by
   // the engine (the scheduling rule is derived per series). Kept so old DBs and
@@ -433,6 +440,7 @@ export function initSchema() {
   addColumnIfMissing('ChannelSeries', 'cursor_chapter', 'INTEGER'); // per-series progression cursor
 
   seedShowTypes();
+  analogSchema();
   backfillWeekdays();
   backfillPrimarySlots();
   rebuildScheduledBlockForSlots();
@@ -632,6 +640,36 @@ function backfillScheduledBlockChannel() {
 }
 
 // Returns true if the column was just added (so callers can backfill once).
+// The analog channel is FIXED: there is exactly one UltraNEXUS-HD. The partial
+// unique index guarantees there is never a second row; ensureAnalogChannel()
+// creates the one row.
+function analogSchema() {
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_one_analog ON ChannelType(playout) WHERE playout = 'analog'");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS AnalogFile (
+      -- Catalogue file (SMB path) -> its name on the device disk. The device
+      -- takes no spaces and at most 31 characters, so a name is normalised once
+      -- and remembered: re-deriving it could pick a different suffix later.
+      file_path       TEXT PRIMARY KEY,
+      device_filename TEXT NOT NULL UNIQUE,
+      size            INTEGER,
+      uploaded_at     TEXT
+    );
+  `);
+}
+
+/**
+ * Create the analog channel's row if this database has none — inactive until
+ * the operator gives it an address and key. Called by src/app.js at boot, not
+ * by initSchema(): a row nobody asked for would take id 1 in every test
+ * database, whose fixtures number their own channels.
+ */
+export function ensureAnalogChannel() {
+  const has = db.prepare("SELECT id FROM ChannelType WHERE playout = 'analog'").get();
+  if (has) return has.id;
+  return db.prepare("INSERT INTO ChannelType (name, is_active, playout) VALUES ('Analog', 0, 'analog') RETURNING id").get().id;
+}
+
 function addColumnIfMissing(table, column, type) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!cols.some((c) => c.name === column)) {
