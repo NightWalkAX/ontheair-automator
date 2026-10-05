@@ -391,8 +391,11 @@ async function convertOnly(channelId) {
   await settle();
 }
 
-const tomorrow = () => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-const today = () => new Date().toISOString().slice(0, 10);
+// The app's "today" is the Mac's local date (src/dates.js), never toISOString():
+// that is tomorrow from 20:00 in Guyana, and this test then failed every evening.
+const { localDate, addDays } = await import('../src/dates.js');
+const tomorrow = () => addDays(localDate(), 1);
+const today = () => localDate();
 const clipsOf = async (fake, playlist) =>
   (await fetch(`http://127.0.0.1:${fake.port}/playlists/${encodeURIComponent(playlist)}/items`)).json();
 
