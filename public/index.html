@@ -546,7 +546,7 @@
           <button id="anVol1Scan" class="ghost">Scan Vol1</button>
           <button id="anVol1Archive" class="primary">Archive to the share</button>
           <button id="anVol1ArchiveCancel" class="ghost" hidden>Stop archiving</button>
-          <button id="anVol1Cleanup" class="danger">Delete aired programmes…</button>
+          <button id="anVol1Cleanup" class="ghost" title="Every programme that is on the share, not on air and not scheduled from today on">Delete all aired programmes…</button>
         </div>
         <div id="anVol1Summary" class="muted" style="margin:6px 0">Not scanned yet.</div>
         <div id="anVol1ArchiveState" class="muted" style="margin:6px 0"></div>
@@ -554,6 +554,8 @@
           <input id="anVol1Search" type="search" placeholder="Search…" aria-label="Search Vol1" />
           <select id="anVol1Kind" aria-label="Kind"><option value="">every kind</option><option value="filler">fillers</option><option value="movie">movies</option><option value="program">programmes</option></select>
           <select id="anVol1State" aria-label="On the share"><option value="">any state</option><option value="pending">not on the share</option><option value="matched">matched</option><option value="archived">archived</option><option value="failed">failed</option></select>
+          <label class="chk"><input id="anVol1OnlyPicked" type="checkbox" /> only selected</label>
+          <span id="anVol1Shown" class="muted"></span>
           <span class="spacer"></span>
           <select id="anVol1SetKind" aria-label="Set kind of selected"><option value="">set kind of selected…</option><option value="filler">filler (keep)</option><option value="movie">movie (keep)</option><option value="program">programme</option></select>
         </div>
@@ -563,6 +565,13 @@
             <th>File</th><th>Folder</th><th>Length</th><th>Size</th><th>Kind</th><th>On the share</th>
           </tr></thead><tbody><tr><td colspan="7" class="muted">Press Scan Vol1.</td></tr></tbody></table>
         </div>
+        <div class="be-filters" style="margin-top:8px">
+          <span id="anVol1Picked" class="muted">nothing selected</span>
+          <button id="anVol1Clear" class="mini ghost" disabled>Clear selection</button>
+          <span class="spacer"></span>
+          <button id="anVol1Delete" class="danger" disabled>Delete selected…</button>
+        </div>
+        <p class="muted" style="margin:6px 0 0;font-size:12px">The selection stays while you change the search and filters — filter, tick, filter again, tick more, then delete them all at once. The tick in the header selects everything currently shown. "Archive to the share" also works on the selection.</p>
       </div>
       <div class="panel">
         <h3>🔁 Week routine</h3>

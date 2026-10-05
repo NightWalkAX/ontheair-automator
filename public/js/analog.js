@@ -330,14 +330,17 @@ async function loadStorage() {
   renderStorage();
 }
 
-async function deleteSelected() {
-  const names = [...picked];
-  const sel = storage.filter((f) => picked.has(f.filename));
-  const bytes = sel.reduce((n, f) => n + (f.size || 0), 0);
+/**
+ * Delete `names` from the device, the same way from every panel: one confirm,
+ * then the files still in use (on air, or scheduled from today on) need a
+ * second one. A file with no copy on the share is never deleted — the server
+ * refuses it whatever is confirmed — and is reported. Returns the deleted names.
+ */
+async function deleteFromDevice(names, bytes, { note = '' } = {}) {
   const ok = await confirmDialog(`Delete ${names.length} file(s) from the device?`,
-    `Frees about ${mbText(bytes)} on the device disk. This can't be undone from here — the files have to be uploaded again to air.`,
+    `Frees about ${mbText(bytes)} on the device disk.${note ? ` ${note}` : ''} A deleted file that airs again is copied back before its push.`,
     { confirmLabel: 'Delete', danger: true });
-  if (!ok) return;
+  if (!ok) return [];
   let r = await api.send('POST', '/api/analog/storage/delete', { filenames: names });
   let deleted = r.deleted;
   // A file with no copy on the share is never deleted, confirmed or not.
@@ -355,11 +358,18 @@ async function deleteSelected() {
       r = { ...again, failed: r.failed.concat(again.failed) };
     }
   }
-  for (const d of deleted) picked.delete(d.filename);
   const freed = deleted.reduce((n, d) => n + (d.size || 0), 0);
-  toast(`${deleted.length} file(s) deleted, ${mbText(freed)} freed${r.failed.length ? ` · ${r.failed.length} failed` : ''}`,
+  toast(`${deleted.length} file(s) deleted, ${mbText(freed)} freed${r.failed.length ? ` · ${r.failed.length} not deleted` : ''}`,
     r.failed.length ? 'bad' : 'ok', 'Device disk');
   if (r.failed.length) reportDialog('Files not deleted', r.failed.map((f) => ({ name: f.filename, ok: false, detail: f.error })));
+  return deleted.map((d) => d.filename);
+}
+
+async function deleteSelected() {
+  const names = [...picked];
+  const bytes = storage.filter((f) => picked.has(f.filename)).reduce((n, f) => n + (f.size || 0), 0);
+  const deleted = await deleteFromDevice(names, bytes);
+  for (const n of deleted) picked.delete(n);
   await Promise.allSettled([loadStorage(), loadDisk()]);
 }
 
@@ -388,11 +398,27 @@ const SHARE = {
 };
 const gbText = (b) => `${((b || 0) / 1073741824).toFixed(1)} GB`;
 
+// The selection is independent of the filters: filter, tick, change the filter,
+// tick more, then act on everything ticked. Kept for the browser tab's life
+// (sessionStorage), so a refresh doesn't throw away a long pick.
+try { for (const n of JSON.parse(sessionStorage.getItem('anVol1Picked') || '[]')) vPicked.add(n); } catch { /* none */ }
+function savePicked() {
+  try { sessionStorage.setItem('anVol1Picked', JSON.stringify([...vPicked])); } catch { /* private mode */ }
+  const sel = vol1.filter((f) => vPicked.has(f.filename));
+  const bytes = sel.reduce((n, f) => n + (f.size || 0), 0);
+  const unsafe = sel.filter((f) => !['matched', 'archived'].includes(f.archive)).length;
+  $('#anVol1Picked').textContent = sel.length
+    ? `${sel.length} selected · ${mbText(bytes)}${unsafe ? ` · ${unsafe} not on the share yet` : ''}` : 'nothing selected';
+  $('#anVol1Delete').disabled = !sel.length;
+  $('#anVol1Clear').disabled = !sel.length;
+}
+
 function shownVol1() {
   const q = $('#anVol1Search').value.trim().toLowerCase();
   const kind = $('#anVol1Kind').value;
   const st = $('#anVol1State').value;
-  return vol1.filter((f) => (!kind || f.kind === kind) && (!st || f.archive === st)
+  const only = $('#anVol1OnlyPicked').checked;
+  return vol1.filter((f) => (!kind || f.kind === kind) && (!st || f.archive === st) && (!only || vPicked.has(f.filename))
     && (!q || `${f.filename} ${f.title || ''} ${f.folder_path || ''}`.toLowerCase().includes(q)));
 }
 
@@ -400,10 +426,17 @@ function renderVol1() {
   const tb = $('#anVol1 tbody');
   tb.innerHTML = '';
   const shown = shownVol1();
+  $('#anVol1All').checked = shown.length > 0 && shown.every((f) => vPicked.has(f.filename));
+  $('#anVol1Shown').textContent = `${shown.length} shown`;
+  savePicked();
   if (!shown.length) emptyRow(tb, 7, vol1.length ? 'Nothing matches.' : 'Press Scan Vol1.');
   for (const f of shown.slice(0, 1500)) {
     const cb = el('input', { type: 'checkbox', checked: vPicked.has(f.filename) });
-    cb.onchange = () => { if (cb.checked) vPicked.add(f.filename); else vPicked.delete(f.filename); };
+    cb.onchange = () => {
+      if (cb.checked) vPicked.add(f.filename); else vPicked.delete(f.filename);
+      $('#anVol1All').checked = shown.every((x) => vPicked.has(x.filename));
+      savePicked();
+    };
     const kind = badge(KIND[f.kind] || ['', f.kind]);
     kind.title = f.kind_reason || '';
     const share = badge(SHARE[f.archive] || ['', f.archive]);
@@ -531,6 +564,27 @@ $('#anVol1Cleanup').addEventListener('click', busy(async () => {
   toast(`${r.deleted.length} deleted, ${gbText(r.deleted.reduce((n, d) => n + (d.size || 0), 0))} freed`, r.failed.length ? 'bad' : 'ok', 'Vol1');
   await Promise.allSettled([loadVol1(), loadDisk()]);
 }));
+$('#anVol1Delete').addEventListener('click', busy(async () => {
+  const sel = vol1.filter((f) => vPicked.has(f.filename));
+  const unsafe = sel.filter((f) => !['matched', 'archived'].includes(f.archive));
+  const ok = sel.filter((f) => !unsafe.includes(f));
+  if (!ok.length) {
+    return reportDialog('Nothing can be deleted yet', unsafe.slice(0, 50).map((f) => ({
+      name: f.filename, ok: false, detail: 'no copy on the share yet — select it and press "Archive to the share" first' })));
+  }
+  const keep = sel.filter((f) => f.kind !== 'program').length;
+  const note = [
+    unsafe.length ? `${unsafe.length} of the selection ${unsafe.length === 1 ? 'is' : 'are'} not on the share yet and will be skipped (archive ${unsafe.length === 1 ? 'it' : 'them'} first).` : '',
+    keep ? `${keep} ${keep === 1 ? 'is a filler or movie' : 'are fillers or movies'} the channel keeps on purpose.` : '',
+    'Every other file has a checked copy on the share.',
+  ].filter(Boolean).join(' ');
+  const deleted = await deleteFromDevice(ok.map((f) => f.filename), ok.reduce((n, f) => n + (f.size || 0), 0), { note });
+  for (const n of deleted) vPicked.delete(n);
+  savePicked();
+  await Promise.allSettled([loadVol1(), loadDisk()]);
+}));
+$('#anVol1Clear').addEventListener('click', () => { vPicked.clear(); $('#anVol1OnlyPicked').checked = false; renderVol1(); });
+$('#anVol1OnlyPicked').addEventListener('change', renderVol1);
 $('#anVol1Search').addEventListener('input', debounce(renderVol1, 200));
 $('#anVol1Kind').addEventListener('change', renderVol1);
 $('#anVol1State').addEventListener('change', renderVol1);
