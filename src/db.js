@@ -339,6 +339,9 @@ export function initSchema() {
   // clip is skipped instead of re-probed. NULL on rows probed before this
   // existed, which correctly means "unknown, probe it".
   addColumnIfMissing('TranscodeItem', 'src_mtime', 'TEXT');
+  // Air Spec rollback: the path the clip had before it was replaced. Older rows
+  // derive it from backup_path (the archive mirrors the full original path).
+  addColumnIfMissing('TranscodeItem', 'orig_path', 'TEXT');
   addColumnIfMissing('ChannelType', 'playlist_ref', 'TEXT');
   // Name template for the per-day playlist created on push. Tokens:
   // {channel} {date} {yyyy} {mm} {dd}. NULL = "{channel} {date}".
@@ -676,7 +679,24 @@ function analogSchema() {
       scanned_at    TEXT,
       gone_at       TEXT           -- no longer on the device disk
     );
+
+    -- Capped copies the upload made for the device (analog.maxBitrateKbps), so
+    -- one can be rolled back: the device goes back to the copy it had before,
+    -- or to the master as it is, and the capped copy is deleted.
+    CREATE TABLE IF NOT EXISTS AnalogConversion (
+      id                INTEGER PRIMARY KEY,
+      file_path         TEXT NOT NULL,   -- catalogue file, as it was when converted
+      device_filename   TEXT NOT NULL,   -- the capped copy on the device
+      previous_filename TEXT,            -- the over-cap copy it replaced, if there was one
+      kbps_before       INTEGER,
+      kbps_after        INTEGER,
+      converted_at      TEXT NOT NULL,
+      rolled_back_at    TEXT,
+      rollback_note     TEXT
+    );
   `);
+  // A file rolled back to its uncapped self: never capped again until re-enabled.
+  addColumnIfMissing('AnalogFile', 'no_cap', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 /**

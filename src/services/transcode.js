@@ -793,7 +793,7 @@ export function parseProgressBlock(info, duration) {
 }
 
 /** Run ffmpeg, reporting progress against `duration`. Resolves on exit code 0. */
-function runFfmpeg(args, { duration, onProgress, timeoutMs, register }) {
+export function runFfmpeg(args, { duration, onProgress, timeoutMs, register }) {
   const { ffmpegPath } = transcodeConfig();
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -916,6 +916,7 @@ function finishReplace(itemId, item, finalCanonical, backupPath, renamed, note =
   setItem(itemId, {
     status: 'replaced',
     file_path: finalCanonical,
+    orig_path: item.file_path,
     backup_path: backupPath,
     replaced_at: new Date().toISOString(),
     error: note,
@@ -1332,6 +1333,155 @@ export async function replacePending({ force = false } = {}) {
       results.push({ id: r.id, ok: true, path: out.path });
     } catch (err) {
       results.push({ id: r.id, ok: false, error: String(err.message || err) });
+    }
+  }
+  return results;
+}
+
+// ---- Rollback --------------------------------------------------------------
+//
+// Undo a replace: the archived original goes back to its own path, the
+// catalogue (every channel's rows, seasonal marks, the analog mapping) and any
+// day already on OTAV point at it again, and the converted file is DELETED
+// (decided with the operator on 2026-10-10). The clip is then 'skipped', so
+// the next scan doesn't queue it straight back; Retry queues it on purpose.
+// The order is the replace's, mirrored: the original lands before anything
+// names it, and the converted file goes only once nothing does.
+
+/** The path a replaced clip had before: recorded, or read back from the archive path. */
+export function originalPathOf(item) {
+  if (item.orig_path) return item.orig_path;
+  if (!item.backup_path) return null;
+  const root = delocalizePath(localizePath(transcodeConfig().archiveDir)).replace(/\/+$/, '');
+  return item.backup_path.startsWith(`${root}/`) ? item.backup_path.slice(root.length) : null;
+}
+
+/** OTAV days from today on whose playlist names `filePath` (the analog plays its own copies). */
+function exportedOtavDays(filePath) {
+  return db.prepare(`
+    SELECT DISTINCT sb.target_date, c.name AS channel
+    FROM ScheduleItem si
+    JOIN ScheduledBlock sb ON sb.id = si.block_id
+    JOIN Resource r        ON r.id = si.resource_id
+    LEFT JOIN ChannelType c ON c.id = sb.channel_id
+    WHERE r.file_path = ? AND sb.status = 'exported' AND sb.target_date >= ?
+      AND COALESCE(c.playout, 'otav') != 'analog'
+    ORDER BY sb.target_date
+  `).all(filePath, localDate()).map((r) => `${r.channel || 'channel'} ${r.target_date}`);
+}
+
+/** Point every catalogue row of the converted file back at the original. */
+function unpointCatalogue(item, original) {
+  db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(original, item.file_path);
+  db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(original, item.file_path);
+  const dur = Math.round(item.src_duration || item.out_duration || 0);
+  return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
+    .run(original, dur, item.file_path).changes;
+}
+
+export async function rollbackItem(itemId) {
+  const item = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(itemId);
+  if (!item) throw new Error('unknown item');
+  if (item.status !== 'replaced') throw new Error(`only a replaced clip can be rolled back (this one is ${item.status})`);
+  const original = originalPathOf(item);
+  if (!original) throw new Error('the path this clip had before is not recorded — move the original back by hand');
+  const converted = item.file_path;
+  const same = original === converted;
+  const localOrig = localizePath(original);
+  const localConv = localizePath(converted);
+  // No backup_path means the original could not be archived and never left.
+  const localArchived = item.backup_path ? localizePath(item.backup_path) : null;
+  if (same && !localArchived) throw new Error('the original of this clip was never archived — nothing to put back');
+  const source = localArchived || localOrig;
+  if (!(await stat(source).catch(() => null))) throw new Error(`the original is not at ${delocalizePath(source)} any more`);
+  if (!same && localArchived && (await stat(localOrig).catch(() => null))) {
+    throw new Error(`something already sits at ${original} — move it away first`);
+  }
+  if (!same) {
+    const clash = db.prepare('SELECT id FROM TranscodeItem WHERE file_path = ? AND id != ?').get(original, itemId)
+      || db.prepare('SELECT id FROM Resource WHERE file_path = ? LIMIT 1').get(original);
+    if (clash) throw new Error(`another catalogued clip already uses ${original}`);
+  }
+
+  const cfg = transcodeConfig();
+  let note = null;
+  let fixed = null;
+  if (same) {
+    // One name for both: land the original beside it, then rename it over the
+    // converted file — atomic, so the path never resolves to nothing.
+    const tmp = join(dirname(localOrig), `.rollback-${item.id}-${basename(localOrig)}`);
+    await moveFile(source, tmp);
+    try {
+      await rename(tmp, localOrig);
+    } catch (err) {
+      await moveFile(tmp, source).catch(() => {});
+      throw err;
+    }
+    db.prepare('UPDATE Resource SET duration = ? WHERE file_path = ?')
+      .run(Math.round(item.src_duration || item.out_duration || 0), converted);
+  } else {
+    const days = exportedOtavDays(converted);
+    if (days.length && cfg.exportedDays.mode !== 'fix') {
+      throw new Error(`already exported to OTAV for ${days.join(', ')} naming the converted file — re-push those days after rolling back, or turn on "Repair days already pushed to OTAV"`);
+    }
+    const durationChanged = !!item.src_duration && !!item.out_duration
+      && Math.abs(item.out_duration - item.src_duration) > (cfg.exportedDays.durationEpsilonSeconds ?? 0.5);
+    try {
+      fixed = await repointExportedDays(converted, original, {
+        durationChanged,
+        repush: cfg.exportedDays.repush !== false,
+        imminentMinutes: cfg.exportedDays.imminentMinutes ?? 10,
+        onLog: (message) => line(`OTAV: ${message}`),
+        commit: async () => {
+          if (localArchived) await moveFile(localArchived, localOrig);
+          const restore = catalogueSnapshot(converted);
+          unpointCatalogue(item, original);
+          return {
+            rollback: async () => {
+              restore();
+              if (localArchived) await moveFile(localOrig, localArchived).catch(() => {});
+            },
+          };
+        },
+      });
+    } catch (err) {
+      throw new Error(`OTAV has playlists naming the converted file and they could not be fixed: ${err.message}`);
+    }
+    try {
+      await unlink(localConv);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        note = `the converted file could not be deleted (${err.code || err.message}) and is still at ${converted}`;
+        line(note, 'warn');
+      }
+    }
+  }
+
+  setItem(itemId, {
+    status: 'skipped', file_path: original, orig_path: null, backup_path: null,
+    out_path: null, out_duration: null, out_size_bytes: null, replaced_at: null, progress: 0,
+    // The probe columns may describe the converted file: re-probe on the next scan.
+    probed_at: null, src_mtime: null,
+    error: `rolled back ${new Date().toISOString().slice(0, 16).replace('T', ' ')}${note ? ` — ${note}` : ''}`,
+  });
+  const otav = fixed && (fixed.patched || fixed.repushed)
+    ? ` · OTAV: ${[fixed.patched ? `${fixed.patched} clip(s) re-pointed` : '', fixed.repushed ? `${fixed.repushed} day(s) pushed again` : ''].filter(Boolean).join(', ')}`
+    : '';
+  line(`${basename(original)}: rolled back to the original${otav}.`, 'ok');
+  fileLog('airspec').info(`rollback ${converted} → ${original}${same ? ' (same name)' : ''}${otav}${note ? ` — ${note}` : ''}`);
+  emit({ type: 'item', id: itemId, status: 'skipped', file_path: original, message: 'rolled back' });
+  return { ok: true, path: original, note };
+}
+
+/** Roll back several clips, one at a time; each succeeds or fails on its own. */
+export async function rollbackItems(ids) {
+  const results = [];
+  for (const id of [...new Set(ids.map(Number))]) {
+    try {
+      results.push({ id, ...(await rollbackItem(id)) });
+    } catch (err) {
+      const row = db.prepare('SELECT file_path FROM TranscodeItem WHERE id = ?').get(id);
+      results.push({ id, ok: false, file_path: row?.file_path ?? null, error: String(err.message || err) });
     }
   }
   return results;

@@ -33,8 +33,9 @@ import { addDays, localDate } from '../dates.js';
 import { log } from '../logger.js';
 import {
   AnalogClient, AnalogError, analogChannel, analogConfig, claimDevice, deleteDeviceFiles, deviceFileName,
-  deviceWanted, filesForRange, isConfigured, onDeviceWanted, planFiles, pushAnalogDays, runUpload,
+  deviceWanted, filesForRange, isConfigured, needsCopy, onDeviceWanted, overCap, planFiles, pushAnalogDays, runUpload,
 } from './analogClient.js';
+import { kbpsOf } from './analogEncode.js';
 import { probeDuration, scanMediaRoot } from './ingestion.js';
 
 const l = log('analog');
@@ -379,15 +380,23 @@ async function catalogueArchive(channelId, roots) {
  */
 export async function spaceFor(client, channelId, paths) {
   const plan = await planFiles(client, paths);
-  const todo = plan.filter((p) => p.state === 'missing');
+  const todo = plan.filter(needsCopy);
   const sizes = new Map();
   const unreadable = [];
+  // What lands on Vol1 is the capped copy when the master is over the cap, so
+  // that is what is counted: cap × length, or the master if it is smaller.
+  const cfg = analogConfig();
+  const durationOf = db.prepare('SELECT MAX(duration) AS d FROM Resource WHERE file_path = ?');
+  let bytes = 0;
   await Promise.all(todo.map(async (p) => {
     const st = await stat(localizePath(p.file_path)).catch(() => null);
-    if (st) sizes.set(p.file_path, st.size);
-    else unreadable.push(p.file_path);
+    if (!st) { unreadable.push(p.file_path); return; }
+    sizes.set(p.file_path, st.size);
+    const dur = durationOf.get(p.file_path)?.d;
+    const capped = (p.over_bitrate || overCap(kbpsOf(st.size, dur), cfg)) && dur
+      ? Math.min(st.size, Math.ceil((cfg.maxBitrateKbps * 1000 / 8) * dur)) : st.size;
+    bytes += capped;
   }));
-  const bytes = [...sizes.values()].reduce((n, b) => n + b, 0);
   const disks = await client.disk();
   const vol = disks.find((d) => /vol1/i.test(String(d.volume))) || disks[0] || null;
   const margin = analogConfig().minFreeGb * 1073741824;
@@ -513,8 +522,10 @@ async function runRoutine(client, ch, r) {
   const space = await spaceFor(client, ch.id, paths);
   r.space = space;
   const plan = await planFiles(client, paths);
-  const todo = plan.filter((p) => p.state === 'missing');
-  say(`${paths.length} clip(s) in the week, ${todo.length} to copy (${gb(space.bytes)}); `
+  const todo = plan.filter(needsCopy);
+  const over = todo.filter((p) => p.over_bitrate).length;
+  say(`${paths.length} clip(s) in the week, ${todo.length} to copy (${gb(space.bytes)})`
+    + `${over ? `, ${over} of them to replace with a copy under ${analogConfig().maxBitrateKbps} kb/s` : ''}; `
     + `${space.free != null ? `${gb(space.free)} free on Vol1, ${gb(space.after)} after copying` : 'free space unknown'}`);
   if (space.unreadable.length) {
     throw new AnalogError(`${space.unreadable.length} file(s) the week needs can't be read on the share: ${space.unreadable.slice(0, 5).join(', ')}`);
@@ -530,7 +541,7 @@ async function runRoutine(client, ch, r) {
     r.step = `copying ${todo.length} file(s) to the device`;
     r.upload = {
       running: true, cancelled: false, total: todo.length, done: 0, bytesTotal: 0, bytesDone: 0, current: null,
-      uploaded: [], failed: [], stoppedBy: null, controller: new AbortController(),
+      phase: null, pct: null, uploaded: [], converted: [], failed: [], stoppedBy: null, controller: new AbortController(),
     };
     await runUpload(client, todo, r.upload);
     say(`copied ${r.upload.uploaded.length} of ${todo.length}${r.upload.failed.length ? ` · ${r.upload.failed.length} failed` : ''}`);

@@ -10,7 +10,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -426,6 +426,63 @@ test('an exported day is re-pointed at the new path instead of blocking the swap
   } finally {
     await fake.close();
   }
+});
+
+test('a rollback puts the original back, re-points OTAV and deletes the converted file', async () => {
+  const fake = await startFakeOtav();
+  try {
+    const day = await exportedOn(fake, { name: 'undo_me.avi', date: tomorrow() });
+    await convertOnly(day.channelId);
+    const item = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(day.path);
+    assert.equal((await j('POST', `/api/transcode/items/${item.id}/replace`)).status, 200);
+    const newPath = day.path.replace(/\.avi$/, '.mov');
+    assert.equal(db.prepare('SELECT orig_path FROM TranscodeItem WHERE id = ?').get(item.id).orig_path, day.path);
+
+    // A clip that is not replaced is refused, and the group call reports it on its own.
+    const r = await j('POST', '/api/transcode/rollback', { ids: [item.id, 999999] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.rolledBack, 1);
+    assert.equal(r.body.failed.length, 1);
+
+    assert.ok(existsSync(day.path), 'the original is back at its own path');
+    assert.ok(!existsSync(newPath), 'the converted file is deleted');
+    assert.ok(!existsSync(join(process.env.TRANSCODE_ARCHIVE_DIR, day.path.replace(/^\/+/, ''))), 'and no longer in the archive');
+    const res = db.prepare('SELECT file_path, duration FROM Resource WHERE id = ?').get(day.resourceId);
+    assert.deepEqual({ ...res }, { file_path: day.path, duration: 300 });
+    const clips = await clipsOf(fake, day.playlist);
+    assert.equal(clips[0].url, day.path, 'OTAV names the original again');
+
+    const after = db.prepare('SELECT * FROM TranscodeItem WHERE id = ?').get(item.id);
+    assert.equal(after.status, 'skipped');
+    assert.equal(after.file_path, day.path);
+    assert.equal(after.backup_path, null);
+    assert.match(after.error, /rolled back/);
+
+    // A scan leaves it out of the queue; rolling it back twice is refused.
+    await j('POST', `/api/transcode/scan?channel=${day.channelId}`);
+    await settle();
+    assert.equal(db.prepare('SELECT status FROM TranscodeItem WHERE id = ?').get(item.id).status, 'skipped');
+    assert.equal((await j('POST', `/api/transcode/items/${item.id}/rollback`)).status, 400);
+  } finally {
+    await fake.close();
+  }
+});
+
+test('a same-name rollback swaps the original back over the converted file', async () => {
+  const chan = db.prepare('INSERT INTO ChannelType (name, is_active) VALUES (?, 1)').run('Same name').lastInsertRowid;
+  const path = media('same_name.mov', OFF_SPEC);
+  db.prepare(`INSERT INTO Resource (name, file_path, duration, is_filler, chapter, channel_id, approved)
+    VALUES ('same_name', ?, 300, 0, 0, ?, 1)`).run(path, chan);
+  await convertOnly(chan);
+  const item = db.prepare('SELECT * FROM TranscodeItem WHERE file_path = ?').get(path);
+  assert.equal((await j('POST', `/api/transcode/items/${item.id}/replace`)).status, 200);
+  assert.equal(statSync(path).size, 2048, 'the converted file took the name');
+
+  const r = await j('POST', `/api/transcode/items/${item.id}/rollback`);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(statSync(path).size, 64, 'the original is back under the same name');
+  assert.ok(!existsSync(join(process.env.TRANSCODE_ARCHIVE_DIR, path.replace(/^\/+/, ''))));
+  assert.equal(db.prepare('SELECT status FROM TranscodeItem WHERE id = ?').get(item.id).status, 'skipped');
 });
 
 test('a runtime that moved rebuilds the day instead of editing one clip', async () => {

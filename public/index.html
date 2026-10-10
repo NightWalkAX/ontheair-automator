@@ -316,6 +316,7 @@
       <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h3 style="margin:0">🎞 Clips <span id="txFilterLabel" class="muted" style="font-size:13px;font-weight:500"></span></h3>
         <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0">
+          <button id="btnTxRollbackSel" class="mini ghost" disabled title="Put the originals of the ticked clips back and delete their converted files">↶ Roll back selected</button>
           <button id="btnTxReplacePending" class="mini ghost" title="Swap in every clip that has been converted and is waiting">↔ Replace all waiting</button>
           <button id="btnTxReload" class="mini ghost">↻ Reload</button>
         </div>
@@ -477,6 +478,16 @@
         <div id="anUploadState" class="muted" style="margin:6px 0"></div>
         <div class="modal-scroll" style="max-height:300px">
           <table id="anFiles"><thead><tr><th>Clip</th><th>Name on device</th><th>Size</th><th>State</th><th>First airs</th></tr></thead><tbody></tbody></table>
+        </div>
+
+        <h3 style="margin-top:16px">🗜 Capped copies</h3>
+        <p class="muted" style="margin:0 0 8px">The device plays nothing above its bitrate cap, so an upload sends a capped copy of any master over it (the master on the share is never touched). Rolling one back puts the device on the copy it had before — or, when there is none, uploads the master as it is on the next upload and never caps it again — and deletes the capped copy from the device.</p>
+        <div class="be-filters">
+          <button id="anConvRollback" class="mini ghost" disabled>↶ Roll back selected</button>
+          <span id="anConvCount" class="muted"></span>
+        </div>
+        <div class="modal-scroll" style="max-height:260px">
+          <table id="anConv"><thead><tr><th></th><th>Clip</th><th>Capped copy</th><th>Before → after</th><th>Converted</th><th>State</th></tr></thead><tbody></tbody></table>
         </div>
 
         <h3 style="margin-top:16px">💾 Device disk</h3>

@@ -8,7 +8,8 @@ import { updateConfig } from '../config.js';
 import { localDate, addDays } from '../dates.js';
 import {
   AnalogClient, AnalogError, DAYS, analogChannel, analogConfig, cancelUpload, filesForRange, isAnalogPushRunning,
-  deleteDeviceFiles, deviceFiles, isConfigured, planFiles, rollbackAnalog, startUpload, uploadStatus,
+  deleteDeviceFiles, deviceFiles, isConfigured, listConversions, planFiles, rollbackAnalog, rollbackConversions,
+  startUpload, uploadStatus,
 } from '../services/analogClient.js';
 import {
   archiveStatus, cancelArchive, cancelRoutine, cleanupPlan, routineStatus, runCleanup, scanVol1, setKind, spaceFor,
@@ -211,6 +212,23 @@ router.post('/upload', async (req, res) => {
 });
 router.get('/upload/status', (req, res) => res.json({ ok: true, upload: uploadStatus() }));
 router.post('/upload/cancel', (req, res) => res.json({ ok: cancelUpload(), upload: uploadStatus() }));
+
+// GET /api/analog/conversions — the capped copies the uploads made (≤ analog.maxBitrateKbps).
+router.get('/conversions', (req, res) => res.json({ ok: true, conversions: listConversions() }));
+
+// POST /api/analog/conversions/rollback { ids } — back to the previous copy or the
+// master as it is; the capped copy is deleted from the device.
+router.post('/conversions/rollback', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+  if (!ids.length) return res.status(400).json({ ok: false, error: 'no conversions given' });
+  if (!ready(res)) return;
+  try {
+    const results = await rollbackConversions(ids);
+    res.json({ ok: true, rolledBack: results.filter((r) => r.ok).length, results, failed: results.filter((r) => !r.ok) });
+  } catch (err) {
+    fail(res, err);
+  }
+});
 
 // ---- Vol1 inventory, archive and the week routine (services/analogVol1.js) ----
 

@@ -29,7 +29,7 @@
 
 import { request as httpRequest } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { db } from '../db.js';
 import { loadConfig, localizePath } from '../config.js';
@@ -38,6 +38,7 @@ import { log } from '../logger.js';
 import { NULL_PROGRESS } from './pushProgress.js';
 import { channelDayBlocks, linkShifts } from './scheduling.js';
 import { blockItems } from './otavClient.js';
+import { encodedExt, encodeForDevice, kbpsOf } from './analogEncode.js';
 
 const l = log('analog');
 
@@ -60,8 +61,27 @@ export function analogConfig() {
     fillerMaxSeconds: Number(a.fillerMaxSeconds) > 0 ? Number(a.fillerMaxSeconds) : 660,
     fillerPrefixes: Array.isArray(a.fillerPrefixes) && a.fillerPrefixes.length ? a.fillerPrefixes.map(String)
       : ['PSA', 'PROMO', 'FILL', 'NDMA', 'Infobits', 'IsGuyTing', 'FortsMon', 'GMCS', 'CATS', 'StartingPoint', 'QOD', 'FunFacts'],
+    // The device plays nothing above this (video + audio); a master over it is
+    // uploaded as a capped copy (analogEncode.js). 0 turns the cap off.
+    maxBitrateKbps: Number(a.maxBitrateKbps) >= 0 && a.maxBitrateKbps !== null && a.maxBitrateKbps !== ''
+      ? Number(a.maxBitrateKbps) : 4000,
+    encodeDir: String(a.encodeDir || '/Volumes/Public/_transcode/analog'),
+    audioCodec: String(a.audioCodec || 'aac'),
+    audioKbps: Number(a.audioKbps) > 0 ? Number(a.audioKbps) : 192,
+    preset: String(a.encodePreset || 'medium'),
+    width: 1920,
+    height: 1080,
+    fps: '30000/1001',
   };
 }
+
+/** Over the device's bitrate cap? Unknown (no size or length) is not over. */
+export function overCap(kbps, cfg = analogConfig()) {
+  return cfg.maxBitrateKbps > 0 && kbps != null && kbps > cfg.maxBitrateKbps;
+}
+
+/** A plan entry the upload job has to send: missing, or on the device above the cap. */
+export const needsCopy = (p) => p.state === 'missing' || !!p.over_bitrate;
 
 // The device's FTP serves one transfer at a time (analog-automator holds a lock
 // around every FTP call), so a multi-GB archive download would hold a push or an
@@ -321,16 +341,19 @@ export async function planFiles(client, paths, { source = 'device' } = {}) {
   const [lib, files] = await Promise.all([client.resources(source), client.files()]);
   const libByName = new Map();
   for (const r of lib) if (r.type !== 'program_guide' && !libByName.has(r.filename)) libByName.set(r.filename, r);
-  const disk = new Set(files.map((f) => f.filename));
+  const disk = new Map(files.map((f) => [f.filename, f]));
+  const cfg = analogConfig();
   const mapped = new Map(db.prepare('SELECT file_path, device_filename FROM AnalogFile').all()
     .map((r) => [r.file_path, r.device_filename]));
+  const uncapped = new Set(db.prepare('SELECT file_path FROM AnalogFile WHERE no_cap = 1').all().map((r) => r.file_path));
   const takenBy = new Map([...mapped].map(([p, n]) => [n, p]));
   const durationOf = db.prepare('SELECT MAX(duration) AS d FROM Resource WHERE file_path = ?');
   const remember = db.prepare('INSERT OR REPLACE INTO AnalogFile (file_path, device_filename) VALUES (?, ?)');
 
   const out = [];
   for (const filePath of paths) {
-    const entry = { file_path: filePath, device_filename: null, state: 'missing', resource_id: null, length_s: null };
+    const entry = { file_path: filePath, device_filename: null, state: 'missing', resource_id: null, length_s: null,
+      no_cap: uncapped.has(filePath) };
     if (!VIDEO_EXT.includes(extname(filePath).toLowerCase())) {
       entry.state = 'unsupported';
       out.push(entry);
@@ -355,6 +378,8 @@ export async function planFiles(client, paths, { source = 'device' } = {}) {
     if (disk.has(name)) {
       entry.state = r ? 'ready' : 'on-disk';
       if (r) { entry.resource_id = r.resource_id; entry.length_s = r.length_s; }
+      entry.kbps = kbpsOf(disk.get(name).size, r?.length_s || durationOf.get(filePath)?.d);
+      entry.over_bitrate = !uncapped.has(filePath) && overCap(entry.kbps, cfg);
     }
     out.push(entry);
   }
@@ -498,6 +523,16 @@ async function doPush(dates, { progress, includeToday }) {
       { missing: bad });
   }
   const cfg = analogConfig();
+  // Over the cap airs badly but airs: the push goes ahead and says so, and the
+  // upload job (or the week routine, before it pushes) replaces those copies.
+  const over = plan.filter((p) => p.over_bitrate);
+  if (over.length) {
+    out.overBitrate = over.map((p) => ({ file_path: p.file_path, device_filename: p.device_filename, kbps: p.kbps }));
+    const msg = `${over.length} file(s) on the device are over ${cfg.maxBitrateKbps} kb/s — upload from the Analog tab replaces them with capped copies`;
+    out.warning = msg;
+    progress.emit({ type: 'analog', message: `${ch.name}: ${msg}` });
+    l.warn(`${msg}: ${over.slice(0, 10).map((p) => `${p.device_filename} (${p.kbps} kb/s)`).join(', ')}`);
+  }
   const toAdd = plan.filter((p) => p.state === 'on-disk');
   if (toAdd.length && cfg.folderId == null) {
     throw new AnalogError(`${toAdd.length} file(s) are on the device disk but not in its library, and no library folder is chosen — pick one in the Analog tab`);
@@ -531,7 +566,7 @@ async function doPush(dates, { progress, includeToday }) {
       const built = buildDayItems(d.blocks, fileOf, guide);
       const r = await client.replaceDay(d.weekday, built.items, 'drop');
       const dropped = (r.warnings || []).map((w) => w.message);
-      const notes = [...built.warnings, ...dropped];
+      const notes = [...built.warnings, ...dropped, ...(out.warning ? [out.warning] : [])];
       result.pushed = built.clips;
       result.ok = true;
       if (notes.length) result.warning = notes.join('; ');
@@ -705,11 +740,11 @@ export async function startUpload(paths) {
   if (!isConfigured(ch)) throw new AnalogError('the analog channel has no address or API key');
   const client = new AnalogClient(ch);
   const plan = await planFiles(client, paths);
-  const todo = plan.filter((p) => p.state === 'missing');
+  const todo = plan.filter(needsCopy);
   job = {
     running: true, cancelled: false, startedAt: new Date().toISOString(), finishedAt: null,
-    total: todo.length, done: 0, bytesTotal: 0, bytesDone: 0, current: null,
-    uploaded: [], failed: [], unsupported: plan.filter((p) => p.state === 'unsupported').map((p) => p.file_path),
+    total: todo.length, done: 0, bytesTotal: 0, bytesDone: 0, current: null, phase: null, pct: null,
+    uploaded: [], converted: [], failed: [], unsupported: plan.filter((p) => p.state === 'unsupported').map((p) => p.file_path),
     stoppedBy: null, controller: new AbortController(),
   };
   for (const f of deviceListeners) { try { f(); } catch { /* see claimDevice */ } }
@@ -718,32 +753,77 @@ export async function startUpload(paths) {
 }
 
 export async function runUpload(client, todo, j) {
+  const cfg = analogConfig();
   const record = db.prepare('UPDATE AnalogFile SET size = ?, uploaded_at = ? WHERE file_path = ?');
+  const durationOf = db.prepare('SELECT MAX(duration) AS d FROM Resource WHERE file_path = ?');
   const sized = [];
   for (const p of todo) {
     try {
       const st = await stat(localizePath(p.file_path));
-      sized.push({ ...p, size: st.size });
+      const duration = durationOf.get(p.file_path)?.d || null;
+      // A device copy over the cap is replaced by an encode even if the master
+      // reads under it — the device's own length is the one that judged it.
+      const kbps = kbpsOf(st.size, duration);
+      const encode = !p.no_cap && (!!p.over_bitrate || overCap(kbps, cfg));
+      const size = encode && duration ? Math.min(st.size, Math.ceil((cfg.maxBitrateKbps * 1000 / 8) * duration)) : st.size;
+      sized.push({ ...p, size, duration, encode, masterKbps: kbps });
     } catch (err) {
       j.failed.push({ file_path: p.file_path, error: `not readable on this Mac: ${err.code || err.message}` });
     }
   }
   j.bytesTotal = sized.reduce((n, p) => n + p.size, 0);
+  let taken = null;
   try {
     for (const p of sized) {
       if (j.cancelled) break;
-      j.current = p.device_filename;
+      let local = localizePath(p.file_path);
+      let size = p.size;
+      let name = p.device_filename;
+      let encoded = null;
+      j.current = name;
       try {
-        await client.upload(p.device_filename, localizePath(p.file_path), p.size, { signal: j.controller.signal });
-        record.run(p.size, new Date().toISOString(), p.file_path);
-        j.uploaded.push(p.device_filename);
-        l.info(`uploaded ${p.file_path} → ${p.device_filename} (${Math.round(p.size / 1048576)} MB)`);
+        if (p.encode) {
+          j.phase = 'converting';
+          j.pct = 0;
+          encoded = await encodeForDevice(local, cfg, {
+            duration: p.duration, signal: j.controller.signal, onProgress: (pr) => { j.pct = pr.pct; },
+          });
+          local = encoded.path;
+          size = encoded.size;
+          // A new name when the device already holds the old copy (PUT never
+          // overwrites, and that copy may be in the week on air) or when the
+          // container changed (.mpg → .mp4).
+          if (p.over_bitrate || extname(name).toLowerCase() !== encodedExt(p.file_path)) {
+            taken ??= new Set([...db.prepare('SELECT device_filename FROM AnalogFile').all().map((r) => r.device_filename),
+              ...(await client.files()).map((f) => f.filename)]);
+            name = freshName(p.file_path, taken);
+            taken.add(name);
+          }
+        }
+        j.phase = 'uploading';
+        j.pct = null;
+        j.current = name;
+        await client.upload(name, local, size, { signal: j.controller.signal });
+        if (name !== p.device_filename) repoint(p, name);
+        record.run(size, new Date().toISOString(), p.file_path);
+        j.uploaded.push(name);
+        if (encoded) {
+          j.converted.push({ device_filename: name, kbps: encoded.kbps });
+          db.prepare(`INSERT INTO AnalogConversion (file_path, device_filename, previous_filename, kbps_before, kbps_after, converted_at)
+            VALUES (?, ?, ?, ?, ?, ?)`).run(p.file_path, name, p.over_bitrate ? p.device_filename : null,
+            p.over_bitrate ? p.kbps : p.masterKbps, encoded.kbps, new Date().toISOString());
+        }
+        l.info(`uploaded ${p.file_path} → ${name} (${Math.round(size / 1048576)} MB`
+          + `${encoded ? `, capped copy at ${encoded.kbps} kb/s` : ''})`
+          + `${p.over_bitrate ? ` — replaces ${p.device_filename} (${p.kbps} kb/s)` : ''}`);
       } catch (err) {
         if (err.cancelled) break;
         j.failed.push({ file_path: p.file_path, error: err.message });
         l.warn(`upload ${p.file_path}: ${err.message}`);
         // No space and no permission won't change on the next file.
         if (err.status === 507 || err.status === 403 || err.status === 401) { j.stoppedBy = err.message; break; }
+      } finally {
+        if (encoded) await unlink(encoded.path).catch(() => {});
       }
       j.done++;
       j.bytesDone += p.size;
@@ -751,6 +831,116 @@ export async function runUpload(client, todo, j) {
   } finally {
     j.running = false;
     j.current = null;
+    j.phase = null;
+    j.pct = null;
     j.finishedAt = new Date().toISOString();
   }
+}
+
+/** A device name for the capped copy of `filePath` that nothing uses yet. */
+function freshName(filePath, taken) {
+  const ext = extname(filePath);
+  const asEncoded = filePath.slice(0, filePath.length - ext.length) + encodedExt(filePath);
+  for (let n = 0; ; n++) {
+    const cand = deviceFileName(asEncoded, n);
+    if (!taken.has(cand)) return cand;
+  }
+}
+
+/**
+ * The catalogue file now airs from `name`. An old copy left on the device (over
+ * the cap) is handed to the Vol1 clean-up as a programme safe on the share: it
+ * goes once it is out of the week on air, never while it is in it.
+ */
+function repoint(p, name) {
+  db.prepare('UPDATE AnalogFile SET device_filename = ?, size = NULL, uploaded_at = NULL WHERE file_path = ?').run(name, p.file_path);
+  if (!p.over_bitrate) return;
+  db.prepare(`
+    INSERT INTO AnalogDeviceFile (filename, length_s, kind, kind_reason, kind_manual, share_path, archive, scanned_at)
+    VALUES (@filename, @length_s, 'program', @reason, 1, @share_path, 'matched', @at)
+    ON CONFLICT(filename) DO UPDATE SET kind = 'program', kind_reason = excluded.kind_reason, kind_manual = 1,
+      share_path = excluded.share_path, archive = 'matched', archive_error = NULL
+  `).run({ filename: p.device_filename, length_s: p.length_s, share_path: p.file_path, at: new Date().toISOString(),
+    reason: `over ${analogConfig().maxBitrateKbps} kb/s (${p.kbps}) — replaced by ${name}` });
+}
+
+// --- Rolling a capped copy back ---------------------------------------------------
+
+/** The capped copies made so far, newest first, with whether each is still the one in use. */
+export function listConversions({ limit = 500 } = {}) {
+  return db.prepare(`
+    SELECT c.*, af.file_path AS current_path, (af.file_path IS NOT NULL) AS in_use
+    FROM AnalogConversion c LEFT JOIN AnalogFile af ON af.device_filename = c.device_filename
+    ORDER BY c.id DESC LIMIT ?
+  `).all(limit);
+}
+
+/**
+ * Undo capped copies (ids of AnalogConversion). The catalogue file goes back to
+ * the copy the device had before when it is still on Vol1, otherwise to the
+ * master as it is (uploaded on the next upload, never capped again: no_cap).
+ * The capped copy is deleted from the device — or, while the week on air still
+ * plays it, handed to the Vol1 clean-up, which deletes it once it is out.
+ * Serialized with pushes: the mapping must not move under a push resolving it.
+ */
+export function rollbackConversions(ids) {
+  return serialized(async () => {
+    const ch = analogChannel();
+    if (!isConfigured(ch)) throw new AnalogError('the analog channel has no address or API key');
+    const client = new AnalogClient(ch);
+    const disk = new Map((await client.files()).map((f) => [f.filename, f]));
+    const results = [];
+    for (const id of [...new Set(ids.map(Number))]) {
+      const c = db.prepare('SELECT * FROM AnalogConversion WHERE id = ?').get(id);
+      const fail = (error) => results.push({ id, ok: false, device_filename: c?.device_filename ?? null, error });
+      if (!c) { fail('unknown conversion'); continue; }
+      if (c.rolled_back_at) { fail('already rolled back'); continue; }
+      const af = db.prepare('SELECT * FROM AnalogFile WHERE device_filename = ?').get(c.device_filename);
+      if (!af) { fail('this copy is no longer the one the catalogue uses'); continue; }
+      try {
+        let back;
+        let how;
+        if (c.previous_filename && disk.has(c.previous_filename)
+            && !db.prepare('SELECT 1 FROM AnalogFile WHERE device_filename = ?').get(c.previous_filename)) {
+          back = c.previous_filename;
+          how = `back to ${back}, the copy the device had before`;
+          db.prepare('UPDATE AnalogFile SET device_filename = ?, no_cap = 1 WHERE file_path = ?').run(back, af.file_path);
+          // It was handed to the clean-up when it was replaced; it is in use again.
+          db.prepare(`UPDATE AnalogDeviceFile SET kind_manual = 0, kind_reason = 'restored by a roll-back' WHERE filename = ?`).run(back);
+        } else {
+          const taken = new Set([...db.prepare('SELECT device_filename FROM AnalogFile').all().map((r) => r.device_filename), ...disk.keys()]);
+          for (let n = 0; ; n++) {
+            const cand = deviceFileName(af.file_path, n);
+            if (!taken.has(cand)) { back = cand; break; }
+          }
+          how = `the master goes up as it is (${back}) on the next upload`;
+          db.prepare('UPDATE AnalogFile SET device_filename = ?, size = NULL, uploaded_at = NULL, no_cap = 1 WHERE file_path = ?')
+            .run(back, af.file_path);
+        }
+        const copy = disk.get(c.device_filename);
+        let removed = 'already gone from the device';
+        if (copy?.in_schedule) {
+          db.prepare(`
+            INSERT INTO AnalogDeviceFile (filename, size, kind, kind_reason, kind_manual, share_path, archive, scanned_at)
+            VALUES (?, ?, 'program', 'rolled-back capped copy', 1, ?, 'matched', ?)
+            ON CONFLICT(filename) DO UPDATE SET kind = 'program', kind_reason = excluded.kind_reason, kind_manual = 1,
+              share_path = excluded.share_path, archive = 'matched', archive_error = NULL
+          `).run(c.device_filename, copy.size ?? null, af.file_path, new Date().toISOString());
+          removed = 'the capped copy is in the week on air — the Vol1 clean-up deletes it once it is out (push the week again to take it out sooner)';
+        } else if (copy) {
+          await client.deleteFile(c.device_filename, false);
+          db.prepare('UPDATE AnalogDeviceFile SET gone_at = ? WHERE filename = ?').run(new Date().toISOString(), c.device_filename);
+          disk.delete(c.device_filename);
+          removed = 'capped copy deleted from the device';
+        }
+        const note = `${how}; ${removed}`;
+        db.prepare('UPDATE AnalogConversion SET rolled_back_at = ?, rollback_note = ? WHERE id = ?').run(new Date().toISOString(), note, id);
+        l.warn(`rolled back the capped copy ${c.device_filename} of ${af.file_path}: ${note}`);
+        results.push({ id, ok: true, device_filename: c.device_filename, now: back, note });
+      } catch (err) {
+        fail(err.message);
+      }
+    }
+    return results;
+  });
 }

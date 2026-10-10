@@ -10,6 +10,7 @@ import {
   startScan, startConvert, requestStop, abortNow, getState, listItems, itemCounts,
   replaceItem, replacePending, requeue, skip, transcodeConfig, REASON_LABELS, subscribe,
   setExportedDaysMode, exportedDaysPolicy, EXPORTED_DAYS_MODES, setTarget,
+  rollbackItem, rollbackItems,
 } from '../services/transcode.js';
 
 export const router = Router();
@@ -152,6 +153,23 @@ router.post('/replace-pending', async (req, res) => {
     replaced: results.filter((r) => r.ok).length,
     failed: results.filter((r) => !r.ok),
   });
+});
+
+// POST /api/transcode/items/:id/rollback — put the original back, delete the converted file.
+router.post('/items/:id/rollback', async (req, res) => {
+  try {
+    res.json(await rollbackItem(Number(req.params.id)));
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// POST /api/transcode/rollback { ids: [...] } — the same for a group, one by one.
+router.post('/rollback', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+  if (!ids.length) return res.status(400).json({ ok: false, error: 'no clips given' });
+  const results = await rollbackItems(ids);
+  res.json({ ok: true, rolledBack: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok) });
 });
 
 // POST /api/transcode/items/:id/retry — put a failed/blocked clip back in the queue.

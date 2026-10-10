@@ -1,4 +1,4 @@
-import { $, api, confirmDialog, el, fmt, toast, withBusy } from './core.js';
+import { $, api, confirmDialog, el, fmt, reportDialog, toast, withBusy } from './core.js';
 import { scheduleChannels, set_scheduleChannels } from './schedule.js';
 
 // ---- Air Spec (ffmpeg normalisation) ---------------------------------------
@@ -377,6 +377,25 @@ function openTxStream() {
   es.onerror = () => {};
 }
 
+// Replaced clips ticked for "Roll back selected". Kept across reloads of the
+// list (filters, refreshes) and pruned of anything no longer replaced.
+const txRollbackSel = new Set();
+
+function syncRollbackBtn() {
+  const b = $('#btnTxRollbackSel');
+  if (!b) return;
+  b.disabled = !txRollbackSel.size;
+  b.textContent = txRollbackSel.size ? `↶ Roll back ${txRollbackSel.size} selected` : '↶ Roll back selected';
+}
+
+function confirmRollback(n) {
+  return confirmDialog(n === 1 ? 'Roll back this conversion' : `Roll back ${n} conversions`,
+    'The original goes back to its place from the archive folder, the catalogue and any day already on '
+    + 'OTAV point at it again, and the CONVERTED file is deleted. The clip is then left out of the queue '
+    + '(skipped) so it is not converted again tonight — Retry queues it on purpose.',
+    { confirmLabel: 'Roll back', danger: true });
+}
+
 function txRowActions(item) {
   const wrap = el('div', { className: 'row-actions' });
   const act = (label, title, fn, cls = 'mini ghost') => {
@@ -408,6 +427,15 @@ function txRowActions(item) {
       await Promise.all([refreshTxStatus(), loadTxItems()]);
     });
   }
+  if (item.status === 'replaced') {
+    act('↶ Roll back', 'Put the original back and delete the converted file', async () => {
+      if (!(await confirmRollback(1))) return;
+      const r = await api.send('POST', `/api/transcode/items/${item.id}/rollback`);
+      toast(r.note ? `Rolled back — ${r.note}` : 'Rolled back — original restored, converted file deleted', r.note ? 'info' : 'ok');
+      txRollbackSel.delete(item.id);
+      await Promise.all([refreshTxStatus(), loadTxItems()]);
+    }, 'mini danger');
+  }
   if (['pending', 'failed', 'missing'].includes(item.status)) {
     act('✕ Skip', 'Leave this clip exactly as it is', async () => {
       await api.send('POST', `/api/transcode/items/${item.id}/skip`);
@@ -428,6 +456,8 @@ async function loadTxItems() {
   $('#txFilterLabel').textContent = txFilter
     ? `· ${TX_STATUS_LABELS[txFilter]} only` : '· queue first, then the rest';
   tbody.innerHTML = '';
+  for (const it of r.items) if (it.status !== 'replaced') txRollbackSel.delete(it.id);
+  syncRollbackBtn();
   if (!r.items.length) {
     tbody.append(el('tr', {}, el('td', { colSpan: 6, className: 'muted', textContent: 'Nothing to show.' })));
     return;
@@ -436,7 +466,13 @@ async function loadTxItems() {
   for (const it of r.items) {
     const tr = el('tr', { className: `tx-row tx-row-${it.status}` });
     const nameCell = el('td', {});
-    nameCell.append(el('div', { textContent: it.name || it.file_path.split('/').pop() }));
+    const title = el('div', { textContent: it.name || it.file_path.split('/').pop() });
+    if (it.status === 'replaced') {
+      const box = el('input', { type: 'checkbox', checked: txRollbackSel.has(it.id), title: 'Select for "Roll back selected"' });
+      box.onchange = () => { box.checked ? txRollbackSel.add(it.id) : txRollbackSel.delete(it.id); syncRollbackBtn(); };
+      title.prepend(box, ' ');
+    }
+    nameCell.append(title);
     nameCell.append(el('div', { className: 'muted tx-path', textContent: it.file_path }));
     tr.append(nameCell);
     tr.append(el('td', {
@@ -568,6 +604,18 @@ $('#btnTxReplacePending').addEventListener('click', (e) => withBusy(e.currentTar
     r.failed.length ? 'bad' : 'ok');
   await Promise.all([refreshTxStatus(), loadTxItems()]);
   return undefined;
+}));
+
+$('#btnTxRollbackSel').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const ids = [...txRollbackSel];
+  if (!ids.length || !(await confirmRollback(ids.length))) return;
+  const r = await api.send('POST', '/api/transcode/rollback', { ids });
+  txRollbackSel.clear();
+  toast(`${r.rolledBack} rolled back${r.failed.length ? `, ${r.failed.length} could not be` : ''}`, r.failed.length ? 'bad' : 'ok');
+  if (r.failed.length) {
+    reportDialog('Roll-backs that failed', r.failed.map((f) => ({ name: f.file_path ? f.file_path.split('/').pop() : `clip #${f.id}`, ok: false, detail: f.error })));
+  }
+  await Promise.all([refreshTxStatus(), loadTxItems()]);
 }));
 
 $('#btnTxReload').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {

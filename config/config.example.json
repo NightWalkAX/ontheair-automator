@@ -45,7 +45,12 @@
     "archiveDir": "/Volumes/Public/Broadcast/Analog Archive",
     "minFreeGb": 50,
     "fillerMaxSeconds": 660,
-    "fillerPrefixes": ["PSA", "PROMO", "FILL", "NDMA", "Infobits", "IsGuyTing", "FortsMon", "GMCS", "CATS", "StartingPoint", "QOD", "FunFacts"]
+    "fillerPrefixes": ["PSA", "PROMO", "FILL", "NDMA", "Infobits", "IsGuyTing", "FortsMon", "GMCS", "CATS", "StartingPoint", "QOD", "FunFacts"],
+    "maxBitrateKbps": 4000,
+    "encodeDir": "/Volumes/Public/_transcode/analog",
+    "audioCodec": "aac",
+    "audioKbps": 192,
+    "encodePreset": "medium"
   },
   "ffmpegPath": "ffmpeg",
   "transcode": {

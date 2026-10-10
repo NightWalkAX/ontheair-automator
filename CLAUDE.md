@@ -306,6 +306,14 @@ started and left alone:
   because it also governs the Replace button on a single row. `loadConfig()` re-reads per call,
   so no restart is needed. `TRANSCODE_EXPORTED_MODE` still wins and greys the switch out.
   Retrying a `blocked` clip retries the SWAP, not the encode — the verified work file is kept.
+- **Rollback** (`rollbackItem()` / `rollbackItems()`, `POST /api/transcode/items/:id/rollback` and
+  `POST /api/transcode/rollback { ids }`, the row's "↶ Roll back" and "Roll back selected" in the tab):
+  the archived original goes back to its path (`orig_path`, or derived from `backup_path` for rows
+  replaced before that column existed), the catalogue / seasonal marks / analog mapping and any
+  exported OTAV day are re-pointed through the same `repointExportedDays()` (mirrored order: the
+  original lands first), and the CONVERTED file is deleted (operator, 2026-10-10). A same-name clip
+  is renamed back over the converted file, atomically. The clip ends `skipped`, so a scan doesn't
+  queue it again; Retry does.
 - **ffmpeg's progress stream lies.** Its first `-progress` block is all `N/A`, and `"N/A"` is
   TRUTHY — so `a || b` picks it and `Number("N/A")` is NaN, which survives every `??` (NaN is
   neither null nor undefined) and reaches SQLite, where **NaN is stored as NULL** and fails the
@@ -505,6 +513,23 @@ approval, `validateBlock()`) is identical and only the push destination differs.
   the library are added at push time into `analog.folderId` (chosen in the tab). Air Spec and
   catalogue repair carry the mapping when a path moves, and never block on or re-point analog
   days — the device plays its own copy.
+- **Bitrate cap: the device plays nothing over `analog.maxBitrateKbps`** (4000 = 4 Mb/s, video +
+  audio; decided with the operator on 2026-10-10). The cap is on the DEVICE COPY, never the share:
+  the masters (CRF 18 + PCM, 8–20 Mb/s) also air on the six OTAV channels. `runUpload()` measures
+  each master as size×8/catalogue length; over the cap it is encoded by `src/services/analogEncode.js`
+  (H.264 1920x1080 29.97, `-b:v = -maxrate = -bufsize` = 95% of the cap minus audio, AAC 192k,
+  `.mov` stays `.mov`, anything else `.mp4`) into `analog.encodeDir`, verified (length ±2s, average
+  under the cap), uploaded and deleted. `planFiles()` flags a copy ALREADY on Vol1 over the cap
+  (`over_bitrate`, from the device's size and length); `needsCopy()` makes the upload job and the
+  week routine replace it under a NEW name (PUT never overwrites, and the old copy may be on air)
+  and hand the old one to the Vol1 clean-up (`AnalogDeviceFile`, `matched`). A push with over-cap
+  copies still goes ahead, with a warning. `maxBitrateKbps: 0` turns the cap off.
+  Every capped copy is recorded in `AnalogConversion`; the tab's "Capped copies" panel rolls them
+  back (`rollbackConversions()`, `POST /api/analog/conversions/rollback { ids }`): the file goes back
+  to the over-cap copy it replaced when that is still on Vol1, otherwise to its master as it is
+  (missing → uploaded uncapped next time), and `AnalogFile.no_cap = 1` keeps it from being capped
+  again. The capped copy is deleted from the device, or handed to the clean-up while it is in the
+  week on air.
 - **Making room on Vol1** (the tab's "Files on the device disk" panel, `GET /api/analog/storage`,
   `POST /api/analog/storage/delete { filenames, force }`, `deleteDeviceFiles()`): every file on
   the device disk with what uses it — the device's on-air schedule (`in_schedule`) and the

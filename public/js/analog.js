@@ -44,7 +44,7 @@ export async function loadAnalogTab() {
   }
   renderUpload(info.upload);
   if (info.upload?.running) watchUpload();
-  await Promise.allSettled([refreshStatus(), loadDisk(), loadFolders(), loadBackups(), loadRecoverLog(), loadVol1()]);
+  await Promise.allSettled([refreshStatus(), loadDisk(), loadFolders(), loadBackups(), loadRecoverLog(), loadVol1(), loadConversions()]);
   scheduleAnalogPoll();
 }
 
@@ -140,12 +140,17 @@ async function checkFiles() {
       title: f.device_filename ? `${f.file_path.split('/').pop()} → ${f.device_filename}` : '' });
     tb.append(row(el('span', { textContent: f.name, title: f.file_path }), dev,
       f.state === 'missing' ? (f.size != null ? mbText(f.size) : 'unreadable') : '',
-      badge(STATE[f.state] || ['', f.state]), f.first_date));
+      f.over_bitrate
+        ? badge(['tx-blocked', `over the cap · ${(f.kbps / 1000).toFixed(1)} Mb/s`])
+        : badge(STATE[f.state] || ['', f.state]),
+      f.first_date));
   }
   renderSpace(d.space);
   const missing = d.files.filter((f) => f.state === 'missing').length;
-  $('#anUploadBtn').disabled = !missing || d.space?.fits === false;
-  $('#anUploadBtn').textContent = !missing ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload ${missing} missing`;
+  const over = d.files.filter((f) => f.over_bitrate).length;
+  const what = [missing ? `${missing} missing` : '', over ? `replace ${over} over the cap` : ''].filter(Boolean).join(', ');
+  $('#anUploadBtn').disabled = !(missing + over) || d.space?.fits === false;
+  $('#anUploadBtn').textContent = !(missing + over) ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload: ${what}`;
 }
 
 function renderUpload(u) {
@@ -154,7 +159,9 @@ function renderUpload(u) {
   if (!u || (!u.running && !u.finishedAt)) { box.textContent = ''; return; }
   const mb = (b) => Math.round((b || 0) / 1048576);
   const head = u.running
-    ? `Uploading ${u.done + 1}/${u.total}: ${u.current || '…'} · ${mb(u.bytesDone)} of ${mb(u.bytesTotal)} MB done`
+    ? `${u.phase === 'converting' ? 'Converting' : 'Uploading'} ${u.done + 1}/${u.total}: ${u.current || '…'}`
+      + `${u.phase === 'converting' && u.pct != null ? ` (${Math.round(u.pct * 100)}%)` : ''}`
+      + ` · ${mb(u.bytesDone)} of ${mb(u.bytesTotal)} MB done`
     : `Last upload: ${u.uploaded.length} of ${u.total} uploaded${u.cancelled ? ' (cancelled)' : ''}${u.stoppedBy ? ` — stopped: ${u.stoppedBy}` : ''}`;
   box.textContent = head + (u.failed.length ? ` · ${u.failed.length} failed` : '');
   if (!u.running && u.failed.length) {
@@ -174,8 +181,43 @@ function watchUpload() {
       toast(`${upload?.uploaded?.length ?? 0} file(s) uploaded to the analog device`, upload?.failed?.length ? 'bad' : 'ok', 'Upload finished');
       checkFiles().catch(() => {});
       loadDisk().catch(() => {});
+      loadConversions().catch(() => {});
     }
   }, 3000);
+}
+
+// ---- Capped copies (≤ analog.maxBitrateKbps) and their roll-back ----
+const convSel = new Set();
+const mbps = (k) => (k == null ? '?' : `${(k / 1000).toFixed(1)} Mb/s`);
+
+function syncConvBtn() {
+  const b = $('#anConvRollback');
+  b.disabled = !convSel.size;
+  b.textContent = convSel.size ? `↶ Roll back ${convSel.size} selected` : '↶ Roll back selected';
+}
+
+async function loadConversions() {
+  const { conversions } = await api.get('/api/analog/conversions');
+  const tb = $('#anConv tbody');
+  tb.innerHTML = '';
+  const live = new Set(conversions.filter((c) => !c.rolled_back_at && c.in_use).map((c) => c.id));
+  for (const id of [...convSel]) if (!live.has(id)) convSel.delete(id);
+  syncConvBtn();
+  $('#anConvCount').textContent = `${live.size} in use · ${conversions.length} in all`;
+  if (!conversions.length) emptyRow(tb, 6, 'No capped copies yet.');
+  for (const c of conversions) {
+    const canRoll = live.has(c.id);
+    const box = el('input', { type: 'checkbox', checked: convSel.has(c.id), disabled: !canRoll });
+    box.onchange = () => { box.checked ? convSel.add(c.id) : convSel.delete(c.id); syncConvBtn(); };
+    const path = c.current_path || c.file_path;
+    const state = c.rolled_back_at
+      ? el('span', { className: 'tx-badge tx-skipped', textContent: 'rolled back', title: c.rollback_note || '' })
+      : c.in_use ? el('span', { className: 'tx-badge tx-ok', textContent: 'in use' })
+        : el('span', { className: 'tx-badge tx-blocked', textContent: 'replaced since', title: 'The catalogue no longer uses this copy' });
+    tb.append(row(box, el('span', { textContent: path.split('/').pop(), title: path }),
+      el('span', { textContent: c.device_filename, title: c.previous_filename ? `replaced ${c.previous_filename}` : 'first copy on the device' }),
+      `${mbps(c.kbps_before)} → ${mbps(c.kbps_after)}`, String(c.converted_at).slice(0, 16).replace('T', ' '), state));
+  }
 }
 
 async function loadBackups() {
@@ -224,6 +266,21 @@ async function loadAsrun() {
 
 const busy = (fn) => (e) => withBusy(e.currentTarget, fn).catch(() => {});
 $('#anRefresh').addEventListener('click', busy(() => loadAnalogTab()));
+$('#anConvRollback').addEventListener('click', busy(async () => {
+  const ids = [...convSel];
+  if (!ids.length) return;
+  const ok = await confirmDialog(ids.length === 1 ? 'Roll back this capped copy' : `Roll back ${ids.length} capped copies`,
+    'Each clip goes back to the copy the device had before, or — when there is none — its master goes up as it is on the '
+    + 'next upload and is never capped again. Files over the cap may not play well on the device. The capped copy is deleted '
+    + 'from the device; one still in the week on air is deleted by the Vol1 clean-up once it is out.',
+    { confirmLabel: 'Roll back', danger: true });
+  if (!ok) return;
+  const r = await api.send('POST', '/api/analog/conversions/rollback', { ids });
+  convSel.clear();
+  toast(`${r.rolledBack} rolled back${r.failed.length ? `, ${r.failed.length} could not be` : ''}`, r.failed.length ? 'bad' : 'ok', 'Analog');
+  reportDialog('Capped copies rolled back', r.results.map((x) => ({ name: x.device_filename || `#${x.id}`, ok: x.ok, detail: x.ok ? x.note : x.error })));
+  await Promise.allSettled([loadConversions(), checkFiles(), loadDisk()]);
+}));
 $('#anCheck').addEventListener('click', busy(async () => {
   const d = await api.get('/api/analog/check');
   const err = (x) => x?.error;
