@@ -259,7 +259,7 @@ export class AnalogClient {
    * fetch body can't carry one. No timeout — 2 MB/s over this LAN makes a
    * feature several minutes; `signal` is how the job cancels.
    */
-  upload(name, localPath, size, { signal } = {}) {
+  upload(name, localPath, size, { signal, onProgress } = {}) {
     return new Promise((resolve, reject) => {
       const req = httpRequest({
         host: this.host, port: this.port, method: 'PUT',
@@ -281,6 +281,8 @@ export class AnalogClient {
         ? Object.assign(new AnalogError('upload cancelled'), { cancelled: true })
         : new AnalogError(`upload of ${name} failed: ${err.code || err.message}`)));
       const src = createReadStream(localPath);
+      let sent = 0;
+      if (onProgress) src.on('data', (c) => { sent += c.length; onProgress(sent); });
       src.on('error', (err) => { req.destroy(); reject(new AnalogError(`cannot read ${localPath}: ${err.code || err.message}`)); });
       src.pipe(req);
     });
@@ -719,8 +721,13 @@ export function deleteDeviceFiles(filenames, { force = false } = {}) {
 // restart simply stops it, and a re-run plans again (what landed is ready).
 
 let job = null;
+// The week routine runs its own copy job (analogVol1.js imports this module, so
+// it registers a getter rather than being imported back).
+let routineUpload = null;
+export function setRoutineUploadSource(fn) { routineUpload = fn; }
 
 export function uploadStatus() {
+  if (!job?.running && routineUpload?.()?.running) return { ...routineUpload(), source: 'routine' };
   if (!job) return { running: false };
   const { controller, ...pub } = job;
   return pub;
@@ -780,13 +787,16 @@ export async function runUpload(client, todo, j) {
       let size = p.size;
       let name = p.device_filename;
       let encoded = null;
+      const bytesBefore = j.bytesDone;
       j.current = name;
+      j.fileBytes = null;
+      j.fileStartedAt = new Date().toISOString();
       try {
         if (p.encode) {
           j.phase = 'converting';
           j.pct = 0;
           encoded = await encodeForDevice(local, cfg, {
-            duration: p.duration, signal: j.controller.signal, onProgress: (pr) => { j.pct = pr.pct; },
+            duration: p.duration, signal: j.controller.signal, onProgress: (pr) => { j.pct = pr.pct; j.speed = pr.speed; },
           });
           local = encoded.path;
           size = encoded.size;
@@ -801,9 +811,20 @@ export async function runUpload(client, todo, j) {
           }
         }
         j.phase = 'uploading';
-        j.pct = null;
+        j.pct = 0;
         j.current = name;
-        await client.upload(name, local, size, { signal: j.controller.signal });
+        j.fileBytes = size;
+        j.fileStartedAt = new Date().toISOString();
+        // Live progress: a feature at ~2 MB/s takes many minutes, and a counter
+        // that only moves between files reads as a job that hung.
+        const before = j.bytesDone;
+        await client.upload(name, local, size, {
+          signal: j.controller.signal,
+          onProgress: (sent) => {
+            j.pct = size ? Math.min(0.999, sent / size) : null;
+            j.bytesDone = before + Math.min(sent, p.size);
+          },
+        });
         if (name !== p.device_filename) repoint(p, name);
         record.run(size, new Date().toISOString(), p.file_path);
         j.uploaded.push(name);
@@ -826,13 +847,15 @@ export async function runUpload(client, todo, j) {
         if (encoded) await unlink(encoded.path).catch(() => {});
       }
       j.done++;
-      j.bytesDone += p.size;
+      j.bytesDone = bytesBefore + p.size;
     }
   } finally {
     j.running = false;
     j.current = null;
     j.phase = null;
     j.pct = null;
+    j.speed = null;
+    j.fileBytes = null;
     j.finishedAt = new Date().toISOString();
   }
 }

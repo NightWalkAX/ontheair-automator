@@ -153,18 +153,33 @@ async function checkFiles() {
   $('#anUploadBtn').textContent = !(missing + over) ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload: ${what}`;
 }
 
+/** One line for a running copy job (the upload button's or the week routine's). */
+function uploadProgressText(u) {
+  const mb = (b) => mbText(b || 0);
+  const pct = u.pct != null ? Math.round(u.pct * 100) : null;
+  let eta = '';
+  if (pct && u.fileStartedAt) {
+    const spent = (Date.now() - Date.parse(u.fileStartedAt)) / 1000;
+    const left = spent * (1 - u.pct) / u.pct;
+    if (spent > 5 && Number.isFinite(left)) eta = ` · ~${left >= 3600 ? `${(left / 3600).toFixed(1)} h` : `${Math.max(1, Math.round(left / 60))} min`} left`;
+  }
+  const what = !u.phase ? 'Preparing'
+    : u.phase === 'converting' ? 'Converting (capping the bitrate)' : 'Copying to the device';
+  return `${what} ${Math.min(u.done + 1, u.total)}/${u.total}: ${u.current || '…'}`
+    + `${pct != null ? ` — ${pct}%` : ''}${u.phase === 'converting' && u.speed ? ` at ${u.speed}x` : ''}${eta}`
+    + ` · ${mb(u.bytesDone)} of ${mb(u.bytesTotal)} done`;
+}
+
 function renderUpload(u) {
   const box = $('#anUploadState');
-  $('#anUploadCancel').hidden = !u?.running;
+  $('#anUploadCancel').hidden = !u?.running || u.source === 'routine';
   if (!u || (!u.running && !u.finishedAt)) { box.textContent = ''; return; }
-  const mb = (b) => Math.round((b || 0) / 1048576);
   const head = u.running
-    ? `${u.phase === 'converting' ? 'Converting' : 'Uploading'} ${u.done + 1}/${u.total}: ${u.current || '…'}`
-      + `${u.phase === 'converting' && u.pct != null ? ` (${Math.round(u.pct * 100)}%)` : ''}`
-      + ` · ${mb(u.bytesDone)} of ${mb(u.bytesTotal)} MB done`
+    ? `${u.source === 'routine' ? 'Week routine — ' : ''}${uploadProgressText(u)}`
     : `Last upload: ${u.uploaded.length} of ${u.total} uploaded${u.cancelled ? ' (cancelled)' : ''}${u.stoppedBy ? ` — stopped: ${u.stoppedBy}` : ''}`;
-  box.textContent = head + (u.failed.length ? ` · ${u.failed.length} failed` : '');
-  if (!u.running && u.failed.length) {
+  box.className = u.running ? 'tx-badge tx-converted' : 'muted';
+  box.textContent = head + (u.failed?.length ? ` · ${u.failed.length} failed` : '');
+  if (!u.running && u.failed?.length) {
     const more = el('button', { className: 'mini ghost', textContent: 'see failures' });
     more.onclick = () => reportDialog('Uploads that failed', u.failed.map((f) => ({ name: f.file_path, ok: false, detail: f.error })));
     box.append(document.createTextNode(' '), more);
@@ -177,7 +192,7 @@ function watchUpload() {
     const { upload } = await api.get('/api/analog/upload/status').catch(() => ({ upload: null }));
     renderUpload(upload);
     if (upload?.running) watchUpload();
-    else {
+    else if (upload?.finishedAt) {
       toast(`${upload?.uploaded?.length ?? 0} file(s) uploaded to the analog device`, upload?.failed?.length ? 'bad' : 'ok', 'Upload finished');
       checkFiles().catch(() => {});
       loadDisk().catch(() => {});
@@ -535,7 +550,7 @@ function renderRoutine(r) {
   if (!r || (!r.running && !r.finishedAt)) { $('#anRtState').textContent = ''; $('#anRtLog').textContent = ''; return; }
   const u = r.upload;
   $('#anRtState').textContent = r.running
-    ? `${r.from} → ${r.to}: ${r.step}${u?.running ? ` (${u.done}/${u.total}, ${gbText(u.bytesDone)} of ${gbText(u.bytesTotal)})` : ''}`
+    ? `${r.from} → ${r.to}: ${r.step}${u?.running ? ` — ${uploadProgressText(u)}` : ''}`
     : `${r.from} → ${r.to}: ${r.error ? `stopped — ${r.error}` : 'done'} (${String(r.finishedAt).replace('T', ' ').slice(0, 16)})`;
   $('#anRtState').className = r.error ? 'tx-badge tx-failed' : 'muted';
   $('#anRtLog').textContent = r.log.join('\n');
@@ -577,6 +592,7 @@ function watchRoutine() {
     const d = await api.get('/api/analog/routine/status').catch(() => null);
     if (!d) return watchRoutine();
     renderRoutine(d.routine);
+    renderUpload(d.routine.running && d.routine.upload?.running ? { ...d.routine.upload, source: 'routine' } : null);
     if (d.routine.running) watchRoutine();
     else {
       toast(d.routine.error ? `Stopped: ${d.routine.error}` : 'Week copied and pushed', d.routine.error ? 'bad' : 'ok', 'Week routine');

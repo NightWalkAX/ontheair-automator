@@ -34,6 +34,7 @@ import { log } from '../logger.js';
 import {
   AnalogClient, AnalogError, analogChannel, analogConfig, claimDevice, deleteDeviceFiles, deviceFileName,
   deviceWanted, filesForRange, isConfigured, needsCopy, onDeviceWanted, overCap, planFiles, pushAnalogDays, runUpload,
+  setRoutineUploadSource,
 } from './analogClient.js';
 import { kbpsOf } from './analogEncode.js';
 import { probeDuration, scanMediaRoot } from './ingestion.js';
@@ -456,6 +457,9 @@ export async function runCleanup() {
 // --- The week routine ------------------------------------------------------------
 
 let routine = null;
+
+setRoutineUploadSource(() => (routine?.running && routine.upload
+  ? (({ controller: _c, ...u }) => u)(routine.upload) : null));
 
 export function routineStatus() {
   if (!routine) return { running: false };
