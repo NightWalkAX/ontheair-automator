@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="googlebot" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>GLC Monitor Wall</title>
+<style>
+  :root {
+    --bg: #000;
+    --panel: #07090b;
+    --text: #e6ece8;
+    --muted: #7d8a84;
+    --live: #e5322d;
+    --ok: #3ddc84;
+    --warn: #f0b429;
+    --seam: #1a1f1c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); overflow: hidden; }
+
+  /* The wall: one seamless mosaic, tiles touch each other (1px seam only). */
+  .wall {
+    display: grid;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--seam);
+  }
+  .info { grid-column: span 2; }
+
+  .tile {
+    position: relative;
+    background: #000;
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .tile video {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    background: #000;
+  }
+  .wall.cover .tile video { object-fit: cover; }
+
+  .osd {
+    position: absolute; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 8px;
+    padding: 6px 9px;
+    font-size: clamp(10px, 1.05vw, 14px);
+    letter-spacing: .04em;
+    text-shadow: 0 0 3px #000, 0 0 2px #000, 1px 1px 0 #000;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .osd.top { top: 0; background: linear-gradient(#000a, #0000); }
+  .osd.bottom { bottom: 0; background: linear-gradient(#0000, #000a); }
+  .name { font-weight: 700; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ch { color: var(--muted); margin-right: 6px; }
+  .state { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 700; }
+  .dot { width: .7em; height: .7em; border-radius: 50%; background: var(--muted); }
+  .tile[data-state="live"] .dot { background: var(--live); animation: blink 1.6s steps(1) infinite; }
+  .tile[data-state="loading"] .dot { background: var(--warn); }
+  .tile[data-state="down"] .dot { background: var(--muted); }
+  @keyframes blink { 50% { opacity: .15; } }
+  .audio { visibility: hidden; color: var(--ok); }
+  .tile.unmuted .audio { visibility: visible; }
+  .tile.unmuted { outline: 2px solid var(--ok); outline-offset: -2px; }
+
+  /* NO SIGNAL card with analogue snow, shown while a feed is loading or down. */
+  .nosig {
+    position: absolute; inset: 0; z-index: 2;
+    display: none; align-items: center; justify-content: center;
+    font-size: clamp(12px, 1.6vw, 22px); font-weight: 700; letter-spacing: .2em;
+    color: #fff; text-shadow: 0 0 4px #000;
+    background:
+      repeating-radial-gradient(circle at 17% 32%, #fff2 0 1px, #0000 1px 3px),
+      repeating-radial-gradient(circle at 73% 61%, #fff1 0 1px, #0000 1px 2px),
+      #111;
+    animation: snow .25s steps(4) infinite;
+  }
+  .tile[data-state="down"] .nosig,
+  .tile[data-state="loading"] .nosig { display: flex; }
+  .tile[data-state="loading"] .nosig { background: #050505; animation: none; color: var(--muted); }
+  @keyframes snow {
+    0% { background-position: 0 0, 0 0; }
+    25% { background-position: 3px 5px, -4px 2px; }
+    50% { background-position: -2px 3px, 5px -3px; }
+    75% { background-position: 4px -2px, -3px -5px; }
+  }
+
+  /* One tile maximised over the whole wall (double click / Enter). */
+  .wall.solo .tile, .wall.solo .info { display: none; }
+  .wall.solo .tile.max { display: block; grid-column: 1 / -1; grid-row: 1 / -1; }
+
+  .info {
+    background: var(--panel);
+    display: flex; flex-direction: column; justify-content: center;
+    gap: clamp(4px, 1vh, 12px);
+    padding: clamp(10px, 2vw, 32px);
+    overflow: hidden;
+  }
+  .clock { font-size: clamp(28px, 6vw, 96px); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .date { font-size: clamp(11px, 1.4vw, 20px); color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
+  .summary { font-size: clamp(11px, 1.3vw, 18px); }
+  .summary b { color: var(--ok); }
+  .summary .bad { color: var(--live); }
+  .help { font-size: clamp(9px, .9vw, 13px); color: var(--muted); line-height: 1.6; }
+  .help kbd { border: 1px solid #333; border-radius: 3px; padding: 0 4px; color: var(--text); font-family: inherit; }
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; }
+  .controls button {
+    font: inherit; font-size: clamp(10px, .9vw, 13px);
+    background: #11161a; color: var(--text);
+    border: 1px solid #2a3138; border-radius: 3px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  .controls button:hover { background: #1a2127; }
+
+  /* Portrait / phones: two columns, 16:9 tiles, the page scrolls vertically. */
+  @media (max-aspect-ratio: 1/1) {
+    html, body { overflow-y: auto; overflow-x: hidden; }
+    .wall {
+      height: auto;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: none;
+      grid-auto-rows: auto;
+    }
+    .tile { aspect-ratio: 16 / 9; }
+    .info { grid-column: span 1; aspect-ratio: 16 / 9; }
+    .wall.solo { height: 100dvh; }
+    .wall.solo .tile.max { aspect-ratio: auto; }
+    .help { display: none; }
+  }
+</style>
+</head>
+<body>
+<main class="wall cover" id="wall">
+  <section class="info" id="info">
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="date" id="date"></div>
+    <div class="summary" id="summary">Connecting…</div>
+    <div class="controls">
+      <button type="button" id="btn-fs">Fullscreen</button>
+      <button type="button" id="btn-fit">Fit tiles</button>
+      <button type="button" id="btn-mute">Mute all</button>
+    </div>
+    <div class="help">
+      Click a tile = its audio · Double click / <kbd>1</kbd>–<kbd>7</kbd> = single view · <kbd>Esc</kbd> back · <kbd>F</kbd> fullscreen
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  // The seven GLC playout feeds (same list as glc-playout.html / signalMonitor.js).
+  const CHANNELS = [
+    { key: 'GuyanaLearning', name: 'Guyana Learning Channel' },
+    { key: 'GLCjr',          name: 'GLC Junior' },
+    { key: 'GLCElementary',  name: 'GLC Elementary' },
+    { key: 'GLCTeenED',      name: 'GLC TeenEd' },
+    { key: 'GLCEleVate',     name: 'GLC Elevate' },
+    { key: 'GLCDiscover',    name: 'GLC Discover' },
+    { key: 'GLCAhWeTV',      name: 'GLC Plus' },
+  ];
+
+  // The CDN is http-only. Over https (Cloudflare Pages) go through the /hls proxy
+  // function; opened locally over http or file:// the feed can be read directly.
+  const viaProxy = location.protocol === 'https:';
+  const srcFor = (key) => viaProxy
+    ? `/hls/${key}/${key}.m3u8`
+    : `http://live.dreamtv.gy/live/c2eds/${key}/HLS/${key}.m3u8`;
+
+  const STALL_SECONDS = 25;   // no progress this long = reconnect
+  const RETRY_MAX_MS = 30000;
+
+  const wall = document.getElementById('wall');
+  const info = document.getElementById('info');
+  const tiles = [];
+
+  const pad = (n) => String(n).padStart(2, '0');
+
+  function makeTile(ch, i) {
+    const el = document.createElement('section');
+    el.className = 'tile';
+    el.dataset.state = 'loading';
+    el.tabIndex = 0;
+    el.setAttribute('aria-label', ch.name);
+    el.innerHTML = `
+      <video muted playsinline autoplay></video>
+      <div class="nosig">NO SIGNAL</div>
+      <div class="osd top">
+        <span class="name"><span class="ch">CH${pad(i + 1)}</span>${ch.name}</span>
+        <span class="state"><span class="dot"></span><span class="label">…</span></span>
+      </div>
+      <div class="osd bottom">
+        <span class="ts"></span>
+        <span class="audio">♪ AUDIO</span>
+      </div>`;
+    wall.insertBefore(el, info);
+    const t = {
+      ch, el, i,
+      video: el.querySelector('video'),
+      label: el.querySelector('.label'),
+      ts: el.querySelector('.ts'),
+      hls: null, retry: 0, retryTimer: null,
+      lastTime: 0, lastProgress: Date.now(),
+    };
+    el.addEventListener('click', () => toggleAudio(t));
+    el.addEventListener('dblclick', () => solo(t));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') solo(t); });
+    t.video.addEventListener('playing', () => setState(t, 'live'));
+    t.video.addEventListener('timeupdate', () => {
+      if (t.video.currentTime !== t.lastTime) {
+        t.lastTime = t.video.currentTime;
+        t.lastProgress = Date.now();
+        if (t.el.dataset.state !== 'live') setState(t, 'live');
+        t.retry = 0;
+      }
+    });
+    tiles.push(t);
+    start(t);
+  }
+
+  function setState(t, state) {
+    t.el.dataset.state = state;
+    t.label.textContent = state === 'live' ? 'LIVE' : state === 'loading' ? 'CONNECTING' : 'NO SIGNAL';
+    updateSummary();
+  }
+
+  function stop(t) {
+    clearTimeout(t.retryTimer);
+    if (t.hls) { t.hls.destroy(); t.hls = null; }
+    t.video.removeAttribute('src');
+    t.video.load();
+  }
+
+  function start(t) {
+    stop(t);
+    setState(t, 'loading');
+    t.lastProgress = Date.now();
+    const src = srcFor(t.ch.key);
+    const v = t.video;
+
+    if (window.Hls && Hls.isSupported()) {
+      const hls = new Hls({
+        capLevelToPlayerSize: true,   // small tile = low rendition, single view = HD
+        startLevel: 0,
+        maxBufferLength: 20,
+        backBufferLength: 10,
+        liveSyncDurationCount: 3,
+      });
+      t.hls = hls;
+      let mediaRecovered = false;
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {
+          mediaRecovered = true;
+          hls.recoverMediaError();
+          return;
+        }
+        down(t);
+      });
+      hls.loadSource(src);
+      hls.attachMedia(v);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari / iOS: native HLS.
+      v.src = src;
+      v.addEventListener('error', () => down(t), { once: true });
+      v.play().catch(() => {});
+    } else {
+      setState(t, 'down');
+    }
+  }
+
+  function down(t) {
+    stop(t);
+    setState(t, 'down');
+    const wait = Math.min(RETRY_MAX_MS, 2000 * 2 ** t.retry++);
+    t.retryTimer = setTimeout(() => start(t), wait);
+  }
+
+  // Watchdog: a feed whose picture stops advancing is reconnected.
+  setInterval(() => {
+    const now = Date.now();
+    for (const t of tiles) {
+      if (t.el.dataset.state === 'down') continue;
+      if (now - t.lastProgress > STALL_SECONDS * 1000) down(t);
+    }
+  }, 5000);
+
+  // ---- audio: only one tile is heard at a time ----
+  function toggleAudio(t) {
+    const on = t.video.muted;
+    for (const o of tiles) { o.video.muted = true; o.el.classList.remove('unmuted'); }
+    if (on) {
+      t.video.muted = false;
+      t.video.volume = 1;
+      t.el.classList.add('unmuted');
+      t.video.play().catch(() => {});
+    }
+  }
+  function muteAll() {
+    for (const o of tiles) { o.video.muted = true; o.el.classList.remove('unmuted'); }
+  }
+
+  // ---- single view ----
+  function solo(t) {
+    const already = t.el.classList.contains('max');
+    exitSolo();
+    if (already) return;
+    t.el.classList.add('max');
+    wall.classList.add('solo');
+    if (t.video.muted) toggleAudio(t);
+  }
+  function exitSolo() {
+    wall.classList.remove('solo');
+    for (const o of tiles) o.el.classList.remove('max');
+  }
+
+  // ---- info panel ----
+  const clockEl = document.getElementById('clock');
+  const dateEl = document.getElementById('date');
+  const summaryEl = document.getElementById('summary');
+
+  function updateSummary() {
+    const live = tiles.filter((t) => t.el.dataset.state === 'live').length;
+    const downList = tiles.filter((t) => t.el.dataset.state === 'down').map((t) => `CH${pad(t.i + 1)}`);
+    summaryEl.innerHTML = `<b>${live}</b> / ${tiles.length} feeds live` +
+      (downList.length ? ` · <span class="bad">down: ${downList.join(', ')}</span>` : '');
+  }
+
+  function tick() {
+    const d = new Date();
+    const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    clockEl.textContent = hms;
+    dateEl.textContent = d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
+    for (const t of tiles) t.ts.textContent = stamp;
+  }
+
+  // ---- controls ----
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.().catch(() => {});
+  }
+  const fitBtn = document.getElementById('btn-fit');
+  function toggleFit() {
+    const cover = wall.classList.toggle('cover');
+    fitBtn.textContent = cover ? 'Fit tiles' : 'Fill tiles';
+    try { localStorage.setItem('glcwall.cover', cover ? '1' : '0'); } catch (_) {}
+  }
+  document.getElementById('btn-fs').addEventListener('click', toggleFullscreen);
+  fitBtn.addEventListener('click', toggleFit);
+  document.getElementById('btn-mute').addEventListener('click', muteAll);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('button')) return;
+    if (e.key === 'Escape') exitSolo();
+    else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    else if (e.key === 'm' || e.key === 'M') muteAll();
+    else if (/^[1-7]$/.test(e.key)) solo(tiles[Number(e.key) - 1]);
+  });
+
+  // A hidden tab keeps decoding seven feeds for nothing; a visible one resumes them.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    for (const t of tiles) {
+      t.lastProgress = Date.now();
+      t.video.play().catch(() => {});
+    }
+  });
+
+  // Tiles fill edge to edge by default; "Fit tiles" shows the whole picture instead.
+  try { if (localStorage.getItem('glcwall.cover') === '0') toggleFit(); } catch (_) {}
+  CHANNELS.forEach(makeTile);
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
