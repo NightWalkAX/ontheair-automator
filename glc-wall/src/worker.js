@@ -1,9 +1,9 @@
 // HTTPS proxy for the GLC HLS feeds.
 //
 // live.dreamtv.gy only answers on plain http (nothing listens on 443), and a page
-// served by Cloudflare Pages is https — the browser blocks an http playlist or
-// segment there as mixed content. So the wall asks /hls/<key>/<file> on its own
-// origin and this function fetches it upstream.
+// served by Cloudflare is https — the browser blocks an http playlist or segment
+// there as mixed content. So the wall asks /hls/<key>/<file> on its own origin and
+// this Worker fetches it upstream. Everything else is a static asset in public/.
 //
 // It is NOT an open proxy: only the seven channel keys and HLS file names pass.
 // Playlists use relative URIs, so segments come back through here too.
@@ -25,8 +25,19 @@ const TYPES = {
   mp4: 'video/mp4',
 };
 
-export async function onRequestGet({ params }) {
-  const { key, file } = params;
+const ROUTE = /^\/hls\/([^/]+)\/([^/]+)$/;
+
+export default {
+  async fetch(request) {
+    const m = new URL(request.url).pathname.match(ROUTE);
+    if (!m || (request.method !== 'GET' && request.method !== 'HEAD')) {
+      return new Response('Not found', { status: 404 });
+    }
+    return proxy(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+  },
+};
+
+async function proxy(key, file) {
   if (!KEYS.has(key) || !FILE.test(file)) {
     return new Response('Not found', { status: 404 });
   }

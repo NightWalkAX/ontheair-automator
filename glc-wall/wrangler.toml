@@ -1,3 +1,9 @@
 name = "glc-wall"
-pages_build_output_dir = "public"
+main = "src/worker.js"
 compatibility_date = "2026-09-01"
+
+# public/ is served as static assets; anything that isn't a file there
+# (the /hls/... proxy) falls through to the Worker.
+[assets]
+directory = "./public"
+not_found_handling = "none"
