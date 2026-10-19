@@ -160,6 +160,17 @@ function blockCard(b) {
   if (b.overlap_seconds) {
     badges.append(el('span', { className: 'badge bad', textContent: '⚠ overlap', title: 'Another block claims the same time — fix the templates' }));
   }
+  // Clips this kind of node has played badly before. A warning, not a verdict:
+  // the block still fits and can be approved.
+  if (b.faultyItems) {
+    badges.append(el('span', {
+      className: `badge ${b.faultyConfirmed ? 'bad' : 'warn'} fault`,
+      textContent: `⚠ ${b.faultyItems} may play badly`,
+      title: `${b.faultyItems} clip(s) in this block failed on air before`
+        + (b.faultyConfirmed ? ` (${b.faultyConfirmed} confirmed bad — placed by hand; the generator never picks those)` : ' (suspect — not judged yet)')
+        + '. Open the block to see which.',
+    }));
+  }
   card.append(badges);
   card.addEventListener('click', () => openBlock(b.id));
   card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBlock(b.id); } });

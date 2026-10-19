@@ -20,6 +20,7 @@ import { db, withTx } from '../db.js';
 import { parseEpisode, encodeChapter } from '../services/episodeParse.js';
 import { EPISODE_NO_CTE, withLabel } from '../services/labels.js';
 import { syncSiblings, syncShowType, siblingIds } from '../services/catalogSync.js';
+import { flagsByPath, playoutOf, setFlags, STATUSES as FAULT_STATUSES } from '../services/playbackFaults.js';
 
 export const router = Router();
 
@@ -89,6 +90,9 @@ router.get('/', (req, res) => {
     .all(channelId).map((x) => x.path);
 
   const marks = holidaysByFile();
+  // Whether each file plays badly on THIS channel's kind of node.
+  const playout = playoutOf(db.prepare('SELECT playout FROM ChannelType WHERE id = ?').get(channelId));
+  const faults = flagsByPath(playout);
 
   // Group into show_type → subject → [episodes].
   const groups = new Map();
@@ -109,10 +113,11 @@ router.get('/', (req, res) => {
       file_path: r.file_path, rel_dirs: relDirs(r.file_path, roots),
       show_type_id: r.show_type_id, show_type_name: r.show_type_name || 'Unassigned',
       holidays: marks[r.file_path] || [],
+      fault: faults.get(r.file_path) || null,
     });
   }
   const out = [...groups.values()].map((g) => ({ ...g, shows: [...g.shows.values()] }));
-  res.json({ channel_id: channelId, groups: out });
+  res.json({ channel_id: channelId, playout, groups: out });
 });
 
 // PUT /api/catalog/resource/:id { display_name?, subject?, chapter? }
@@ -155,6 +160,8 @@ router.put('/resource/:id', (req, res) => {
 //   find-replace    { field, find, replace } string replace on display_name|subject
 //   template        { template }           display_name = tokens {name}{subject}{chapter}{n}
 //   set-holidays    { holiday_ids, mode }  seasonal marks per FILE; mode set|add|remove
+//   set-playback    { status }             plays-badly mark per FILE and kind of node
+//                                          (suspect|confirmed|dismissed|clear)
 router.post('/bulk', (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
   const op = String(req.body?.op || '');
@@ -167,7 +174,7 @@ router.post('/bulk', (req, res) => {
     // set-approved is a pure availability flag — it doesn't touch the
     // organization fields, so don't snapshot an override (would falsely badge
     // the clip as "edited").
-    if (op !== 'set-approved' && op !== 'set-holidays') for (const id of ids) ensureOverride(id);
+    if (op !== 'set-approved' && op !== 'set-holidays' && op !== 'set-playback') for (const id of ids) ensureOverride(id);
     switch (op) {
       case 'set-subject': {
         const subject = req.body.subject || null;
@@ -303,6 +310,23 @@ router.post('/bulk', (req, res) => {
         const holidayIds = Array.isArray(req.body.holiday_ids) ? req.body.holiday_ids : [];
         const paths = ids.map((id) => rowFor.get(id)?.file_path).filter(Boolean);
         setFileHolidays(paths, holidayIds, mode);
+        break;
+      }
+      case 'set-playback': {
+        // Per file and kind of node (services/playbackFaults.js): marking a
+        // clip on an OTAV channel's catalogue marks it on all six OTAVs, and
+        // on the analog channel's only there. No sibling sync needed.
+        const status = String(req.body.status || '');
+        if (status !== 'clear' && !FAULT_STATUSES.includes(status)) throw Object.assign(new Error('unknown status'), { status: 400 });
+        const byPlayout = new Map();
+        for (const id of ids) {
+          const r = db.prepare('SELECT r.file_path, c.playout FROM Resource r LEFT JOIN ChannelType c ON c.id = r.channel_id WHERE r.id = ?').get(id);
+          if (!r) continue;
+          const k = playoutOf(r);
+          if (!byPlayout.has(k)) byPlayout.set(k, []);
+          byPlayout.get(k).push(r.file_path);
+        }
+        for (const [k, paths] of byPlayout) setFlags(paths, k, status, status === 'clear' ? undefined : 'marked by hand');
         break;
       }
       case 'set-approved': {

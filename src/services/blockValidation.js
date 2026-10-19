@@ -67,13 +67,18 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
     WHERE si.block_id = ? ORDER BY si.play_order
   `).all(blockId) : db.prepare(`
     WITH ${EPISODE_NO_BLOCK_CTE}
-    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
-           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter, r.file_path,
+           en.episode_no, ov.display_name AS display_name, st.code AS show_type_code,
+           pf.status AS fault_status, pf.faults AS fault_count, pf.last_kind AS fault_kind
     FROM ScheduleItem si
     JOIN Resource r ON r.id = si.resource_id
     LEFT JOIN EpisodeNo en ON en.id = r.id
     LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
     LEFT JOIN ShowType st ON st.id = r.show_type_id
+    -- A clip seen playing badly on this kind of node: a warning, never a gate.
+    LEFT JOIN ChannelType rc ON rc.id = r.channel_id
+    LEFT JOIN PlaybackFlag pf ON pf.file_path = r.file_path AND pf.playout = COALESCE(rc.playout, 'otav')
+      AND pf.status != 'dismissed'
     WHERE si.block_id = ? ORDER BY si.play_order
   `).all(blockId, blockId).map(withLabel);
 
@@ -120,6 +125,8 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
     overrideReason: block.override_reason ?? null,
     overrideAt: block.override_at ?? null,
     approvable: fits || overridden,
+    // Clips that played badly before (warning only — see services/playbackFaults.js).
+    faultyItems: items.filter((i) => i.fault_status).length,
     slotSeconds,
     startShift: win?.start_shift ?? 0,
     endShift: win?.end_shift ?? 0,

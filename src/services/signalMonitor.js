@@ -55,6 +55,7 @@ import { sendMail, emailProblem, emailConfig } from './mailer.js';
 import { OtavClient } from './otavClient.js';
 import { AnalogClient, isConfigured as analogConfigured } from './analogClient.js';
 import { alertRecipients, rosterConfig } from './shiftRoster.js';
+import { attributeIncident } from './playbackFaults.js';
 
 const L = log('monitor');
 
@@ -546,6 +547,8 @@ async function resyncThenDecide(ev, cfg) {
   const inc = ev.incident;
   inc.held = true;
   lastResyncAt.set(ev.source.channelId, Date.now());
+  // Ask what was playing first: after the resync the node is on another clip.
+  await ev.blamed;
   const at = localTime(new Date().toISOString());
   try {
     // OtavClient bounds each request at 10s; no extra timeout needed here.
@@ -573,6 +576,16 @@ async function resyncThenDecide(ev, cfg) {
   timer.unref?.();
   heldTimers.add(timer);
   return undefined;
+}
+
+/** Mark the clip that was on air when the incident began (never throws, ≤ 8s). */
+async function blameClip(ev) {
+  if (!ev.incident.eventId || !ev.source.channelId || !['black', 'frozen', 'silent'].includes(ev.kind)) return;
+  const r = await withTimeout(attributeIncident(ev.source.channelId, { ...ev.incident, kind: ev.kind }), 8_000,
+    { skipped: 'the node did not answer in time' });
+  if (!r.label) return;
+  ev.culprit = r.label;
+  db.prepare('UPDATE SignalEvent SET culprit = ? WHERE id = ?').run(r.label, ev.incident.eventId);
 }
 
 async function alertNow(ev) {
@@ -618,10 +631,12 @@ export function composeMail(events, routingNote = null) {
     : `[Signal ${tag}] ${events.length} changes: ${[...new Set(events.map((e) => e.source.name))].join(', ')}`;
   const rows = events.map((e) => ({
     line: describeEvent(e), onAir: e.onAir, url: e.source.url, type: e.type,
+    culprit: e.type === 'open' ? e.culprit || null : null,
     resync: e.type !== 'close' ? e.incident.resync || e.resyncSkipped || null : null,
   }));
   const text = [
     ...rows.map((r) => [`• ${r.line}`, r.resync ? `  ${r.resync}` : null,
+      r.culprit ? `  Playing when it started: ${r.culprit} — marked as a suspect clip` : null,
       r.onAir ? `  On air: ${r.onAir}` : null, `  Feed: ${r.url}`]
       .filter(Boolean).join('\n')),
     '',
@@ -631,7 +646,7 @@ export function composeMail(events, routingNote = null) {
   const color = { open: '#dc2626', remind: '#d97706', close: '#16a34a' };
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px">
 ${rows.map((r) => `<p style="margin:0 0 12px;padding:8px 12px;border-left:4px solid ${color[r.type]}">
-<strong>${escapeHtml(r.line)}</strong>${r.resync ? `<br>${escapeHtml(r.resync)}` : ''}${r.onAir ? `<br>On air: ${escapeHtml(r.onAir)}` : ''}
+<strong>${escapeHtml(r.line)}</strong>${r.resync ? `<br>${escapeHtml(r.resync)}` : ''}${r.culprit ? `<br>Playing when it started: ${escapeHtml(r.culprit)} — marked as a suspect clip` : ''}${r.onAir ? `<br>On air: ${escapeHtml(r.onAir)}` : ''}
 <br><span style="color:#666;font-size:12px">${escapeHtml(r.url)}</span></p>`).join('\n')}
 ${routingNote ? `<p style="color:#666;font-size:12px">${escapeHtml(routingNote)}</p>` : ''}
 <p style="color:#888;font-size:12px">Sent by the OTAV automator signal monitor.</p></div>`;
@@ -688,10 +703,16 @@ async function handleEvent(ev) {
       // The row first, synchronously: a close that arrives while OTAV is still
       // being asked anything must find it.
       recordOpen(ev, null);
+      // Which clip was playing when the picture went (playbackFaults.js). Started
+      // now, awaited before the resync — which makes the node jump to another
+      // clip — but NOT before the incident is held: a close arriving meanwhile
+      // must find it held, exactly as it did before this existed.
+      ev.blamed = blameClip(ev);
       const cfg = monitorConfig();
       const plan = resyncPlan(ev, cfg);
       if (plan.try) return await resyncThenDecide(ev, cfg);
       if (plan.why) { ev.resyncSkipped = plan.why; recordResync(inc, plan.why); }
+      await ev.blamed;
       return await alertNow(ev);
     }
     if (ev.type === 'close') {

@@ -697,6 +697,56 @@ function analogSchema() {
   `);
   // A file rolled back to its uncapped self: never capped again until re-enabled.
   addColumnIfMissing('AnalogFile', 'no_cap', 'INTEGER NOT NULL DEFAULT 0');
+  playbackFaultSchema();
+}
+
+// Clips that played badly on a node (src/services/playbackFaults.js). A FAULT is
+// one observation — the signal monitor saw black/frozen/silence and asked the
+// node what was playing at that moment, the analog as-run logged a failed
+// event, or analog-automator had to recover its player. A FLAG is the decision
+// about the file on one kind of node, keyed by file_path like every other
+// decision about a file: OTAV channels all play the same master, so one flag
+// covers the six of them; the analog channel plays its own device copy, so it
+// has its own. status: suspect (seen failing, not judged yet) | confirmed (the
+// generator stops choosing it) | dismissed (not the file's fault — stays
+// dismissed whatever happens next, so a film with a black intro stops being
+// flagged on every airing).
+function playbackFaultSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS PlaybackFault (
+      id              INTEGER PRIMARY KEY,
+      file_path       TEXT NOT NULL,           -- catalogue path, or 'vol1:<name>' for a device file the catalogue doesn't know
+      playout         TEXT NOT NULL,           -- 'otav' | 'analog'
+      channel_id      INTEGER,
+      source          TEXT NOT NULL,           -- monitor | asrun | recovery
+      kind            TEXT NOT NULL,           -- black | frozen | silent | stopped | asrun result …
+      occurred_at     TEXT NOT NULL,           -- when it went wrong ON THE NODE (feed delay taken off)
+      offset_seconds  REAL,                    -- how far into the clip
+      confidence      TEXT NOT NULL DEFAULT 'exact', -- exact | boundary | uncertain
+      detail          TEXT,
+      clip_name       TEXT,                    -- what the node called it
+      signal_event_id INTEGER,
+      ext_key         TEXT UNIQUE,             -- de-duplicates log rows read more than once
+      discarded       INTEGER NOT NULL DEFAULT 0, -- 1 = not the clip (several channels failed at once)
+      recorded_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_playbackfault_file ON PlaybackFault(file_path, playout);
+    CREATE INDEX IF NOT EXISTS idx_playbackfault_at ON PlaybackFault(occurred_at);
+    CREATE TABLE IF NOT EXISTS PlaybackFlag (
+      file_path       TEXT NOT NULL,
+      playout         TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'suspect', -- suspect | confirmed | dismissed
+      faults          INTEGER NOT NULL DEFAULT 0,      -- counted faults (not discarded)
+      first_at        TEXT,
+      last_at         TEXT,
+      last_kind       TEXT,
+      last_channel_id INTEGER,
+      note            TEXT,
+      decided_at      TEXT,                            -- set when the operator chose the status
+      PRIMARY KEY (file_path, playout)
+    );
+  `);
+  addColumnIfMissing('SignalEvent', 'culprit', 'TEXT');
 }
 
 /**

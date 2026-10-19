@@ -18,6 +18,7 @@ export function startFakeOtav({
   onAirUrl = null,            // media path of the clip on air (state.onAirUrl is settable mid-test)
   startTimes = {},            // clip unique_id -> seconds into the day, for /start_times
   keepClipUrl = false,        // accept a PUT of "url" but keep the old value (a liar)
+  playing = null,             // GET /playback/playing body (item_path, item_elapsed…); settable as state.playing
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -26,7 +27,7 @@ export function startFakeOtav({
   const state = {
     received: [], cleared: 0, resynced: 0, authorized: 0,
     playlists: new Map(), scheduled: [...scheduled], opened: [],
-    onAirUrl,
+    onAirUrl, playing,
   };
 
   const server = createServer((req, res) => {
@@ -138,6 +139,10 @@ export function startFakeOtav({
       }
       // Nothing on air answers 404, which is what the integrator treats as
       // "no clip to protect".
+      // The generic playback status: the item fields appear only while playing.
+      if (req.method === 'GET' && path === '/playback/playing') {
+        return send(200, state.playing ? { is_playing: true, ...state.playing } : { is_playing: false });
+      }
       if (req.method === 'GET' && path === '/playback/current_item') {
         if (!state.onAirUrl) return send(404, { success: false, error: 'nothing is playing' });
         return send(200, { unique_id: 'on-air', clip_type: 0, url: state.onAirUrl });

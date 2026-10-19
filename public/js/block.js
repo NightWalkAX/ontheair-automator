@@ -28,6 +28,7 @@ const resourceToItem = (r) => ({
   resource_id: r.id, name: r.name, label: r.label, subject: r.subject,
   season: r.season, episode_no: r.episode_no, episode_code: r.episode_code,
   chapter: r.chapter, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1,
+  fault_status: r.fault_status, fault_count: r.fault_count,
 });
 
 // The library list as currently filtered — the order stride-select works on.
@@ -194,6 +195,23 @@ function clockAt(baseHHMM, offsetSecs) {
   return `${String(Math.floor(t / 3600)).padStart(2, '0')}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
 }
 
+// A clip this kind of node played badly before (services/playbackFaults.js).
+// Suspect = seen failing, not judged; confirmed = the generator never picks it,
+// so here it can only have been placed by hand. Judged in the Signal Monitor tab.
+export function faultBadge(r) {
+  if (!r?.fault_status) return null;
+  const confirmed = r.fault_status === 'confirmed';
+  const n = Number(r.fault_count) || 0;
+  return el('span', {
+    className: `badge ${confirmed ? 'bad' : 'warn'} fault`,
+    textContent: confirmed ? '⛔ plays badly' : `⚠ suspect${n > 1 ? ` ×${n}` : ''}`,
+    title: confirmed
+      ? 'Confirmed: this clip plays badly on this kind of node. The generator never picks it; it is here because it was placed by hand.'
+      : `Failed on air ${n || 'before'}${n ? ` time(s)` : ''}${r.fault_kind ? ` (last: ${r.fault_kind})` : ''} — not judged yet. `
+        + 'Confirm or dismiss it under Signal Monitor → Clips that played badly.',
+  });
+}
+
 function renderItems() {
   const list = $('#itemList');
   list.innerHTML = '';
@@ -217,6 +235,8 @@ function renderItems() {
       textContent: `${label}${it.is_manual_override ? ' *' : ''}`,
       title: it.name,
     }));
+    const fault = faultBadge(it);
+    if (fault) { li.append(fault); li.classList.add('faulty'); }
     // Per-item episode corrector for ORDERED items: pick another chapter of the
     // same show. The backend swaps the item, sets the series cursor, and
     // regenerates later still-draft blocks this week so ordering follows.
@@ -369,6 +389,15 @@ function renderValidation() {
     : `${overridden ? 'FORCED — ' : ''}${problems.join(' · ')}`;
   if (overridden && currentBlock.overrideReason) {
     box.append(el('div', { className: 'validation-note', textContent: `Forced: ${currentBlock.overrideReason}` }));
+  }
+  // Not a rule: a clip that failed on air before is a warning the operator
+  // weighs. Approval is unaffected.
+  const faulty = currentItems.filter((i) => i.fault_status);
+  if (faulty.length) {
+    const bad = faulty.filter((i) => i.fault_status === 'confirmed').length;
+    box.append(el('div', { className: 'validation-note fault-note', textContent:
+      `⚠ ${faulty.length} clip(s) here played badly on air before${bad ? ` — ${bad} confirmed` : ''}. `
+      + 'Swap them if you can; marks are judged under Signal Monitor → Clips that played badly.' }));
   }
 
   // Mark the offending clips so the operator sees WHERE to cut, not just that
@@ -556,6 +585,8 @@ function renderLibrary() {
     li.append(cb);
     li.append(el('span', { className: 'idx', textContent: String(idx + 1) }));
     li.append(el('span', { className: 'grow', textContent: r.label || r.name, title: r.name }));
+    const fault = faultBadge(r);
+    if (fault) li.append(fault);
     li.append(el('span', { className: 'dur', textContent: fmt(r.duration) }));
     const add = el('button', { className: 'mini ghost', textContent: '→', title: 'Append to the block' });
     add.onclick = () => { currentItems.push(resourceToItem(r)); renderItems(); };

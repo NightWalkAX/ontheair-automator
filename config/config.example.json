@@ -124,6 +124,15 @@
     "repeatMinutes": 30,
     "batchSeconds": 15
   },
+  "faults": {
+    "enabled": true,
+    "feedDelaySeconds": 35,
+    "boundarySeconds": 10,
+    "correlatedFeeds": 3,
+    "correlatedWindowSeconds": 60,
+    "analogAsrunOk": "^(ok|played|complete|normal|success)",
+    "analogSyncMinutes": 10
+  },
   "email": {
     "user": "",
     "appPassword": "",

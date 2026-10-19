@@ -343,6 +343,12 @@ test('still black after the resync window: the alert goes out and says what was 
     assert.match(mail.text, /Stuck Feed: BLACK since/);
     assert.match(mail.text, /OTAV resync sent at .* did not come back within 1s/);
     assert.match(mail.text, /On air: \/Volumes\/Public\/film\.mov/);
+    // The clip playing when it began is blamed, and marked as a suspect.
+    assert.match(mail.text, /Playing when it started: .*film\.mov.* — marked as a suspect clip/);
+    const ev = db.prepare("SELECT * FROM SignalEvent WHERE source_id = 'stuck-feed' ORDER BY id DESC").get();
+    assert.match(ev.culprit, /film\.mov/);
+    const flag = db.prepare("SELECT * FROM PlaybackFlag WHERE file_path = '/Volumes/Public/film.mov' AND playout = 'otav'").get();
+    assert.equal(flag?.status, 'suspect');
     const status = (await call('GET', '/status')).body;
     assert.equal(status.sources[0].state, 'black');
   } finally {

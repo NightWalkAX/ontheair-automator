@@ -421,7 +421,22 @@
 
     <div class="panel" style="margin-top:22px">
       <h3>🕘 Recent incidents</h3>
-      <table id="monEventsTable"><thead><tr><th>Feed</th><th>What</th><th>From</th><th>To</th><th>Lasted</th><th>Resync</th><th>On air</th><th>E-mail</th></tr></thead><tbody></tbody></table>
+      <table id="monEventsTable"><thead><tr><th>Feed</th><th>What</th><th>From</th><th>To</th><th>Lasted</th><th>Resync</th><th>Clip</th><th>E-mail</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <h3>🎞 Clips that played badly <span class="spacer"></span>
+        <select id="faultStatus" title="Which marks to show">
+          <option value="">All marks</option><option value="suspect">Suspect</option>
+          <option value="confirmed">Plays badly</option><option value="dismissed">Not the clip</option>
+        </select>
+        <select id="faultNode" title="Which kind of node">
+          <option value="">OTAV + analog</option><option value="otav">OTAV</option><option value="analog">Analog</option>
+        </select>
+        <button type="button" class="mini ghost" id="faultSyncAnalog" title="Read the analog device's as-run log and player recoveries now (done every 10 minutes anyway)">Read analog logs</button>
+      </h3>
+      <p class="muted" style="margin-top:0">When a feed linked to a channel goes black, freezes or goes silent, the app asks that channel's node what was playing <em>when it started</em> (the public feed runs about 35s behind) and marks that clip as a <strong>suspect</strong>. The analog device's failed events and player recoveries are marked the same way. No signal at all, or several channels failing at once, is not blamed on a clip. A suspect is still scheduled, with ⚠ in the catalogue and the block editor; <strong>Plays badly</strong> stops the generator from choosing it. One mark covers all six OTAV channels (they play the same file); the analog channel has its own, since it plays its own copy.</p>
+      <table id="faultTable"><thead><tr><th>Clip</th><th>Node</th><th>Mark</th><th>Failures</th><th>Last</th><th>Next airing</th><th></th></tr></thead><tbody></tbody></table>
     </div>
   </section>
 

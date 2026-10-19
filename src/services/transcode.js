@@ -34,6 +34,7 @@ import { log as fileLog, progressLogger } from '../logger.js';
 import { loadConfig, updateConfig, localizePath, delocalizePath } from '../config.js';
 import { repointExportedDays } from './otavClient.js';
 import { localDate } from '../dates.js';
+import { moveFlags } from './playbackFaults.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -891,6 +892,8 @@ function pointCatalogue(item, finalCanonical) {
   db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(finalCanonical, item.file_path);
   // So does its name on the analog device: the copy there is still this programme.
   db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(finalCanonical, item.file_path);
+  // And whether it plays badly — re-opened as a suspect, since the re-encode may have fixed it.
+  moveFlags(item.file_path, finalCanonical, { reencoded: true });
   return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
     .run(finalCanonical, Math.round(item.out_duration || item.src_duration || 0), item.file_path).changes;
 }
@@ -1374,6 +1377,7 @@ function exportedOtavDays(filePath) {
 function unpointCatalogue(item, original) {
   db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(original, item.file_path);
   db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(original, item.file_path);
+  moveFlags(item.file_path, original);
   const dur = Math.round(item.src_duration || item.out_duration || 0);
   return db.prepare('UPDATE Resource SET file_path = ?, duration = ? WHERE file_path = ?')
     .run(original, dur, item.file_path).changes;

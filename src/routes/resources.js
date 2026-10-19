@@ -13,11 +13,16 @@ export const router = Router();
 // caller has to render the internal `chapter` number at an operator.
 const SELECT_WITH_LABEL = `
   WITH ${EPISODE_NO_CTE}
-  SELECT r.*, en.episode_no, ov.display_name AS display_name, st.code AS show_type_code
+  SELECT r.*, en.episode_no, ov.display_name AS display_name, st.code AS show_type_code,
+         pf.status AS fault_status, pf.faults AS fault_count
   FROM Resource r
   LEFT JOIN EpisodeNo en ON en.id = r.id
   LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
   LEFT JOIN ShowType st ON st.id = r.show_type_id
+  -- Plays badly on this row's kind of node? (services/playbackFaults.js)
+  LEFT JOIN ChannelType rc ON rc.id = r.channel_id
+  LEFT JOIN PlaybackFlag pf ON pf.file_path = r.file_path AND pf.playout = COALESCE(rc.playout, 'otav')
+    AND pf.status != 'dismissed'
 `;
 
 // GET /api/resources?channel_id=&subject=&is_filler=

@@ -538,6 +538,11 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 #itemList li.overfill, #itemList li.offtype { background: var(--bad-soft); }
 #itemList li.overfill { box-shadow: inset 3px 0 0 var(--bad); }
 #itemList li.offtype { box-shadow: inset 3px 0 0 var(--bad); outline: 1px dashed var(--bad); }
+/* A clip that played badly on air before: a warning stripe, not an error. */
+#itemList li.faulty { box-shadow: inset 3px 0 0 var(--warn); }
+.badge.fault { white-space: nowrap; }
+.validation-note.fault-note { color: var(--warn); }
+.cat-fault-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .modal-actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);

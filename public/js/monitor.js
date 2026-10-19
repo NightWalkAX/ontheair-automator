@@ -1,4 +1,4 @@
-import { $, $$, api, el, fmt, toast, withBusy } from './core.js';
+import { $, $$, api, el, fmt, invalidateResources, reportDialog, toast, withBusy } from './core.js';
 
 // ---- Signal Monitor ----------------------------------------------------------
 // The feeds are watched on the server whether or not this tab is open; the tab
@@ -107,7 +107,10 @@ function renderMonEvents(events) {
       el('td', { textContent: e.ended_at ? monTime(e.ended_at) : 'still going' }),
       el('td', { textContent: lasted + (e.note ? ` (${e.note})` : '') }),
       el('td', { className: 'muted', textContent: e.resync || '' }),
-      el('td', { className: 'path-cell', textContent: e.on_air || '' }),
+      // The clip blamed (what was playing when it began) first; what was on air
+      // at alert time can be a later clip, after the resync.
+      el('td', { className: 'path-cell', textContent: e.culprit ? `was playing: ${e.culprit}` : e.on_air || '',
+        title: [e.culprit && `Playing when it began: ${e.culprit}`, e.on_air && `On air at alert time: ${e.on_air}`].filter(Boolean).join('\n') }),
       el('td', { className: e.email_error ? 'tx-err' : 'muted', textContent: e.email_error || (e.emailed ? `sent ×${e.emailed}` : '') }),
     );
     tb.append(tr);
@@ -143,8 +146,84 @@ async function refreshMonitor() {
   } catch { /* the next poll will try again */ }
 }
 
+// ---- Clips that played badly (services/playbackFaults.js) ---------------------
+const FAULT_MARK = {
+  suspect: ['warn', '⚠ suspect'], confirmed: ['bad', '⛔ plays badly'], dismissed: ['', 'not the clip'],
+};
+const FAULT_NODE = { otav: 'OTAV', analog: 'Analog' };
+const FAULT_CONF = { exact: '', boundary: ' · near a clip change', uncertain: ' · position unknown' };
+
+async function loadFaults() {
+  const q = new URLSearchParams();
+  if ($('#faultStatus').value) q.set('status', $('#faultStatus').value);
+  if ($('#faultNode').value) q.set('playout', $('#faultNode').value);
+  const { flags } = await api.get(`/api/faults?${q}`);
+  const tb = $('#faultTable tbody');
+  tb.innerHTML = '';
+  if (!flags.length) {
+    tb.append(el('tr', {}, el('td', { colSpan: 7, className: 'muted', textContent: 'No clip has been marked.' })));
+    return;
+  }
+  for (const f of flags) {
+    const device = f.file_path.startsWith('vol1:');
+    const name = f.display_name || f.name || f.file_path.replace(/^vol1:/, '').split('/').pop();
+    const [cls, label] = FAULT_MARK[f.status] || ['', f.status];
+    const set = (status) => withBusy(null, async () => {
+      await api.send('PUT', '/api/faults', { paths: [f.file_path], playout: f.playout, status });
+      invalidateResources();
+      await loadFaults();
+    });
+    const act = (text, status, title, danger = false) => {
+      const b = el('button', { type: 'button', className: `mini ${danger ? 'danger' : 'ghost'}`, textContent: text, title });
+      b.onclick = () => set(status);
+      return b;
+    };
+    const history = el('button', { type: 'button', className: 'mini ghost', textContent: 'History', title: 'Every failure recorded for this clip' });
+    history.onclick = () => withBusy(history, async () => {
+      const { faults } = await api.get(`/api/faults/file?path=${encodeURIComponent(f.file_path)}&playout=${f.playout}`);
+      reportDialog(`${name} — ${FAULT_NODE[f.playout]}`, faults.map((x) => ({
+        name: `${monTime(x.occurred_at)} · ${x.channel || 'channel'} · ${x.kind}`,
+        ok: !!x.discarded,
+        detail: [x.offset_seconds != null ? `${fmt(x.offset_seconds)} into the clip` : null,
+          FAULT_CONF[x.confidence]?.replace(' · ', ''), x.source !== 'monitor' ? `from the ${x.source === 'asrun' ? 'as-run log' : 'player recovery log'}` : null,
+          x.detail].filter(Boolean).join(' · '),
+      })));
+    });
+    const actions = el('div', { className: 'cat-fault-actions' });
+    if (f.status !== 'confirmed') actions.append(act('⛔ Plays badly', 'confirmed', 'Confirm: the generator stops choosing it', true));
+    if (f.status !== 'dismissed') actions.append(act('Not the clip', 'dismissed', 'It failed for another reason — stop warning about it'));
+    if (f.status !== 'suspect') actions.append(act('Suspect', 'suspect', 'Back to suspect: warn, keep scheduling'));
+    actions.append(act('Clear', 'clear', 'Remove the mark (the history stays)'), history);
+    const up = f.upcoming || {};
+    tb.append(el('tr', {},
+      el('td', { className: 'path-cell', title: f.file_path },
+        el('strong', { textContent: name }),
+        el('div', { className: 'muted', textContent: device ? 'file on the analog device, not in the catalogue'
+          : f.catalogued ? (f.subject || '') : 'not in the catalogue' })),
+      el('td', { textContent: FAULT_NODE[f.playout] || f.playout }),
+      el('td', {}, el('span', { className: `badge ${cls}`, textContent: label, title: f.note || '' })),
+      el('td', { textContent: String(f.faults) }),
+      el('td', { textContent: f.last_at ? `${monTime(f.last_at)}${f.last_kind ? ` · ${f.last_kind}` : ''}${f.last_channel ? ` · ${f.last_channel}` : ''}` : '—' }),
+      el('td', { textContent: up.n ? `${up.next_date}${up.n > 1 ? ` (+${up.n - 1} more)` : ''}` : '—',
+        title: up.n ? `Scheduled ${up.n} time(s) from today on` : 'Not scheduled from today on' }),
+      el('td', {}, actions),
+    ));
+  }
+}
+$('#faultStatus').addEventListener('change', () => loadFaults().catch((e) => toast(e.message, 'bad')));
+$('#faultNode').addEventListener('change', () => loadFaults().catch((e) => toast(e.message, 'bad')));
+$('#faultSyncAnalog').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const r = await api.send('POST', '/api/faults/sync-analog');
+  if (!r.ok) return toast(r.skipped || 'Not read', 'bad', 'Analog logs');
+  toast(`${r.asrun} failed event(s), ${r.recoveries} recover(ies) recorded`
+    + (r.skippedDays?.length ? ` · ${r.skippedDays.join(', ')} not read (unknown results)` : '')
+    + (r.errors?.length ? ` · ${r.errors.join('; ')}` : ''), r.errors?.length ? 'bad' : 'ok', 'Analog logs');
+  await loadFaults();
+}));
+
 export async function loadMonitorTab() {
   try { monChannels = await api.get('/api/channels'); } catch { monChannels = []; }
+  loadFaults().catch(() => {});
   const { monitor, email } = await api.get('/api/monitor/config');
   monFeeds = monitor.sources.map((s) => ({ ...s }));
   renderMonFeeds();

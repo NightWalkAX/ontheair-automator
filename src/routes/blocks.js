@@ -496,6 +496,22 @@ router.get('/', (req, res) => {
     GROUP BY si.block_id
   `).all(...params)) offType.set(t.block_id, t.n || 0);
 
+  // Clips that played badly before on this kind of node (PlaybackFlag): a
+  // warning on the card, never part of `fits`. Same grouped shape as above.
+  const faulty = new Map();
+  for (const t of db.prepare(`
+    SELECT si.block_id, COUNT(*) AS n, SUM(pf.status = 'confirmed') AS confirmed
+    FROM ScheduleItem    si
+    JOIN ScheduledBlock  sb ON sb.id = si.block_id
+    JOIN BlockTemplate   bt ON bt.id = sb.template_id
+    JOIN Resource        r  ON r.id  = si.resource_id
+    JOIN ChannelType     bc ON bc.id = COALESCE(sb.channel_id, bt.channel_id)
+    JOIN PlaybackFlag    pf ON pf.file_path = r.file_path AND pf.playout = COALESCE(bc.playout, 'otav')
+      AND pf.status != 'dismissed'
+    WHERE ${clauses.join(' AND ')}
+    GROUP BY si.block_id
+  `).all(...params)) faulty.set(t.block_id, t);
+
   // Shifted windows come from the neighbours, and every neighbour of a block is
   // on the same channel-day — already in `rows`, whatever the channel filter.
   linkShifts(rows);
@@ -517,6 +533,8 @@ router.get('/', (req, res) => {
       fits,
       overridden: !!r.override_reason,
       approvable: fits || !!r.override_reason,
+      faultyItems: faulty.get(r.id)?.n || 0,
+      faultyConfirmed: faulty.get(r.id)?.confirmed || 0,
     };
   });
   res.json({ week: dates, blocks });

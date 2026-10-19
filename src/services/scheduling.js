@@ -31,6 +31,19 @@ export const MOVIES_CODE = 'movies';
 export const ON_DISK_SQL = `NOT EXISTS (SELECT 1 FROM TranscodeItem ti
   WHERE ti.file_path = r.file_path AND ti.status = 'missing')`;
 
+// --- Clips that play badly -----------------------------------------------------
+// A file the operator CONFIRMED plays badly on this kind of node (PlaybackFlag,
+// services/playbackFaults.js) is never chosen: a serial skips that episode until
+// the mark is cleared. Per node kind, because the analog channel airs its own
+// device copy — a copy the device chokes on says nothing about the master the
+// six OTAVs play. A mere suspect is still chosen; the UI shows it with ⚠.
+export const PLAYS_WELL_SQL = `NOT EXISTS (SELECT 1 FROM PlaybackFlag pf
+  WHERE pf.file_path = r.file_path AND pf.status = 'confirmed'
+    AND pf.playout = (SELECT COALESCE(pc.playout, 'otav') FROM ChannelType pc WHERE pc.id = r.channel_id))`;
+
+/** What the engine may pick: on disk and not confirmed bad. */
+export const AIRABLE_SQL = `${ON_DISK_SQL} AND ${PLAYS_WELL_SQL}`;
+
 // --- Fit tolerance (shared truth for the engine, the API and the UI) ---------
 // A block's `diff` is blockSeconds - totalSeconds: positive = underrun (dead
 // air at the end), negative = overrun (the block runs past its slot).
@@ -377,7 +390,7 @@ function ruleFor(showCode, isSerial) {
  * and capped at maxDuration so a single main item can never overrun the slot.
  */
 function candidates(channelId, subject, maxDuration, showCode = null, date = null) {
-  const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
+  const clauses = ['r.channel_id = ?', 'r.is_filler = 0', 'r.approved = 1', AIRABLE_SQL];
   // Seasonal films air only in their season (services/holidays.js).
   const hol = date ? holidaySql(date) : null;
   if (hol) clauses.push(hol.allowed);
@@ -419,7 +432,7 @@ function serialIterator(channelId, subject, block, showCode = null) {
  * something else contributes nothing rather than contributing the wrong thing.
  */
 function seriesParts(channelId, subject, showCode = null, date = null) {
-  const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1', ON_DISK_SQL];
+  const clauses = ['r.channel_id = ?', 'r.subject = ?', 'r.is_filler = 0', 'r.approved = 1', AIRABLE_SQL];
   if (date) clauses.push(holidaySql(date).allowed); // a Christmas saga waits for Christmas
   const params = [channelId, subject];
   if (showCode) { clauses.push('st.code = ?'); params.push(showCode); }
@@ -483,7 +496,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
       SELECT r.*, ${hol.inSeason} AS in_season FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = 'movies' AND ${ON_DISK_SQL} AND ${hol.allowed}
+        AND st.code = 'movies' AND ${AIRABLE_SQL} AND ${hol.allowed}
     `).all(channelId, blockSecs);
   } else {
     if (!scope.length) return [];
@@ -495,7 +508,7 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
       SELECT r.*, ${hol.inSeason} AS in_season FROM Resource r
       JOIN ShowType st ON st.id = r.show_type_id
       WHERE r.channel_id = ? AND r.is_filler = 0 AND r.approved = 1 AND r.duration <= ?
-        AND st.code = ? AND r.subject IN (${marks}) AND ${ON_DISK_SQL} AND ${hol.allowed}
+        AND st.code = ? AND r.subject IN (${marks}) AND ${AIRABLE_SQL} AND ${hol.allowed}
     `).all(channelId, blockSecs, MOVIES_CODE, ...scope);
   }
   if (!all.length) return [];
@@ -912,7 +925,7 @@ export function pickMainContent(template, block, blockSecs) {
  */
 export function makeFillerPacker(channelId) {
   const fillers = db.prepare(
-    `SELECT r.* FROM Resource r WHERE r.channel_id = ? AND r.is_filler = 1 AND r.approved = 1 AND ${ON_DISK_SQL}`
+    `SELECT r.* FROM Resource r WHERE r.channel_id = ? AND r.is_filler = 1 AND r.approved = 1 AND ${AIRABLE_SQL}`
   ).all(channelId);
 
   const byDur = new Map();

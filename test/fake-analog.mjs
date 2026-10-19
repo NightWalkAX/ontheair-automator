@@ -16,6 +16,9 @@ export function startFakeAnalog({
   contents = {},         // filename -> Buffer, served by GET /storage/files/<name>/content
   free = 20e9,           // bytes free on Vol1
   cutAfter = {},         // filename -> bytes after which the first download is cut short
+  live = { player: { filename: 'Arthur_S02E201.mpg', position: '00:01:02:03' } }, // GET /playback/live
+  asrun = {},            // 'YYYY-MM-DD' -> as-run rows for that day
+  recoverLog = [],       // GET /playback/recover/log entries
 } = {}) {
   const lib = library.map((r) => ({ type: 'video', folder_id: 5, volume: 'Vol1', ...r }));
   const state = {
@@ -36,6 +39,7 @@ export function startFakeAnalog({
     downloads: [],        // { filename, offset }
     free,
     cutAfter: { ...cutAfter },
+    live, asrun: { ...asrun }, recoverLog: [...recoverLog],
   };
   const sizeOf = (f) => state.contents[f]?.length ?? 1048576;
   const out = (r) => ({ ...r, length: `${r.length_s}s` });
@@ -145,10 +149,10 @@ export function startFakeAnalog({
         return send(200, { restored: decodeURIComponent(g[1]) });
       }
       if (req.method === 'GET' && path === '/playback/status') return send(200, { verdict: 'ok', detail: 'playing', expected: null, source: 'web' });
-      if (req.method === 'GET' && path === '/playback/live') return send(200, { player: { filename: 'Arthur_S02E201.mpg', position: '00:01:02:03' } });
-      if (req.method === 'GET' && path === '/playback/asrun') return send(200, []);
+      if (req.method === 'GET' && path === '/playback/live') return send(200, state.live);
+      if (req.method === 'GET' && path === '/playback/asrun') return send(200, state.asrun[url.searchParams.get('day')] || []);
       if (req.method === 'POST' && path === '/playback/recover') { state.recovers.push(json()); return send(200, { result: 'skipped', reason: 'veredicto ok' }); }
-      if (req.method === 'GET' && path === '/playback/recover/log') return send(200, []);
+      if (req.method === 'GET' && path === '/playback/recover/log') return send(200, state.recoverLog);
       return send(404, { detail: `fake: no route ${req.method} ${path}` });
     });
   });

@@ -27,9 +27,11 @@ import { router as transcode } from './routes/transcode.js';
 import { router as monitor } from './routes/monitor.js';
 import { router as holidays } from './routes/holidays.js';
 import { router as analog } from './routes/analog.js';
+import { router as faults } from './routes/faults.js';
 import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
+import { startFaultSync } from './services/playbackFaults.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -61,6 +63,7 @@ app.use('/api/transcode', transcode);
 app.use('/api/monitor', monitor);
 app.use('/api/holidays', holidays);
 app.use('/api/analog', analog);
+app.use('/api/faults', faults);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,
@@ -90,6 +93,8 @@ const httpServer = app.listen(PORT, () => {
   try { startMonitor(); } catch (err) { log('monitor').error('signal monitor did not start', err); }
   // "Your shift starts in 30 min" / "your shift ended" e-mails from the roster.
   try { startShiftNotifier({ context: handoverLines }); } catch (err) { log('roster').error('shift notices did not start', err); }
+  // Failed events and player recoveries from the analog device's own logs.
+  try { startFaultSync(); } catch (err) { log('faults').error('analog fault sync did not start', err); }
 });
 // A port already taken is the classic "it didn't start and I don't know why".
 httpServer.on('error', (err) => {

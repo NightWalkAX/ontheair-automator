@@ -399,6 +399,40 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   optional feature's dependency out of the import graph of `src/app.js`. `setup.sh` now installs
   whenever ANY package.json dependency is missing, not only when `node_modules` is absent.
 
+## Clips that play badly (decided with the operator 2026-10-19)
+
+`src/services/playbackFaults.js` + `src/routes/faults.js` (`/api/faults`) + the "Clips that played
+badly" panel of the Signal Monitor tab. A **fault** (`PlaybackFault`) is one observation; a **flag**
+(`PlaybackFlag`, keyed by `file_path` + `playout`) is the decision about the file:
+
+- **Per kind of node, not per channel.** The six OTAVs play the same master, so one `otav` flag
+  covers them; the analog channel plays its own Vol1 copy (maybe capped to 4 Mb/s), so it has its own
+  `analog` flag. A device file the catalogue doesn't know is flagged as `vol1:<name>`.
+- **Sources.** (1) The monitor: a black/frozen/silent incident (never `down`) on a feed with a
+  `channelId` asks that node what was playing **when it began** — `startedAt − faults.feedDelaySeconds`
+  (35) — via OTAV `GET /playback/playing` (`item_path`, `item_elapsed`, `item_index`,
+  `playlist_unique_id`; walking back through the playlist by duration when the fault is older than the
+  clip on air — `walkBack()`, pure) or analog `/playback/live` + the as-run. It is asked BEFORE the
+  resync (which makes the node jump to another clip) but the incident is held in the same tick as
+  before, so a fast close still reads "fixed by OTAV resync" (`ev.blamed`, awaited inside
+  `resyncThenDecide()`). Within `boundarySeconds` of a clip change the fault says `boundary`.
+  (2) The analog as-run: rows whose `result` doesn't match `faults.analogAsrunOk`; a day where more
+  than half the rows "fail" is skipped and logged, since that means an unknown vocabulary, not a bad
+  day. (3) analog-automator's recovery log (`MPGPLAYX <file>` after a stopped/frozen verdict).
+  (2)+(3) are read every `analogSyncMinutes` (10) and on the panel's button, de-duplicated by `ext_key`.
+- **Not the clip:** `correlatedFeeds` (3) channels faulting within `correlatedWindowSeconds` (60) is
+  upstream — those monitor faults are `discarded` and the flags recounted (`refreshFlag()`).
+- **Statuses.** `suspect` (automatic; ⚠ in the catalogue tree with per-folder counts, the block editor,
+  the library and the week card — still scheduled), `confirmed` (operator; `PLAYS_WELL_SQL`, part of
+  `AIRABLE_SQL` in `scheduling.js`, keeps the generator from choosing it — a serial skips that
+  episode), `dismissed` (sticky: later faults are counted, never re-open it). `clear` deletes the flag
+  and discards its history. Nothing here gates approval or push: a hand-placed confirmed clip airs,
+  with a warning. Catalog bulk op `set-playback { status }`.
+- **Marks follow the file**: Air Spec's swap (`moveFlags(..., { reencoded: true })` turns a confirmed
+  flag back into a suspect — the re-encode may have fixed it), its rollback, and catalogue repair.
+- Tests: `test/playbackFaults.test.mjs`; the fakes take `playing` (OTAV) and `live`/`asrun`/`recoverLog`
+  (analog).
+
 ## Day continuity (why channels went black)
 
 OTAV plays each channel-day as ONE non-looping playlist behind ONE schedule event that starts at

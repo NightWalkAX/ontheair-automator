@@ -42,6 +42,7 @@ import { localizePath, delocalizePath } from '../config.js';
 import { collectVideoFiles, probeDuration } from './ingestion.js';
 import { localDate } from '../dates.js';
 import { log } from '../logger.js';
+import { moveFlags } from './playbackFaults.js';
 
 const l = log('repair');
 
@@ -198,6 +199,7 @@ function movePath(from, to, duration) {
   }
   db.prepare('UPDATE OR IGNORE HolidayFile SET file_path = ? WHERE file_path = ?').run(to, from);
   db.prepare('DELETE FROM HolidayFile WHERE file_path = ?').run(from);
+  moveFlags(from, to);
   // The analog device's copy is the same programme wherever the share keeps it.
   db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(to, from);
   // The stale Air Spec row describes a file that is not there; the found path
