@@ -176,8 +176,8 @@
     { key: 'GLCAhWeTV',      name: 'MoE Central' },
   ];
 
-  // The CDN is http-only. Over https (Cloudflare Pages) go through the /hls proxy
-  // function; opened locally over http or file:// the feed can be read directly.
+  // The CDN is http-only. Over https (the Cloudflare Worker) go through the /hls proxy
+  // route; served over http (the automator's /playout) or file:// it reads the CDN directly.
   const viaProxy = location.protocol === 'https:';
   const srcFor = (key) => viaProxy
     ? `/hls/${key}/${key}.m3u8`

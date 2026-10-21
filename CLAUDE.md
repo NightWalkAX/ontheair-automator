@@ -357,6 +357,10 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   **Silence never resyncs:** a clip with no sound has none after a resync either, and a resync
   cuts air. Measured on the real feeds (2026-09-23): programme audio sits at -21…-37 dBFS; 7 feeds
   × 2 readers ≈ 29% of one core. Loud-peak detection was considered and dropped by the operator.
+- **`/playout` is the CCTV wall** — `glc-wall/public/index.html` (the same file the Cloudflare
+  Worker deploys) served by `src/app.js`, linked as "Playout ↗" in the header. Over the
+  automator's plain http it reads `live.dreamtv.gy` directly (the CDN sends CORS `*`); only the
+  https Worker needs its `/hls` proxy. Edit the wall in `glc-wall/`, never a copy in `public/`.
 - **Resync before alerting, for a channel we control.** A black/frozen incident on a feed with a
   `channelId` first gets `GET /scheduler/resynchronize` on that OTAV and the alert is HELD
   (`incident.held`, UI state `resyncing`) for `resync.waitSeconds` (60) — the public feed runs

@@ -80,6 +80,14 @@ app.get('/api/log', (req, res) => {
   res.type('text/plain').send(tailLog(lines));
 });
 
+// GET /playout — the CCTV wall of the seven public GLC feeds. One file, shared
+// with the Cloudflare deploy in glc-wall/: served here over plain http, the page
+// reads the CDN directly (it answers with CORS *), so no /hls proxy is needed.
+app.get('/playout', (req, res) => {
+  res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  res.sendFile(join(ROOT, 'glc-wall', 'public', 'index.html'));
+});
+
 // Static frontend (served last so /api/* wins).
 app.use(express.static(join(ROOT, 'public')));
 

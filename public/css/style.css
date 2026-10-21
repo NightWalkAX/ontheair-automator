@@ -128,6 +128,13 @@ nav button {
   transition: background .18s var(--ease), color .18s var(--ease);
   position: relative;
 }
+nav .nav-link {
+  color: var(--on-dark-soft); text-decoration: none;
+  padding: 8px 14px; border-radius: 8px;
+  font-size: 13.5px; font-weight: 600;
+  transition: background .18s var(--ease), color .18s var(--ease);
+}
+nav .nav-link:hover { background: rgba(255, 255, 255, .07); color: var(--on-dark); }
 nav button:hover { background: rgba(255, 255, 255, .07); color: var(--on-dark); }
 nav button.active { background: rgba(255, 255, 255, .12); color: #fff; }
 nav button.active::after {
@@ -641,7 +648,7 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 @media (max-width: 780px) {
   header { gap: 12px; padding: 0 14px; }
   header h1 span { display: none; }
-  nav button { padding: 8px 10px; }
+  nav button, nav .nav-link { padding: 8px 10px; }
   .split { grid-template-columns: 1fr; }
   .tab { padding: 18px 14px 40px; }
 }
