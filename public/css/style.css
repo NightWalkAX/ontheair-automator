@@ -542,9 +542,9 @@ td.path-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font
 
 /* Why a block is red, shown on the clips themselves: the fillers that make up a
    run over the cap, and any clip in a movie block that is not a movie. */
-#itemList li.overfill, #itemList li.offtype { background: var(--bad-soft); }
+#itemList li.overfill, #itemList li.offtype, #itemList li.crossclash { background: var(--bad-soft); }
 #itemList li.overfill { box-shadow: inset 3px 0 0 var(--bad); }
-#itemList li.offtype { box-shadow: inset 3px 0 0 var(--bad); outline: 1px dashed var(--bad); }
+#itemList li.offtype, #itemList li.crossclash { box-shadow: inset 3px 0 0 var(--bad); outline: 1px dashed var(--bad); }
 /* A clip that played badly on air before: a warning stripe, not an error. */
 #itemList li.faulty { box-shadow: inset 3px 0 0 var(--warn); }
 .badge.fault { white-space: nowrap; }

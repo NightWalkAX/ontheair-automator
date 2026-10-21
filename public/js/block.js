@@ -29,6 +29,7 @@ const resourceToItem = (r) => ({
   season: r.season, episode_no: r.episode_no, episode_code: r.episode_code,
   chapter: r.chapter, duration: r.duration, is_filler: r.is_filler, is_manual_override: 1,
   fault_status: r.fault_status, fault_count: r.fault_count,
+  show_type_code: r.show_type_code, file_path: r.file_path,
 });
 
 // The library list as currently filtered — the order stride-select works on.
@@ -345,8 +346,19 @@ function fillerRunSeconds(items) {
 }
 
 // Live client-side recompute mirroring the server's validateBlock(): duration
-// inside tolerance, no filler run over the cap, and no mixed content types in a
-// movie block. All three gate the Approve button — and the push behind it.
+// inside tolerance, no filler run over the cap, no mixed content types in a
+// movie block, and nothing another channel airs around it (judged against the
+// busy set the server sent with the block). All four gate the Approve button —
+// and the push behind it.
+
+/** What another channel airs that clashes with this item, or null. */
+function crossHit(i) {
+  const busy = currentBlock.crossBusy;
+  if (!busy || i.is_filler) return null;
+  return i.show_type_code === 'movies'
+    ? (busy.files?.[i.file_path] ? { kind: 'movie', name: i.label || i.name, ...busy.files[i.file_path] } : null)
+    : (i.subject != null && busy.subjects?.[i.subject] ? { kind: 'series', name: i.subject, ...busy.subjects[i.subject] } : null);
+}
 function renderValidation() {
   const total = currentItems.reduce((s, i) => s + i.duration, 0);
   const diff = currentBlock.blockSeconds - total;
@@ -359,7 +371,8 @@ function renderValidation() {
   const offType = currentBlock.block?.is_movie_block
     ? currentItems.filter((i) => !i.is_filler && i.show_type_code !== 'movies')
     : [];
-  const fits = durationFits && fillerFits && offType.length === 0;
+  const cross = currentItems.filter((i) => crossHit(i));
+  const fits = durationFits && fillerFits && offType.length === 0 && cross.length === 0;
 
   // A block the catalogue simply cannot satisfy can be FORCED by the operator.
   // It still does not "fit" — nothing about it is green — but it may be approved
@@ -381,6 +394,13 @@ function renderValidation() {
   }
   if (offType.length) {
     problems.push(`${offType.length} clip(s) in this movie block are not movies`);
+  }
+  if (cross.length) {
+    const h = crossHit(cross[0]);
+    problems.push((h.kind === 'movie'
+      ? `the film "${h.name}" airs on ${h.channel_name} on ${h.target_date} — a film may air on one channel within a day either side`
+      : `"${h.name}" airs on ${h.channel_name} at the same time (${h.target_date} ${String(h.start).slice(0, 5)}–${String(h.end).slice(0, 5)}) — a show airs on one channel at a time`)
+      + (cross.length > 1 ? ` (+${cross.length - 1} more)` : ''));
   }
   box.textContent = fits
     ? (diff >= 0
@@ -411,11 +431,12 @@ function renderValidation() {
   };
   currentItems.forEach((i, idx) => {
     const row = rows[idx];
-    if (row) row.classList.remove('overfill', 'offtype');
+    if (row) row.classList.remove('overfill', 'offtype', 'crossclash');
     if (i.is_filler) { run += i.duration; if (row) runRows.push(row); }
     else {
       flagRun();
       if (row && offType.includes(i)) row.classList.add('offtype');
+      if (row && cross.includes(i)) row.classList.add('crossclash');
     }
   });
   flagRun();

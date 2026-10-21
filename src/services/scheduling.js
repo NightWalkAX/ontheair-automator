@@ -11,6 +11,7 @@ import { loadConfig } from '../config.js';
 import { nextChapter, cooldownEligible } from './playHistory.js';
 import { log } from '../logger.js';
 import { holidaySql } from './holidays.js';
+import { busyFiles, crossBusy } from './crossChannel.js';
 
 const l = log('scheduling');
 
@@ -511,6 +512,10 @@ export function moviePool(template, block, blockSecs, channelId, subjects = unde
         AND st.code = ? AND r.subject IN (${marks}) AND ${AIRABLE_SQL} AND ${hol.allowed}
     `).all(channelId, blockSecs, MOVIES_CODE, ...scope);
   }
+  // Another channel airs it within a day either side (services/crossChannel.js).
+  // A hard rule, unlike the cooldown below: none of the fallbacks bring it back.
+  const elsewhere = busyFiles(channelId, block.target_date);
+  if (elsewhere.size) all = all.filter((r) => !elsewhere.has(r.file_path));
   if (!all.length) return [];
 
   // Already scheduled in the surrounding week (any block but this one).
@@ -641,9 +646,12 @@ export function pickMovieRun(template, block, blockSecs, startSecs, channelId) {
       const hasStandalone = series.some((sr) => sr.rule !== 'serial');
       const maxParts = hasStandalone ? 1 : limit;
       const it = serialIterator(channelId, saga, block, MOVIES_CODE);
+      // A part another channel airs within a day either side waits, like one
+      // that does not fit: a delay, never a skip.
+      const elsewhere = busyFiles(channelId, block.target_date);
       for (let n = 0; n < maxParts && items.length < limit; n++) {
         const r = it.peek();
-        if (!r || used.has(r.id) || !fits(r)) break;
+        if (!r || used.has(r.id) || !fits(r) || elsewhere.has(r.file_path)) break;
         place(r);
         it.consume();
       }
@@ -1079,7 +1087,15 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   // A movie block places its own run: franchises at their next part, then
   // best-fitting standalone films for whatever time is left. See pickMovieRun.
   const movie = isMovieBlock(template);
-  const seriesList = movie ? [] : templateSeries(template, channelId);
+  // What other channels already air around this block (services/crossChannel.js):
+  // a show they air at the same time sits this block out, and a film they air
+  // within a day either side is passed over.
+  const busy = crossBusy(block, channelId);
+  const seriesList = movie ? [] : templateSeries(template, channelId).filter((s) => {
+    const hit = busy.subjects.get(s.subject);
+    if (hit) l.info(`block ${block.id}: "${s.subject}" sits out — ${hit.channel_name} airs it at the same time`);
+    return !hit;
+  });
   const iters = movie
     ? [sequenceIterator(pickMovieRun(template, block, blockSecs, startSecs, channelId))]
     : seriesList.map((s) => iteratorForSeries(s, channelId, block, blockSecs));
@@ -1108,6 +1124,9 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
       // of "La Escuelita" runs 31:21 in a 30:00 block) used to stall its series
       // outright and leave the block 100% filler, every single week.
       let r = a.it.peek();
+      // A serial whose due clip another channel airs waits for a later block
+      // (its order is the guarantee); anything else walks past it.
+      if (r && a.serial && busy.blocks(r)) continue;
       // …except for a SERIAL show's due episode in a block that is still empty.
       // Skipping it there broke the one promise a serial makes: EDYOU PULSE
       // S02E02 (30:21) and S02E03 (32:10) in a 30:00 slot were both skipped, the
@@ -1127,14 +1146,14 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
         progressed = true;
         continue; // the block is full: nothing else fits after it
       }
-      while (r && (usedIds.has(r.id) || r.duration > blockSecs)) {
+      while (r && (usedIds.has(r.id) || r.duration > blockSecs || (!a.serial && busy.blocks(r)))) {
         if (r.duration > blockSecs) {
           l.warn(`block ${block.id}: "${r.name}" (${r.duration}s) does not fit a ${blockSecs}s slot — skipped`);
         }
         a.it.consume();
         r = a.it.peek();
       }
-      if (!r) continue;
+      if (!r || busy.blocks(r)) continue;
       // Doesn't fit the room LEFT: hold it for a later block rather than
       // skipping ahead in the series — order is the guarantee here.
       if (total + r.duration > blockSecs) continue;
@@ -1159,14 +1178,14 @@ export function buildAlignedBlock(template, block, blockSecs, startSecs, channel
   // Ordered series are left out: their order is the guarantee, and picking a
   // later part for its length is exactly what a serial must never do.
   if (!movie) {
-    const openSeries = templateSeries(template, channelId).filter((sr) => sr.rule !== 'serial');
+    const openSeries = seriesList.filter((sr) => sr.rule !== 'serial');
     let guard = 0;
     while (blockSecs - total > fillerRunLimit() && guard++ < 20) {
       const hole = blockSecs - total;
       let best = null;
       for (const sr of openSeries) {
         for (const r of candidates(channelId, sr.subject, hole, null, block.target_date)) {
-          if (usedIds.has(r.id)) continue;
+          if (usedIds.has(r.id) || busy.blocks(r)) continue;
           if (!best || r.duration > best.duration) best = r;
         }
       }

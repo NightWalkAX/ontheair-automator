@@ -10,6 +10,7 @@ import {
 } from '../services/scheduling.js';
 import { blockProblem, validateBlock } from '../services/blockValidation.js';
 import { EPISODE_NO_BLOCK_CTE, clipLabel, withLabel } from '../services/labels.js';
+import { crossConflictCounts } from '../services/crossChannel.js';
 
 export const router = Router();
 
@@ -512,6 +513,10 @@ router.get('/', (req, res) => {
     GROUP BY si.block_id
   `).all(...params)) faulty.set(t.block_id, t);
 
+  // Clashes with other channels (a film within a day either side, a show at
+  // the same time): one pass over the week, not a validation per block.
+  const cross = crossConflictCounts(dates[0], dates[6], { blockIds: rows.map((r) => r.id) });
+
   // Shifted windows come from the neighbours, and every neighbour of a block is
   // on the same channel-day — already in `rows`, whatever the channel filter.
   linkShifts(rows);
@@ -523,13 +528,15 @@ router.get('/', (req, res) => {
     const diff = blockSeconds - totalSeconds;   // >0 underrun, <0 overrun
     const fillerRun = fillerRuns.get(r.id) || 0;
     const offTypeCount = offType.get(r.id) || 0;
-    const fits = fitsTolerance(diff, tol) && fillerRun <= maxFillerRun && offTypeCount === 0;
+    const crossCount = cross.get(r.id) || 0;
+    const fits = fitsTolerance(diff, tol) && fillerRun <= maxFillerRun && offTypeCount === 0 && crossCount === 0;
     return {
       ...r, is_mirror: r.slot_order > 0,
       blockSeconds, totalSeconds, diff,
       durationFits: fitsTolerance(diff, tol),
       fillerRun, maxFillerRun, fillerFits: fillerRun <= maxFillerRun,
       offTypeCount, typeFits: offTypeCount === 0,
+      crossCount, crossFits: crossCount === 0,
       fits,
       overridden: !!r.override_reason,
       approvable: fits || !!r.override_reason,

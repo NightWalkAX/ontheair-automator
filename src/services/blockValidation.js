@@ -1,10 +1,13 @@
 // One validation rule set for a scheduled block, shared by the review API, the
 // week grid, the approval gate and the OTAV push.
 //
-// A block FITS when all three hold:
+// A block FITS when all four hold:
 //   1. its duration lands inside the fit tolerance (see fitTolerance),
-//   2. no unbroken run of fillers is longer than fillerRunLimit(), and
-//   3. a movie block holds nothing but movies.
+//   2. no unbroken run of fillers is longer than fillerRunLimit(),
+//   3. a movie block holds nothing but movies, and
+//   4. nothing in it clashes with another channel — a film another channel airs
+//      within a day either side, a show another channel airs at the same time
+//      (services/crossChannel.js).
 // Anything else is red in the UI, refused by POST /approve, and refused by the
 // push — the operator adds or removes content until it passes.
 //
@@ -24,6 +27,11 @@ import {
   maxFillerRunSeconds, maxShiftSeconds, shiftedWindow, linkShifts, channelDayBlocks,
 } from './scheduling.js';
 import { EPISODE_NO_BLOCK_CTE, withLabel } from './labels.js';
+import { blockCrossConflicts, crossProblem } from './crossChannel.js';
+
+// Each `windows` cache a caller passes gets a cross-channel window cache of its
+// own, so a loop over many blocks computes every channel-day's windows once.
+const crossCaches = new WeakMap();
 
 /** The non-filler items of a movie block whose show type is not Movies. */
 export function offTypeItems(block, items) {
@@ -59,7 +67,7 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
   // A gate that only needs the verdict (labels: false) skips the episode
   // numbering, which is most of what a validation costs.
   const items = !labels ? db.prepare(`
-    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter,
+    SELECT si.*, r.name, r.duration, r.is_filler, r.subject, r.season, r.chapter, r.file_path,
            st.code AS show_type_code
     FROM ScheduleItem si
     JOIN Resource r ON r.id = si.resource_id
@@ -112,7 +120,18 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
   const fillerFits = fillerRun <= maxFillerRun;
 
   const offType = offTypeItems(block, items);
-  const fits = durationFits && fillerFits && offType.length === 0;
+
+  // Rule 4: films and shows another channel airs around this block.
+  let crossCache = null;
+  if (windows) {
+    if (!crossCaches.has(windows)) crossCaches.set(windows, new Map());
+    crossCache = crossCaches.get(windows);
+  }
+  const cross = block.channel_id != null
+    ? blockCrossConflicts(block, items, { cache: crossCache, full: labels })
+    : { conflicts: [] };
+
+  const fits = durationFits && fillerFits && offType.length === 0 && cross.conflicts.length === 0;
   const overridden = !!block.override_reason;
 
   return {
@@ -120,6 +139,11 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
     durationFits, fillerRun, maxFillerRun, fillerFits,
     offTypeIds: offType.map((i) => i.id),
     typeFits: offType.length === 0,
+    crossConflicts: cross.conflicts,
+    crossFits: cross.conflicts.length === 0,
+    // What other channels hold around this block, so the editor can judge an
+    // unsaved edit (only with labels, i.e. for the modal).
+    crossBusy: cross.busy ?? null,
     fits,
     overridden,
     overrideReason: block.override_reason ?? null,
@@ -153,6 +177,7 @@ export function blockProblem(v) {
   }
   if (!v.fillerFits) return `has ${mmss(v.fillerRun)} of filler back to back (max ${mmss(v.maxFillerRun)})`;
   if (!v.typeFits) return `is a movie block holding ${v.offTypeIds.length} clip(s) that are not movies`;
+  if (v.crossFits === false) return crossProblem(v.crossConflicts);
   return null;
 }
 

@@ -136,7 +136,8 @@ function blockCard(b) {
   const why = b.fits ? 'fits'
     : !b.durationFits ? `off ${fmt(b.diff)}`
     : b.fillerFits === false ? `filler ${fmt(b.fillerRun)}`
-    : `${b.offTypeCount} not movies`;
+    : b.typeFits === false ? `${b.offTypeCount} not movies`
+    : `${b.crossCount} on another channel`;
   badges.append(el('span', {
     className: `badge ${b.fits ? 'ok' : b.overridden ? 'warn' : 'bad'}`,
     textContent: b.overridden ? `forced · ${why}` : why,
