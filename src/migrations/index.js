@@ -31,10 +31,11 @@ import * as syncSharedCatalog from './005-sync-shared-catalog.js';
 import * as firstNumberOrder from './006-first-number-order.js';
 import * as templateConflicts from './007-template-conflicts-2026-10.js';
 import * as analogLineup from './008-analog-lineup.js';
+import * as circularTimetables from './009-circular-timetables.js';
 
 const MIGRATIONS = [
   retagShowTypes, pruneOrphanSeries, lessonRoots, edyouPulse, syncSharedCatalog, firstNumberOrder, templateConflicts,
-  analogLineup,
+  analogLineup, circularTimetables,
 ];
 
 /** Where the record of what has already run lives, next to the database. */

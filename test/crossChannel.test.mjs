@@ -24,7 +24,7 @@ copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), process.env
 const { db, initSchema } = await import('../src/db.js');
 const { generateWeek } = await import('../src/services/scheduling.js');
 const { validateBlock, blockProblem } = await import('../src/services/blockValidation.js');
-const { crossConflictCounts, crossProblem } = await import('../src/services/crossChannel.js');
+const { crossConflictCounts, crossProblem, windowsOverlap } = await import('../src/services/crossChannel.js');
 
 before(() => initSchema());
 
@@ -147,6 +147,17 @@ test('a show another channel airs at the same time sits the block out', () => {
   assert.equal(v.crossFits, false);
   assert.equal(v.crossConflicts[0].kind, 'series');
   assert.match(blockProblem(v), /"Cho" while Shows A airs it \(2031-05-\d\d 08:00–09:00\)/);
+});
+
+test('blocks that only touch, or share a few seconds of a balanced boundary, do not clash', () => {
+  // 10:00 on one channel against 10:00 on another, after balanceDay moved one
+  // boundary 9 seconds early: the same show is not on two channels at once.
+  const a = { start: 9 * 3600 + 30 * 60, end: 10 * 3600 };
+  const b = { start: 10 * 3600 - 9, end: 10 * 3600 + 30 * 60 };
+  assert.equal(windowsOverlap(a, b), true, 'nine seconds do overlap');
+  assert.equal(windowsOverlap(a, b, 60), false, 'but not past the grace');
+  assert.equal(windowsOverlap(a, { start: 10 * 3600, end: 11 * 3600 }), false, 'touching is not overlapping');
+  assert.equal(windowsOverlap(a, { start: 9 * 3600 + 45 * 60, end: 11 * 3600 }, 60), true, 'a real overlap still is');
 });
 
 test('the rules can be turned off', () => {

@@ -7,6 +7,11 @@
 //      be in two blocks of different channels whose windows overlap, whatever
 //      the episode (`schedule.crossChannel.series`, default true). TV shows,
 //      documentaries and lessons alike — films are covered by rule 1.
+//      Windows that only TOUCH don't count, and neither does an overlap of up
+//      to `schedule.crossChannel.graceSeconds` (default 60): balanceDay moves a
+//      boundary by up to shift.autoMaxSeconds, so a block that ends at 10:00 on
+//      one channel and one that starts at 10:00 on another routinely share a
+//      few seconds — that is not two channels airing a show at once.
 //
 // The analog channel counts as a channel like any other (it shares the
 // catalogue). A shared template is no exception either: each channel that airs
@@ -38,15 +43,20 @@ const hhmm = (t) => {
   return (h || 0) * 3600 + (m || 0) * 60;
 };
 
-/** { movieDays, series } from config, with the defaults the operator chose. */
+/** { movieDays, series, graceSeconds } from config, with the defaults the operator chose. */
 export function crossChannelRules() {
   const c = loadConfig().schedule?.crossChannel ?? {};
   const days = Number(c.movieDays ?? 1);
+  const grace = Number(c.graceSeconds ?? 60);
   return {
     movieDays: Number.isFinite(days) && days > 0 ? Math.floor(days) : 0,
     series: c.series !== false,
+    graceSeconds: Number.isFinite(grace) && grace > 0 ? grace : 0,
   };
 }
+
+/** Do two { start, end } windows share more than `grace` seconds? */
+export const windowsOverlap = (a, b, grace = 0) => Math.min(a.end, b.end) - Math.max(a.start, b.start) > grace;
 
 /**
  * Absolute air window of every block of one channel-day, as a Map of block id →
@@ -127,7 +137,8 @@ export function busyFiles(channelId, date, { files = null } = {}) {
  */
 export function busySubjects(channelId, date, windows, { subjects = null, cache = null } = {}) {
   const out = new Map();
-  if (!crossChannelRules().series || !date || !windows?.length || (subjects && !subjects.length)) return out;
+  const { series, graceSeconds } = crossChannelRules();
+  if (!series || !date || !windows?.length || (subjects && !subjects.length)) return out;
   // A window can run past midnight (a night block owns the gap to the morning),
   // so the day before and after can overlap too.
   const params = [addDays(date, -1), addDays(date, 1), channelId ?? -1];
@@ -143,7 +154,7 @@ export function busySubjects(channelId, date, windows, { subjects = null, cache 
     if (out.has(h.subject)) continue;
     const w = blockWindow(h.block_id, h.channel_id, h.target_date, cache);
     if (!w) continue;
-    if (windows.some((x) => x.start < w.end && w.start < x.end)) {
+    if (windows.some((x) => windowsOverlap(x, w, graceSeconds))) {
       out.set(h.subject, { kind: 'series', ...h, start: w.effective_start, end: w.effective_end });
     }
   }
@@ -234,7 +245,7 @@ export function crossProblem(conflicts) {
  * the index always spans every channel, since that is what a clash is against.
  */
 export function crossConflictCounts(from, to, { blockIds = null } = {}) {
-  const { movieDays, series } = crossChannelRules();
+  const { movieDays, series, graceSeconds } = crossChannelRules();
   const out = new Map();
   if (!movieDays && !series) return out;
   const span = Math.max(movieDays, 1);
@@ -274,7 +285,7 @@ export function crossConflictCounts(from, to, { blockIds = null } = {}) {
   }
   for (const list of bySubject.values()) {
     for (const r of list) {
-      if (list.some((o) => o.channel_id !== r.channel_id && o.start < r.end && r.start < o.end)) flag(r);
+      if (list.some((o) => o.channel_id !== r.channel_id && windowsOverlap(o, r, graceSeconds))) flag(r);
     }
   }
   return out;

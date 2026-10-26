@@ -31,7 +31,8 @@
     "extendIntoGaps": true,
     "crossChannel": {
       "movieDays": 1,
-      "series": true
+      "series": true,
+      "graceSeconds": 60
     }
   },
   "pathMap": {},
