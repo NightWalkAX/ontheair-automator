@@ -176,7 +176,7 @@ export function seriesFor(cfg, subject, day, minutes) {
 }
 
 /** One day of a timetable as blocks: [{ start, end, parts: [{ subject, minutes }] }]. */
-function dayBlocks(rows) {
+export function dayBlocks(rows) {
   // What a period IS, for merging: the English periods are one subject.
   const kind = (subject) => {
     const s = subject.startsWith('Support:') ? subject.slice(8) : subject;
@@ -356,6 +356,59 @@ function template(tid, name, channelName) {
 }
 const channelByName = (name) => db.prepare('SELECT id, name FROM ChannelType WHERE name = ?').get(name);
 
+/**
+ * Remove every block dated after `today`, so "Generate drafts" builds them from
+ * a new line-up. Approval wrote PlayHistory (taken back, one row per clip, as
+ * unrecordBlockPlays does) and pushed each serial's cursor past what the block
+ * held (moved back to the first chapter these blocks held, so no episode is
+ * skipped). Read-only: returns { ops, summary }.
+ */
+export function clearBlocksAfter(today) {
+  const ops = [];
+  const summary = [];
+  const op = (sql, ...params) => ops.push({ sql, params });
+  const blocks = db.prepare(`
+    SELECT sb.id, sb.target_date, sb.status, COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
+           COALESCE(s.start_time, bt.start_time) AS start_time
+    FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id
+    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
+    WHERE sb.target_date > ?`).all(today);
+  const firstChapter = new Map(); // channel|subject -> lowest chapter in a removed approved block
+  let approved = 0;
+  for (const b of blocks) {
+    if (b.status !== 'draft') {
+      approved++;
+      const playedAt = `${b.target_date}T${b.start_time}:00`;
+      const items = db.prepare(`
+        SELECT si.resource_id, r.subject, r.chapter, r.is_filler FROM ScheduleItem si
+        JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?`).all(b.id);
+      for (const it of items) {
+        op(`DELETE FROM PlayHistory WHERE id = (
+              SELECT id FROM PlayHistory WHERE resource_id = ? AND channel_id = ? AND played_at = ? LIMIT 1)`,
+        it.resource_id, b.channel_id, playedAt);
+        if (it.is_filler || it.subject == null) continue;
+        const k = `${b.channel_id}|${it.subject}`;
+        if (!firstChapter.has(k) || it.chapter < firstChapter.get(k)) firstChapter.set(k, it.chapter);
+      }
+    }
+    op('DELETE FROM ScheduledBlock WHERE id = ?', b.id);
+  }
+  let rewound = 0;
+  for (const [k, chapter] of firstChapter) {
+    const [chId, subject] = [Number(k.split('|')[0]), k.slice(k.indexOf('|') + 1)];
+    const cur = db.prepare('SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ? AND is_serial = 1').get(chId, subject);
+    if (cur?.cursor_chapter != null && cur.cursor_chapter > chapter) {
+      op('UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?', chapter, chId, subject);
+      rewound++;
+    }
+  }
+  if (blocks.length) {
+    summary.push(`${blocks.length} block(s) after ${today} removed (${approved} approved/exported: plays taken back, `
+      + `${rewound} series cursor(s) moved back) — today is untouched`);
+  }
+  return { ops, summary };
+}
+
 export function plan() {
   const ops = [];
   const summary = [];
@@ -477,50 +530,9 @@ export function plan() {
   for (const [ch, set] of missing) summary.push(`${ch}: not in its approved catalogue, left out: ${[...set].join(', ')}`);
 
   // --- Blocks after today ----------------------------------------------------
-  // Removed, so "Generate drafts" builds them from the new line-up. Approval
-  // wrote PlayHistory (taken back, one row per clip, as unrecordBlockPlays
-  // does) and pushed each serial's cursor past what the block held (moved back
-  // to the first chapter these blocks held, so no episode is skipped).
-  const today = localDate();
-  const blocks = db.prepare(`
-    SELECT sb.id, sb.target_date, sb.status, COALESCE(sb.channel_id, bt.channel_id) AS channel_id,
-           COALESCE(s.start_time, bt.start_time) AS start_time
-    FROM ScheduledBlock sb JOIN BlockTemplate bt ON bt.id = sb.template_id
-    LEFT JOIN BlockTemplateSlot s ON s.id = sb.slot_id
-    WHERE sb.target_date > ?`).all(today);
-  const firstChapter = new Map(); // channel|subject -> lowest chapter in a removed approved block
-  let approved = 0;
-  for (const b of blocks) {
-    if (b.status !== 'draft') {
-      approved++;
-      const playedAt = `${b.target_date}T${b.start_time}:00`;
-      const items = db.prepare(`
-        SELECT si.resource_id, r.subject, r.chapter, r.is_filler FROM ScheduleItem si
-        JOIN Resource r ON r.id = si.resource_id WHERE si.block_id = ?`).all(b.id);
-      for (const it of items) {
-        op(`DELETE FROM PlayHistory WHERE id = (
-              SELECT id FROM PlayHistory WHERE resource_id = ? AND channel_id = ? AND played_at = ? LIMIT 1)`,
-        it.resource_id, b.channel_id, playedAt);
-        if (it.is_filler || it.subject == null) continue;
-        const k = `${b.channel_id}|${it.subject}`;
-        if (!firstChapter.has(k) || it.chapter < firstChapter.get(k)) firstChapter.set(k, it.chapter);
-      }
-    }
-    op('DELETE FROM ScheduledBlock WHERE id = ?', b.id);
-  }
-  let rewound = 0;
-  for (const [k, chapter] of firstChapter) {
-    const [chId, subject] = [Number(k.split('|')[0]), k.slice(k.indexOf('|') + 1)];
-    const cur = db.prepare('SELECT cursor_chapter FROM ChannelSeries WHERE channel_id = ? AND subject = ? AND is_serial = 1').get(chId, subject);
-    if (cur?.cursor_chapter != null && cur.cursor_chapter > chapter) {
-      op('UPDATE ChannelSeries SET cursor_chapter = ? WHERE channel_id = ? AND subject = ?', chapter, chId, subject);
-      rewound++;
-    }
-  }
-  if (blocks.length) {
-    summary.push(`${blocks.length} block(s) after ${today} removed (${approved} approved/exported: plays taken back, `
-      + `${rewound} series cursor(s) moved back) — today is untouched`);
-  }
+  const cleared = clearBlocksAfter(localDate());
+  ops.push(...cleared.ops);
+  summary.push(...cleared.summary);
 
   // Registry rows with no clips and no template (the 002 repair, again: empty
   // folders such as "Grade 1", "Bow", "Christmas Term" came back with later scans).

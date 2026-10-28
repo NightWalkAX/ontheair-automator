@@ -218,6 +218,17 @@ Folder layout: `./data/` (sqlite persistence), `./media/` or a configurable exte
   channel's cartoons (the analog channel's noon documentary). Each period is replayed 00:00–06:00 and, on
   Junior and Elementary, the morning again 17:00–20:00. A new circular means editing `TIMETABLES` and a
   new migration, never hand-editing the generated templates one by one.
+  **Superseded by `010-grade-pairs` (operator, 2026-10-28; dry run `scripts/cleanup/18-grade-pairs.js`):
+  two levels per DIGITAL channel, lowest first — Elementary Nursery (08–09) + G1, Junior G2–3, TeenEd G4–5,
+  Elevate G6–7, MoE Central G8–9, Discover G10–11** — each mirroring a circular Mon–Fri 09–15 (G1–2's for
+  Elementary and Junior, G3–4's for TeenEd, G6's for Elevate; secondary has no circular, so MoE Central
+  takes G5's shape and Discover G6's). Secondary maps English to Language + Literature, Social Studies to
+  + Geography, enrichment to the electives; a period whose subject the catalogue barely has (< 6 clips:
+  no Science for G9–11, no electives for G8–9) also draws the pair's English and Mathematics. Elementary,
+  Junior, TeenEd and Discover replay 00–06 and the morning 17–20; Elevate and MoE keep their film nights
+  and local-show evenings. The local shows "stay where they fit": evening airing only, or retired if they
+  only aired 09–15. The analog channel no longer premieres classes: it repeats G6–7 00–03 and G8–9 03–06
+  (the pairs with no night replay of their own) and keeps its 15:00–17:00 secondary block.
 - **Seasonal films ("holidays").** `Holiday` (yearly `MM-DD` → `MM-DD`, may wrap the new year;
   seeded Christmas / Halloween / Valentine's, editable at `/api/holidays`) and `HolidayFile`
   (marks keyed by `file_path`, so one decision holds on every channel; Air Spec's re-point moves

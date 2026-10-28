@@ -1,0 +1,5799 @@
+{
+"note": "Production block templates and channels, 2026-10-28 (after migration 009, read from the live API) — the line-up migration 010 rewrites.",
+"channels": [
+{
+"id": 8,
+"name": "Analog",
+"playout": "analog"
+},
+{
+"id": 1,
+"name": "Discover",
+"playout": "otav"
+},
+{
+"id": 7,
+"name": "Elementary",
+"playout": "otav"
+},
+{
+"id": 3,
+"name": "Elevate",
+"playout": "otav"
+},
+{
+"id": 4,
+"name": "Junior",
+"playout": "otav"
+},
+{
+"id": 2,
+"name": "MoE Central",
+"playout": "otav"
+},
+{
+"id": 5,
+"name": "TeenEd",
+"playout": "otav"
+}
+],
+"templates": [
+{
+"id": 2,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Academics",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"11:00"
+],
+[
+"17:00",
+"20:00"
+]
+],
+"series": [
+"Grade 10",
+"Grade 10 English Language",
+"Grade 10 English Literature",
+"Grade 10 Mathematics",
+"Grade 10 Office Administration",
+"Grade 10 Principles of Business",
+"Grade 11",
+"Grade 11 English Language",
+"Grade 11 Geography",
+"Grade 11 Information Technology",
+"Grade 11 Mathematics",
+"Grade 11 Principles of Business",
+"Grade 11 Social Studies"
+]
+},
+{
+"id": 7,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Friday Afternoon Shows",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"17:00"
+],
+[
+"00:00",
+"06:00"
+]
+],
+"series": [
+"Human The World Within",
+"Explained",
+"Seven Worlds One Planet",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"Great Barrier Reef",
+"Through the Wormhole"
+]
+},
+{
+"id": 3,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Monday Afternoon Shows",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"17:00"
+],
+[
+"00:00",
+"06:00"
+]
+],
+"series": [
+"Human The World Within",
+"Explained",
+"Seven Worlds One Planet",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"Our Planet Frozen Worlds",
+"The Day The Universe Changed"
+]
+},
+{
+"id": 17,
+"channel_id": 1,
+"channels": [
+1,
+3
+],
+"name": "Morning Shows (retired 2026-10 — duplicated Tuesday 06:00)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Life",
+"Frozen Planet"
+]
+},
+{
+"id": 8,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Night Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 3,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 12,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Saturday Afternoon Shows",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"20:00"
+],
+[
+"03:00",
+"06:00"
+]
+],
+"series": [
+"Planet Earth",
+"Life",
+"South Pacific"
+]
+},
+{
+"id": 11,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Saturday Mid-Day Shows",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+],
+[
+"00:00",
+"03:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Day The Universe Changed",
+"The Blue Planet"
+]
+},
+{
+"id": 14,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Sunday Afternoon Shows",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"20:00"
+],
+[
+"03:00",
+"06:00"
+]
+],
+"series": [
+"Human The World Within",
+"Seven Worlds One Planet",
+"Cosmos A Space Time Odyssey"
+]
+},
+{
+"id": 13,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Sunday Mid-Day Shows",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+],
+[
+"00:00",
+"03:00"
+]
+],
+"series": [
+"Frozen Planet",
+"Great Barrier Reef",
+"Through the Wormhole"
+]
+},
+{
+"id": 6,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Thursday Afternoon Shows",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"17:00"
+],
+[
+"00:00",
+"06:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"The Blue Planet",
+"Planet Earth",
+"Life",
+"South Pacific",
+"Frozen Planet"
+]
+},
+{
+"id": 4,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Tuesday Afternoon Shows",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"17:00"
+]
+],
+"series": [
+"The Blue Planet",
+"Planet Earth",
+"Life",
+"South Pacific",
+"Frozen Planet",
+"Great Barrier Reef"
+]
+},
+{
+"id": 159,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Tuesday Night Movies",
+"weekdays": "Tue",
+"is_movie_block": 1,
+"movie_limit": 10,
+"slots": [
+[
+"00:00",
+"08:00"
+]
+],
+"series": []
+},
+{
+"id": 5,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Wednesday Afternoon Shows",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"17:00"
+],
+[
+"00:00",
+"06:00"
+]
+],
+"series": [
+"Human The World Within",
+"Explained",
+"Seven Worlds One Planet",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"Our Planet Frozen Worlds",
+"Through the Wormhole"
+]
+},
+{
+"id": 1,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Weekday Morning Shows",
+"weekdays": "Mon,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Full House",
+"Family Matters",
+"Different Strokes",
+"Saved by the Bell"
+]
+},
+{
+"id": 10,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Weekend Afternoon Movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": []
+},
+{
+"id": 9,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Weekend Morning Movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"12:00"
+]
+],
+"series": []
+},
+{
+"id": 15,
+"channel_id": 1,
+"channels": [
+1
+],
+"name": "Weekend Morning Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Full House",
+"Family Matters",
+"Different Strokes",
+"Saved by the Bell"
+]
+},
+{
+"id": 64,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Advancing in English",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:30",
+"09:00"
+],
+[
+"17:30",
+"18:00"
+]
+],
+"series": [
+"La Escuelita de Inglés"
+]
+},
+{
+"id": 79,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "After Midnight Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 5,
+"slots": [
+[
+"00:00",
+"06:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 86,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Afternoon Movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 75,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Agri Talk",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"11:00"
+],
+[
+"19:30",
+"20:00"
+]
+],
+"series": [
+"Agri talk new videos"
+]
+},
+{
+"id": 71,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Beatin da Maths",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:15",
+"13:00"
+]
+],
+"series": [
+"Beatin da Maths"
+]
+},
+{
+"id": 69,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Beating The Odds",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"11:30"
+]
+],
+"series": [
+"Beating the Odds"
+]
+},
+{
+"id": 155,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Behind The Signal",
+"weekdays": "Mon,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"14:30"
+]
+],
+"series": [
+"Behind The Signal"
+]
+},
+{
+"id": 76,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "EDYOU PULSE",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+]
+],
+"series": [
+"EDYOU PULSE"
+]
+},
+{
+"id": 160,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Edpal Launch",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"18:30",
+"19:30"
+]
+],
+"series": [
+"edpal"
+]
+},
+{
+"id": 72,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Forts & Monuments",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"13:30"
+]
+],
+"series": [
+"Forts and Monuments"
+]
+},
+{
+"id": 57,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Friday Morning Shows",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"How the Universe Works",
+"Through the Wormhole"
+]
+},
+{
+"id": 66,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "How It's Made Guyana",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:00"
+]
+],
+"series": [
+"How It's Made"
+]
+},
+{
+"id": 65,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "La Escuelita De Espanol",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:30"
+],
+[
+"18:00",
+"18:30"
+]
+],
+"series": [
+"La Escuelita de Español"
+]
+},
+{
+"id": 70,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Math Intervention",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:30",
+"12:15"
+]
+],
+"series": [
+"Math Intervention"
+]
+},
+{
+"id": 53,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Monday Morning Shows",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Day The Universe Changed"
+]
+},
+{
+"id": 84,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Morning movies",
+"weekdays": "Sat",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"12:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 85,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Morning movies",
+"weekdays": "Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"12:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 87,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Night Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 3,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 58,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Saturday Morning Shows",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Day The Universe Changed",
+"The Blue Planet",
+"Planet Earth",
+"Life"
+]
+},
+{
+"id": 59,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Sunday Morning Shows",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"South Pacific",
+"Frozen Planet",
+"Great Barrier Reef",
+"How the Universe Works",
+"Through the Wormhole"
+]
+},
+{
+"id": 73,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "The Amazing World of Cho",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:30",
+"14:00"
+]
+],
+"series": [
+"The Amazing World of Cho"
+]
+},
+{
+"id": 56,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Thursday Morning Shows",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Frozen Planet",
+"Great Barrier Reef"
+]
+},
+{
+"id": 63,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Tongues of the Motherland",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"08:30"
+],
+[
+"17:00",
+"17:30"
+]
+],
+"series": [
+"Tongues of the Motherland"
+]
+},
+{
+"id": 54,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Tuesday Morning Shows",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"The Blue Planet",
+"Planet Earth"
+]
+},
+{
+"id": 55,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Wednesday Morning Shows",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Life",
+"South Pacific"
+]
+},
+{
+"id": 62,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Weekday Afternoon Shows",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:30",
+"17:00"
+]
+],
+"series": [
+"Full House",
+"Family Matters",
+"Different Strokes",
+"Saved by the Bell"
+]
+},
+{
+"id": 61,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Weekend Afternoon Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"20:00"
+]
+],
+"series": [
+"Full House",
+"Family Matters",
+"Different Strokes",
+"Saved by the Bell"
+]
+},
+{
+"id": 60,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Weekend Mid-Day Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+]
+],
+"series": [
+"Full House",
+"Family Matters",
+"Different Strokes",
+"Saved by the Bell"
+]
+},
+{
+"id": 67,
+"channel_id": 2,
+"channels": [
+2
+],
+"name": "Yoga on the Beach",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+]
+],
+"series": [
+"Yoga on the Beach"
+]
+},
+{
+"id": 28,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Advancing in English",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:30"
+],
+[
+"18:00",
+"18:30"
+]
+],
+"series": [
+"La Escuelita de Inglés"
+]
+},
+{
+"id": 83,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Afternoon Movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 34,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Agri Talk",
+"weekdays": "Mon,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"12:30"
+]
+],
+"series": [
+"Agri talk new videos"
+]
+},
+{
+"id": 45,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Agri Talk",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:30"
+],
+[
+"18:00",
+"18:30"
+]
+],
+"series": [
+"Agri talk new videos"
+]
+},
+{
+"id": 174,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Beatin da Maths",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:30",
+"14:00"
+]
+],
+"series": [
+"Beatin da Maths"
+]
+},
+{
+"id": 39,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Beatin da Maths (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"12:30"
+]
+],
+"series": [
+"Beatin da Maths"
+]
+},
+{
+"id": 26,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "CPCE Teachers' Training",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"08:30"
+],
+[
+"17:00",
+"17:30"
+]
+],
+"series": [
+"CPCE Teacher Lessons"
+]
+},
+{
+"id": 169,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Forts & Monuments",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"11:30"
+]
+],
+"series": [
+"Forts and Monuments"
+]
+},
+{
+"id": 40,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Forts & Monuments (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:30",
+"13:00"
+]
+],
+"series": [
+"Forts and Monuments"
+]
+},
+{
+"id": 52,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Friday Afternoon Shows",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"17:00"
+]
+],
+"series": [
+"South Pacific",
+"Great Barrier Reef",
+"Through the Wormhole"
+]
+},
+{
+"id": 30,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "How It's Made Guyana",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+],
+[
+"19:00",
+"19:30"
+]
+],
+"series": [
+"How It's Made"
+]
+},
+{
+"id": 32,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Inside NCERD",
+"weekdays": "Mon,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"11:30"
+]
+],
+"series": [
+"Inside NCERD"
+]
+},
+{
+"id": 43,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Inside NCERD",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"08:30"
+],
+[
+"17:00",
+"17:30"
+]
+],
+"series": [
+"Inside NCERD"
+]
+},
+{
+"id": 29,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "La Escuelita De Espanol",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:00"
+],
+[
+"18:30",
+"19:00"
+]
+],
+"series": [
+"La Escuelita de Español"
+]
+},
+{
+"id": 36,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Let's Talk Autism",
+"weekdays": "Mon,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"13:30"
+]
+],
+"series": [
+"Let's Talk Autism"
+]
+},
+{
+"id": 47,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Let's Talk Autism",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+],
+[
+"19:00",
+"20:00"
+]
+],
+"series": [
+"Let's Talk Autism"
+]
+},
+{
+"id": 173,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Math Intervention",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"13:30"
+]
+],
+"series": [
+"Math Intervention"
+]
+},
+{
+"id": 38,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Math Intervention (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:30",
+"12:00"
+]
+],
+"series": [
+"Math Intervention"
+]
+},
+{
+"id": 48,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Monday Afternoon Shows",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"17:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"Planet Earth",
+"South Pacific"
+]
+},
+{
+"id": 16,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Blue Planet"
+]
+},
+{
+"id": 18,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Life",
+"Frozen Planet"
+]
+},
+{
+"id": 19,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"How the Universe Works"
+]
+},
+{
+"id": 20,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"The Blue Planet",
+"Life"
+]
+},
+{
+"id": 21,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"08:00"
+]
+],
+"series": [
+"Frozen Planet",
+"How the Universe Works"
+]
+},
+{
+"id": 22,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Blue Planet",
+"Life",
+"Frozen Planet"
+]
+},
+{
+"id": 23,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning Shows",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"The Blue Planet",
+"Life",
+"How the Universe Works"
+]
+},
+{
+"id": 82,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Morning movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 2,
+"slots": [
+[
+"10:00",
+"12:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 171,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "New Enhanced Curriculum",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"12:30"
+]
+],
+"series": [
+"Renewed Curriculum"
+]
+},
+{
+"id": 37,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "New Enhanced Curriculum (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"11:30"
+]
+],
+"series": [
+"Renewed Curriculum"
+]
+},
+{
+"id": 81,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Night Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 10,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": []
+},
+{
+"id": 31,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Of Interest",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"11:00"
+],
+[
+"19:30",
+"20:00"
+]
+],
+"series": [
+"Of Interest"
+]
+},
+{
+"id": 172,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Students of Guyana",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:30",
+"13:00"
+]
+],
+"series": [
+"Students of Guyana"
+]
+},
+{
+"id": 41,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Students of Guyana (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"13:30"
+]
+],
+"series": [
+"Students of Guyana"
+]
+},
+{
+"id": 170,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "The Amazing World of Cho",
+"weekdays": "Tue,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:30",
+"12:00"
+]
+],
+"series": [
+"The Amazing World of Cho"
+]
+},
+{
+"id": 42,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "The Amazing World of Cho (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:30",
+"14:00"
+]
+],
+"series": [
+"The Amazing World of Cho"
+]
+},
+{
+"id": 51,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Thursday Afternoon Shows",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"17:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"Planet Earth",
+"Through the Wormhole"
+]
+},
+{
+"id": 27,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Tongues of the Motherland",
+"weekdays": "Mon,Tue,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:30",
+"09:00"
+],
+[
+"17:30",
+"18:00"
+]
+],
+"series": [
+"Tongues of the Motherland"
+]
+},
+{
+"id": 49,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Tuesday Afternoon Shows",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"17:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"Great Barrier Reef",
+"Through the Wormhole"
+]
+},
+{
+"id": 50,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Wednesday Afternoon Shows",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"17:00"
+]
+],
+"series": [
+"Planet Earth",
+"South Pacific",
+"Great Barrier Reef"
+]
+},
+{
+"id": 25,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Weekend Afternoon Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"20:00"
+]
+],
+"series": [
+"South Pacific",
+"Great Barrier Reef",
+"Through the Wormhole"
+]
+},
+{
+"id": 24,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Weekend Mid-Day Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"Planet Earth",
+"South Pacific"
+]
+},
+{
+"id": 33,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Yoga on the Beach",
+"weekdays": "Mon,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:30",
+"12:00"
+]
+],
+"series": [
+"Yoga on the Beach"
+]
+},
+{
+"id": 44,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Yoga on the Beach",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:30",
+"09:00"
+],
+[
+"17:30",
+"18:00"
+]
+],
+"series": [
+"Yoga on the Beach"
+]
+},
+{
+"id": 35,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Your Government & You",
+"weekdays": "Mon,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:30",
+"13:00"
+]
+],
+"series": [
+"Literacy"
+]
+},
+{
+"id": 46,
+"channel_id": 3,
+"channels": [
+3
+],
+"name": "Your Government & You",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:00"
+],
+[
+"18:30",
+"19:00"
+]
+],
+"series": [
+"YGAY"
+]
+},
+{
+"id": 161,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior 11 to 5",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": [
+"Brain Child",
+"Super Why",
+"The Magic School Bus",
+"Sid The Science Kid",
+"Mr Rogers",
+"Cyberchase",
+"StillWater"
+]
+},
+{
+"id": 94,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior 11 to 5 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"16:59"
+]
+],
+"series": [
+"Brain Child",
+"Super Why",
+"The Magic School Bus",
+"Sid The Science Kid",
+"Mr Rogers",
+"Cyberchase",
+"StillWater"
+]
+},
+{
+"id": 97,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior 12 to 6 Replay",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"00:00",
+"05:59"
+]
+],
+"series": [
+"Nursery",
+"Grade 1 Mathematics",
+"Grade 2 Mathematics",
+"R.E.A.D",
+"Grade 2 English Language",
+"Grade 3 English Language",
+"Grade 1 Science",
+"Grade 2 Science",
+"Grade 3 Science",
+"Grade 1 Social Studies",
+"Grade 2 Social Studies"
+]
+},
+{
+"id": 92,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior 6 to 8",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"07:59"
+]
+],
+"series": [
+"Sesame Street",
+"Daniel Tiger",
+"Blues Clues",
+"Bluey"
+]
+},
+{
+"id": 96,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior 8 Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 3,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 93,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Ack 8 to 11 and 5 to 8 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"10:59"
+],
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Nursery",
+"Grade 1 Mathematics",
+"Grade 2 Mathematics",
+"R.E.A.D",
+"Grade 1 English Language",
+"Grade 2 English Language",
+"Grade 3 English Language",
+"Grade 1 Science",
+"Grade 2 Science",
+"Grade 3 Science",
+"Grade 1 Social Studies",
+"Grade 2 Social Studies"
+]
+},
+{
+"id": 177,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 09:00 L&S (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:30"
+],
+[
+"00:00",
+"00:30"
+],
+[
+"17:00",
+"17:30"
+]
+],
+"series": [
+"R.E.A.D"
+]
+},
+{
+"id": 178,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 09:30 Literacy (Mon/Wed/Fri)",
+"weekdays": "Mon,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:30"
+],
+[
+"00:30",
+"01:30"
+],
+[
+"17:30",
+"18:30"
+]
+],
+"series": [
+"Grade 1 English Language",
+"Grade 2 English Language"
+]
+},
+{
+"id": 179,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 09:30 Mathematics (Tue/Thu)",
+"weekdays": "Tue,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:30"
+],
+[
+"00:30",
+"01:30"
+],
+[
+"17:30",
+"18:30"
+]
+],
+"series": [
+"Grade 1 Mathematics",
+"Grade 2 Mathematics"
+]
+},
+{
+"id": 180,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 10:30 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"10:45"
+],
+[
+"01:30",
+"01:45"
+],
+[
+"18:30",
+"18:45"
+]
+],
+"series": [
+"Bluey"
+]
+},
+{
+"id": 182,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 10:45 Reading + Literacy (Tue/Thu)",
+"weekdays": "Tue,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 2 English Language",
+"Grade 1 English Language"
+]
+},
+{
+"id": 183,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 10:45 Science + Mathematics (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 1 Science",
+"Grade 2 Science",
+"Grade 1 Mathematics",
+"Grade 2 Mathematics"
+]
+},
+{
+"id": 181,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 10:45 Social Studies + Mathematics (Mon/Wed)",
+"weekdays": "Mon,Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 1 Social Studies",
+"Grade 2 Social Studies",
+"Grade 1 Mathematics",
+"Grade 2 Mathematics"
+]
+},
+{
+"id": 184,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 12:00 Lunch (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"Daniel Tiger",
+"Octonauts",
+"Bluey"
+]
+},
+{
+"id": 189,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 13:00 Moral & Civic + Social Studies (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Your Government and You",
+"Grade 1 Social Studies",
+"Grade 2 Social Studies"
+]
+},
+{
+"id": 187,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 13:00 Reading + PE (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 1 English Language",
+"Grade 2 English Language"
+]
+},
+{
+"id": 185,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 13:00 Reading + Science (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 1 English Language",
+"Grade 2 English Language",
+"Grade 1 Science",
+"Grade 2 Science"
+]
+},
+{
+"id": 188,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 13:00 Science (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 1 Science",
+"Grade 2 Science"
+]
+},
+{
+"id": 186,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 13:00 Social Studies (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 1 Social Studies",
+"Grade 2 Social Studies"
+]
+},
+{
+"id": 190,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 14:00 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"14:10"
+],
+[
+"05:00",
+"05:10"
+]
+],
+"series": [
+"Bluey"
+]
+},
+{
+"id": 191,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 14:10 Beyond Core + Support Literacy (Mon/Wed/Fri)",
+"weekdays": "Mon,Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 1 English Language",
+"Grade 2 English Language"
+]
+},
+{
+"id": 193,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 14:10 Reading + Support Mathematics (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 2 English Language",
+"Grade 1 English Language",
+"Grade 2 Mathematics",
+"Grade 1 Mathematics"
+]
+},
+{
+"id": 192,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Grades 1-2 14:10 Science + Support Mathematics (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 2 Science",
+"Grade 1 Science",
+"Grade 2 Mathematics",
+"Grade 1 Mathematics"
+]
+},
+{
+"id": 235,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Nursery 08-09",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+]
+],
+"series": [
+"Nursery",
+"Numeracy",
+"R.E.A.D"
+]
+},
+{
+"id": 110,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Weekend 10  am- 12 pm",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"11:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 111,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Weekend 12 pm - 3 pm",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"14:59"
+]
+],
+"series": [
+"Brain Child",
+"Super Why",
+"The Magic School Bus",
+"Sid The Science Kid",
+"Mr Rogers",
+"Cyberchase",
+"StillWater"
+]
+},
+{
+"id": 112,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Weekend 3 pm to 5 pm",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"16:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 113,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Weekend 5 pm - 8 pm",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Brain Child",
+"Super Why",
+"The Magic School Bus",
+"Sid The Science Kid",
+"Mr Rogers",
+"Cyberchase",
+"StillWater"
+]
+},
+{
+"id": 109,
+"channel_id": 4,
+"channels": [
+4
+],
+"name": "Junior Weekend 6 am - 10 am",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"09:59"
+]
+],
+"series": [
+"Sesame Street",
+"Daniel Tiger",
+"Blues Clues",
+"Bluey",
+"Octonauts",
+"Octonauts Above and Beyond",
+"Little Einstein",
+"Dragon Tales"
+]
+},
+{
+"id": 80,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Morning Shows 6 to 8",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"07:59"
+]
+],
+"series": [
+"Brain Games",
+"Xavier Riddle",
+"Explained",
+"Life"
+]
+},
+{
+"id": 90,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teem Movie 8",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 3,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 91,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen 12 to 6",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"00:00",
+"05:59"
+]
+],
+"series": [
+"Grade 7 English Language",
+"Grade 7 English Literature",
+"Grade 7 Mathematics",
+"Grade 7 Science",
+"Grade 7 Social Studies",
+"Grade 8 English Language",
+"Grade 8 Science",
+"Grade 8 Social Studies",
+"Grade 9 English Language",
+"Grade 9 English Literature",
+"Grade 9 Mathematics",
+"Grade 9 Social Studies",
+"Grade 9 Geography"
+]
+},
+{
+"id": 78,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Ack 8 to 11 and 5 to 8",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": 3,
+"slots": [
+[
+"08:00",
+"10:59"
+],
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Grade 7 English Language",
+"Grade 8 English Language",
+"Grade 9 English Language",
+"Grade 7 English Literature",
+"Grade 9 English Literature",
+"Grade 7 Mathematics",
+"Grade 9 Mathematics",
+"Grade 7 Science",
+"Grade 8 Science",
+"Grade 7 Social Studies",
+"Grade 8 Social Studies",
+"Grade 9 Social Studies",
+"Grade 9 Geography"
+]
+},
+{
+"id": 88,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Cartoon 11 to 5",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"16:59"
+]
+],
+"series": [
+"Wild Kratts",
+"Mythbusters",
+"Seven Worlds One Planet",
+"How the Universe Works"
+]
+},
+{
+"id": 105,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Weekend 10 - 12",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"11:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 106,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Weekend 12 - 3",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"14:59"
+]
+],
+"series": [
+"Wild Kratts",
+"Mythbusters",
+"Seven Worlds One Planet",
+"How the Universe Works"
+]
+},
+{
+"id": 107,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Weekend 3 - 5",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"16:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 108,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Weekend 5 - 8 Replay",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Wild Kratts",
+"Mythbusters",
+"Seven Worlds One Planet",
+"How the Universe Works"
+]
+},
+{
+"id": 104,
+"channel_id": 5,
+"channels": [
+5
+],
+"name": "Teen Weekend 6 - 10",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"09:59"
+]
+],
+"series": [
+"Brain Child",
+"Xavier Riddle",
+"Explained",
+"Brain Games",
+"Life"
+]
+},
+{
+"id": 163,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementart 6 to 8",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"09:00"
+]
+],
+"series": [
+"Super Why",
+"Mythbusters",
+"Arthur",
+"Cyberchase"
+]
+},
+{
+"id": 98,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementart 6 to 8 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"07:59"
+]
+],
+"series": [
+"Super Why",
+"Mythbusters",
+"Arthur",
+"Cyberchase"
+]
+},
+{
+"id": 162,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary 11 - 5",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": [
+"Sesame Street",
+"Blues Clues",
+"Bill Nye The Science Guy",
+"Little Einstein",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"StillWater"
+]
+},
+{
+"id": 100,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary 11 - 5 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"16:59"
+]
+],
+"series": [
+"Sesame Street",
+"Blues Clues",
+"Bill Nye The Science Guy",
+"Little Einstein",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"StillWater"
+]
+},
+{
+"id": 103,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary 12 to 6 Replay",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"00:00",
+"05:59"
+]
+],
+"series": [
+"Grade 4 Mathematics",
+"Grade 5 Mathematics",
+"Grade 6 Mathematics",
+"Grade 4 English Language",
+"Grade 5 English Language",
+"Grade 6 English Language",
+"Grade 4 Science",
+"Grade 5 Science",
+"Grade 6 Science",
+"Grade 4 Social Studies",
+"Grade 5 Social Studies",
+"Grade 6 Social Studies"
+]
+},
+{
+"id": 102,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary 8 Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 3,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 99,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary 8 to 11 and 5 to 8 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"10:59"
+],
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Grade 4 Mathematics",
+"Grade 5 Mathematics",
+"Grade 6 Mathematics",
+"Grade 4 English Language",
+"Grade 5 English Language",
+"Grade 6 English Language",
+"Grade 4 Science",
+"Grade 5 Science",
+"Grade 6 Science",
+"Grade 4 Social Studies",
+"Grade 5 Social Studies",
+"Grade 6 Social Studies"
+]
+},
+{
+"id": 194,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 09:00 L&S (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:30"
+],
+[
+"00:00",
+"00:30"
+],
+[
+"17:00",
+"17:30"
+]
+],
+"series": [
+"English Language"
+]
+},
+{
+"id": 196,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 09:30 Literacy (Tue/Fri)",
+"weekdays": "Tue,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:30"
+],
+[
+"00:30",
+"01:30"
+],
+[
+"17:30",
+"18:30"
+]
+],
+"series": [
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 195,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 09:30 Mathematics (Mon/Wed/Thu)",
+"weekdays": "Mon,Wed,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:30",
+"10:30"
+],
+[
+"00:30",
+"01:30"
+],
+[
+"17:30",
+"18:30"
+]
+],
+"series": [
+"Grade 4 Mathematics"
+]
+},
+{
+"id": 197,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:30 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"10:45"
+],
+[
+"01:30",
+"01:45"
+],
+[
+"18:30",
+"18:45"
+]
+],
+"series": [
+"Curious George"
+]
+},
+{
+"id": 198,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:45 Literacy + Reading (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 199,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:45 Mathematics + HFLE (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 4 Mathematics"
+]
+},
+{
+"id": 202,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:45 Mathematics + Language Arts (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 4 Mathematics",
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 201,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:45 Reading + Social Studies + Language Arts (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 4 English Language",
+"Grade 3 English Language",
+"Grade 4 Social Studies"
+]
+},
+{
+"id": 200,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 10:45 Science + Moral & Civic (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+],
+[
+"18:45",
+"20:00"
+]
+],
+"series": [
+"Grade 4 Science",
+"Grade 3 Science"
+]
+},
+{
+"id": 203,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 12:00 Lunch (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"Arthur",
+"Cyberchase",
+"Octonauts Above and Beyond"
+]
+},
+{
+"id": 205,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 13:00 Language Arts + Reading (Tue/Wed/Thu)",
+"weekdays": "Tue,Wed,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 204,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 13:00 Science + Language Arts (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 4 Science",
+"Grade 3 Science",
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 206,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 13:00 Social Studies + Reading (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 4 Social Studies",
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 207,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:00 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"14:10"
+],
+[
+"05:00",
+"05:10"
+]
+],
+"series": [
+"Curious George"
+]
+},
+{
+"id": 209,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:10 PE (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Yoga on the Beach"
+]
+},
+{
+"id": 212,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:10 Science + Beyond Core (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 4 Science",
+"Grade 3 Science"
+]
+},
+{
+"id": 211,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:10 Science + Reading (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 4 Science",
+"Grade 3 Science",
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 208,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:10 Social Studies (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 4 Social Studies"
+]
+},
+{
+"id": 210,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Grades 3-4 14:10 Social Studies + Reading (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 4 Social Studies",
+"Grade 4 English Language",
+"Grade 3 English Language"
+]
+},
+{
+"id": 115,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Weekend 10 - 12",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"12:00"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 116,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Weekend 12 - 3",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"14:59"
+]
+],
+"series": [
+"Sesame Street",
+"Blues Clues",
+"Bill Nye The Science Guy",
+"Little Einstein",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"StillWater"
+]
+},
+{
+"id": 118,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Weekend 3 - 5",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"16:59"
+]
+],
+"series": [
+"Movies"
+]
+},
+{
+"id": 117,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Weekend 5 - 8",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"19:59"
+]
+],
+"series": [
+"Sesame Street",
+"Blues Clues",
+"Bill Nye The Science Guy",
+"Little Einstein",
+"Cosmos A Space Time Odyssey",
+"Brain Games",
+"StillWater"
+]
+},
+{
+"id": 114,
+"channel_id": 7,
+"channels": [
+7
+],
+"name": "Elementary Weekend 6 - 10",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"09:59"
+]
+],
+"series": [
+"Super Why",
+"The Magic School Bus",
+"Wild Kratts",
+"Xavier Riddle",
+"Mythbusters",
+"Arthur",
+"Cyberchase"
+]
+},
+{
+"id": 241,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Behind The Signal",
+"weekdays": "Mon,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"15:30"
+]
+],
+"series": [
+"Behind The Signal"
+]
+},
+{
+"id": 123,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Cartoons (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"07:00",
+"08:00"
+],
+[
+"18:00",
+"19:00"
+]
+],
+"series": [
+"Bill Nye The Science Guy",
+"Xavier Riddle",
+"Peep and the Big Wide World"
+]
+},
+{
+"id": 119,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Cartoons (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"07:00",
+"08:00"
+],
+[
+"18:00",
+"19:00"
+]
+],
+"series": [
+"Arthur",
+"Octonauts",
+"Peep and the Big Wide World",
+"Curious George"
+]
+},
+{
+"id": 122,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Cartoons (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"07:00",
+"08:00"
+],
+[
+"18:00",
+"19:00"
+]
+],
+"series": [
+"The Magic School Bus",
+"Super Why",
+"Bluey"
+]
+},
+{
+"id": 120,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Cartoons (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"07:00",
+"08:00"
+],
+[
+"18:00",
+"19:00"
+]
+],
+"series": [
+"Wild Kratts",
+"Daniel Tiger",
+"Bluey",
+"Octonauts Above and Beyond"
+]
+},
+{
+"id": 121,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Cartoons (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"07:00",
+"08:00"
+],
+[
+"18:00",
+"19:00"
+]
+],
+"series": [
+"Cyberchase",
+"Sid The Science Kid",
+"Curious George"
+]
+},
+{
+"id": 176,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog EDYOU PULSE",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:30",
+"12:00"
+]
+],
+"series": [
+"EDYOU PULSE"
+]
+},
+{
+"id": 148,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog EDYOU PULSE (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+]
+],
+"series": [
+"EDYOU PULSE"
+]
+},
+{
+"id": 143,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Evening TV Shows",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"19:00",
+"21:00"
+]
+],
+"series": [
+"Different Strokes",
+"Family Matters",
+"Full House",
+"Saved by the Bell",
+"Fuller House"
+]
+},
+{
+"id": 134,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 10 (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"16:00",
+"17:00"
+]
+],
+"series": [
+"Grade 10 English Language",
+"Grade 10 Mathematics",
+"Grade 10 Principles of Business"
+]
+},
+{
+"id": 135,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 10 (Tue/Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"16:00",
+"17:00"
+]
+],
+"series": [
+"Grade 10 Office Administration",
+"Grade 10 English Literature",
+"Grade 10"
+]
+},
+{
+"id": 136,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 11 (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"18:00"
+]
+],
+"series": [
+"Grade 11 Mathematics",
+"Grade 11 English Language",
+"Grade 11 Geography"
+]
+},
+{
+"id": 137,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 11 (Tue/Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"18:00"
+]
+],
+"series": [
+"Grade 11 Information Technology",
+"Grade 11 Principles of Business",
+"Grade 11 Social Studies",
+"Grade 11"
+]
+},
+{
+"id": 125,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 2 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"10:00"
+],
+[
+"01:00",
+"02:00"
+]
+],
+"series": [
+"Grade 2 English Language",
+"Grade 2 Mathematics",
+"Grade 2 Science",
+"Grade 2 Social Studies"
+]
+},
+{
+"id": 128,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 5 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"11:00",
+"12:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 5 Mathematics",
+"Grade 5 Science",
+"Grade 5 Social Studies"
+]
+},
+{
+"id": 129,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 6 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 6 English Language",
+"Grade 6 Mathematics",
+"Grade 6 Science",
+"Grade 6 Social Studies"
+]
+},
+{
+"id": 130,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 7 (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:30",
+"15:00"
+]
+],
+"series": [
+"Grade 7 English Language",
+"Grade 7 Mathematics",
+"Grade 7 Science"
+]
+},
+{
+"id": 156,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 7 (Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:30",
+"15:00"
+]
+],
+"series": [
+"Grade 7 Social Studies",
+"Grade 7 Spanish",
+"Grade 7 English Literature"
+]
+},
+{
+"id": 131,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 7 (Tue) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"15:00"
+],
+[
+"05:00",
+"06:00"
+]
+],
+"series": [
+"Grade 7 Social Studies",
+"Grade 7 Spanish",
+"Grade 7 English Literature"
+]
+},
+{
+"id": 157,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 7 Night (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"05:00",
+"06:00"
+]
+],
+"series": [
+"Grade 7 English Language",
+"Grade 7 Mathematics",
+"Grade 7 Science"
+]
+},
+{
+"id": 158,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 7 Night (Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"05:00",
+"06:00"
+]
+],
+"series": [
+"Grade 7 Social Studies",
+"Grade 7 Spanish",
+"Grade 7 English Literature"
+]
+},
+{
+"id": 132,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 8 (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"16:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Grade 8 English Language",
+"Grade 8 Science",
+"Grade 8 Social Studies"
+]
+},
+{
+"id": 133,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grade 9 (Tue/Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"16:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Grade 9 English Language",
+"Grade 9 Mathematics",
+"Grade 9 Social Studies",
+"Grade 9 Geography",
+"Grade 9 English Literature"
+]
+},
+{
+"id": 126,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 3-4 (Mon/Wed/Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"11:00"
+],
+[
+"02:00",
+"03:00"
+]
+],
+"series": [
+"Grade 3 English Language",
+"Grade 3 Science",
+"Grade 4 English Language",
+"Grade 4 Mathematics"
+]
+},
+{
+"id": 127,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 3-4 (Tue/Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"11:00"
+],
+[
+"02:00",
+"03:00"
+]
+],
+"series": [
+"Grade 4 Science",
+"Grade 4 Social Studies",
+"Grade 4 Mathematics",
+"Grade 3 Science"
+]
+},
+{
+"id": 216,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 09:00 Language Arts (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"09:40"
+],
+[
+"00:00",
+"00:40"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 6 English Language"
+]
+},
+{
+"id": 214,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 09:00 Literacy (Tue/Thu)",
+"weekdays": "Tue,Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"10:00"
+],
+[
+"00:00",
+"01:00"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 6 English Language"
+]
+},
+{
+"id": 213,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 09:00 Mathematics (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"10:30"
+],
+[
+"00:00",
+"01:30"
+]
+],
+"series": [
+"Grade 5 Mathematics",
+"Grade 6 Mathematics"
+]
+},
+{
+"id": 215,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 09:00 Mathematics (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:00",
+"10:00"
+],
+[
+"00:00",
+"01:00"
+]
+],
+"series": [
+"Grade 5 Mathematics",
+"Grade 6 Mathematics"
+]
+},
+{
+"id": 217,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 09:40 Mathematics (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"09:40",
+"10:30"
+],
+[
+"00:40",
+"01:30"
+]
+],
+"series": [
+"Grade 5 Mathematics",
+"Grade 6 Mathematics"
+]
+},
+{
+"id": 218,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:00 Beyond Core (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+],
+[
+"01:00",
+"01:30"
+]
+],
+"series": [
+"La Escuelita de Español"
+]
+},
+{
+"id": 219,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:00 Moral & Civic (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+],
+[
+"01:00",
+"01:30"
+]
+],
+"series": [
+"Your Government and You"
+]
+},
+{
+"id": 220,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:00 Science (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:00",
+"10:30"
+],
+[
+"01:00",
+"01:30"
+]
+],
+"series": [
+"Grade 6 Science",
+"Grade 5 Science"
+]
+},
+{
+"id": 221,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:30 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:30",
+"10:45"
+],
+[
+"01:30",
+"01:45"
+]
+],
+"series": []
+},
+{
+"id": 222,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:45 Literacy (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 6 English Language"
+]
+},
+{
+"id": 225,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:45 Mathematics (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+]
+],
+"series": [
+"Grade 5 Mathematics",
+"Grade 6 Mathematics"
+]
+},
+{
+"id": 223,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:45 Mathematics + Language Arts (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+]
+],
+"series": [
+"Grade 5 Mathematics",
+"Grade 6 Mathematics",
+"Grade 6 English Language",
+"Grade 5 English Language"
+]
+},
+{
+"id": 224,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 10:45 Social Studies + Language Arts (Wed/Fri)",
+"weekdays": "Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"10:45",
+"12:00"
+],
+[
+"01:45",
+"03:00"
+]
+],
+"series": [
+"Grade 5 Social Studies",
+"Grade 6 Social Studies",
+"Grade 5 English Language",
+"Grade 6 English Language"
+]
+},
+{
+"id": 228,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 13:00 Literacy (Wed/Fri)",
+"weekdays": "Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 6 English Language"
+]
+},
+{
+"id": 229,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 13:00 Reading + Language Arts (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 6 English Language",
+"Grade 5 English Language"
+]
+},
+{
+"id": 226,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 13:00 Science (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 5 Science",
+"Grade 6 Science"
+]
+},
+{
+"id": 227,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 13:00 Social Studies (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"13:00",
+"14:00"
+],
+[
+"04:00",
+"05:00"
+]
+],
+"series": [
+"Grade 5 Social Studies",
+"Grade 6 Social Studies"
+]
+},
+{
+"id": 230,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 14:00 Recess (Mon-Fri)",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:00",
+"14:10"
+],
+[
+"05:00",
+"05:10"
+]
+],
+"series": []
+},
+{
+"id": 234,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 14:10 PE (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Yoga on the Beach"
+]
+},
+{
+"id": 232,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 14:10 Reading + HFLE (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 6 English Language",
+"Grade 5 English Language",
+"Let's Talk Autism",
+"Inside NCERD"
+]
+},
+{
+"id": 231,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 14:10 Reading + Social Studies (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 5 English Language",
+"Grade 6 English Language",
+"Grade 5 Social Studies",
+"Grade 6 Social Studies"
+]
+},
+{
+"id": 233,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Grades 5-6 14:10 Science (Wed/Fri)",
+"weekdays": "Wed,Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"14:10",
+"15:00"
+],
+[
+"05:10",
+"06:00"
+]
+],
+"series": [
+"Grade 5 Science",
+"Grade 6 Science"
+]
+},
+{
+"id": 240,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Morning Documentary (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Planet Earth",
+"The Day The Universe Changed"
+]
+},
+{
+"id": 236,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Morning Documentary (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Frozen Planet",
+"South Pacific"
+]
+},
+{
+"id": 239,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Morning Documentary (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Cosmos A Space Time Odyssey",
+"Human The World Within"
+]
+},
+{
+"id": 237,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Morning Documentary (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Cosmos A Space Time Odyssey",
+"Human The World Within"
+]
+},
+{
+"id": 238,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Morning Documentary (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"06:00",
+"07:00"
+]
+],
+"series": [
+"Frozen Planet",
+"The Day The Universe Changed"
+]
+},
+{
+"id": 144,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Night Movies",
+"weekdays": "Mon,Tue,Wed,Thu,Fri",
+"is_movie_block": 1,
+"movie_limit": 2,
+"slots": [
+[
+"21:00",
+"23:59"
+]
+],
+"series": []
+},
+{
+"id": 168,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"17:00",
+"18:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"South Pacific",
+"The Blue Planet"
+]
+},
+{
+"id": 142,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Fri) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+]
+],
+"series": [
+"South Pacific",
+"The Day The Universe Changed",
+"Great Barrier Reef"
+]
+},
+{
+"id": 164,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"17:00",
+"18:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"Planet Earth",
+"South Pacific"
+]
+},
+{
+"id": 138,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Mon) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+]
+],
+"series": [
+"Cosmos A Space Time Odyssey",
+"Life"
+]
+},
+{
+"id": 167,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"17:00",
+"18:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"Human The World Within"
+]
+},
+{
+"id": 141,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Thu) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+]
+],
+"series": [
+"Our Planet Frozen Worlds",
+"Seven Worlds One Planet"
+]
+},
+{
+"id": 165,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"17:00",
+"18:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"The Day The Universe Changed",
+"Our Planet Frozen Worlds"
+]
+},
+{
+"id": 139,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Tue) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+]
+],
+"series": [
+"Planet Earth",
+"Frozen Planet"
+]
+},
+{
+"id": 166,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+],
+[
+"17:00",
+"18:00"
+],
+[
+"03:00",
+"04:00"
+]
+],
+"series": [
+"The Blue Planet",
+"Planet Earth"
+]
+},
+{
+"id": 140,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Noon Documentary (Wed) (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"13:00"
+]
+],
+"series": [
+"The Blue Planet",
+"Human The World Within"
+]
+},
+{
+"id": 124,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Nursery & Grade 1 (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"08:00",
+"09:00"
+],
+[
+"00:00",
+"01:00"
+]
+],
+"series": [
+"Nursery",
+"Grade 1 English Language",
+"Grade 1 Mathematics",
+"Grade 1 Science",
+"Grade 1 Social Studies"
+]
+},
+{
+"id": 147,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Saturday Morning Movie",
+"weekdays": "Sat",
+"is_movie_block": 1,
+"movie_limit": 1,
+"slots": [
+[
+"10:00",
+"12:00"
+]
+],
+"series": []
+},
+{
+"id": 246,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Secondary Grades 10-11 (Thu)",
+"weekdays": "Thu",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:30",
+"17:00"
+]
+],
+"series": [
+"Grade 11 Geography",
+"Grade 11 Information Technology",
+"Grade 11 Social Studies",
+"Grade 10 Office Administration",
+"Grade 10 English Literature"
+]
+},
+{
+"id": 245,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Secondary Grades 10-11 (Tue)",
+"weekdays": "Tue",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": [
+"Grade 10 English Language",
+"Grade 10 Mathematics",
+"Grade 10 Principles of Business",
+"Grade 11 Mathematics",
+"Grade 11 English Language"
+]
+},
+{
+"id": 244,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Secondary Grades 7-9 (Fri)",
+"weekdays": "Fri",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:30",
+"17:00"
+]
+],
+"series": [
+"Grade 9 English Language",
+"Grade 9 Geography",
+"Grade 7 Social Studies",
+"Grade 7 Spanish",
+"Grade 7 English Literature"
+]
+},
+{
+"id": 242,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Secondary Grades 7-9 (Mon)",
+"weekdays": "Mon",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:30",
+"17:00"
+]
+],
+"series": [
+"Grade 7 English Language",
+"Grade 7 Mathematics",
+"Grade 8 Science",
+"Grade 9 Social Studies"
+]
+},
+{
+"id": 243,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Secondary Grades 7-9 (Wed)",
+"weekdays": "Wed",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"15:30",
+"17:00"
+]
+],
+"series": [
+"Grade 8 English Language",
+"Grade 8 Social Studies",
+"Grade 9 Mathematics",
+"Grade 7 Science"
+]
+},
+{
+"id": 175,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Sunday Morning Movie",
+"weekdays": "Sun",
+"is_movie_block": 1,
+"movie_limit": 1,
+"slots": [
+[
+"10:00",
+"11:30"
+]
+],
+"series": []
+},
+{
+"id": 149,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Sunday Morning Movie (retired 2026-10-26 — circular)",
+"weekdays": "",
+"is_movie_block": 1,
+"movie_limit": 1,
+"slots": [
+[
+"10:30",
+"12:00"
+]
+],
+"series": []
+},
+{
+"id": 152,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Afternoon Movie",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 1,
+"slots": [
+[
+"15:00",
+"17:00"
+]
+],
+"series": []
+},
+{
+"id": 145,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Cartoons (Sat)",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Arthur",
+"Wild Kratts",
+"Cyberchase",
+"The Magic School Bus",
+"Sid The Science Kid",
+"Blues Clues",
+"Dragon Tales",
+"Little Einstein"
+]
+},
+{
+"id": 146,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Cartoons (Sun)",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"06:00",
+"10:00"
+]
+],
+"series": [
+"Super Why",
+"Xavier Riddle",
+"Bill Nye The Science Guy",
+"Octonauts",
+"Bluey",
+"Peep and the Big Wide World",
+"Daniel Tiger",
+"Curious George",
+"Octonauts Above and Beyond"
+]
+},
+{
+"id": 150,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Documentaries (Sat)",
+"weekdays": "Sat",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+],
+[
+"00:00",
+"03:00"
+]
+],
+"series": [
+"Planet Earth",
+"Life",
+"The Blue Planet",
+"Frozen Planet"
+]
+},
+{
+"id": 151,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Documentaries (Sun)",
+"weekdays": "Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"12:00",
+"15:00"
+],
+[
+"00:00",
+"03:00"
+]
+],
+"series": [
+"Seven Worlds One Planet",
+"Our Planet Frozen Worlds",
+"South Pacific",
+"Great Barrier Reef"
+]
+},
+{
+"id": 154,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend Night Movies",
+"weekdays": "Sat,Sun",
+"is_movie_block": 1,
+"movie_limit": 2,
+"slots": [
+[
+"20:00",
+"23:59"
+]
+],
+"series": []
+},
+{
+"id": 153,
+"channel_id": 8,
+"channels": [
+8
+],
+"name": "Analog Weekend TV Shows",
+"weekdays": "Sat,Sun",
+"is_movie_block": 0,
+"movie_limit": null,
+"slots": [
+[
+"17:00",
+"20:00"
+],
+[
+"03:00",
+"06:00"
+]
+],
+"series": [
+"Different Strokes",
+"Family Matters",
+"Full House",
+"Saved by the Bell",
+"Fuller House"
+]
+}
+]
+}

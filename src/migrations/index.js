@@ -32,10 +32,11 @@ import * as firstNumberOrder from './006-first-number-order.js';
 import * as templateConflicts from './007-template-conflicts-2026-10.js';
 import * as analogLineup from './008-analog-lineup.js';
 import * as circularTimetables from './009-circular-timetables.js';
+import * as gradePairs from './010-grade-pairs.js';
 
 const MIGRATIONS = [
   retagShowTypes, pruneOrphanSeries, lessonRoots, edyouPulse, syncSharedCatalog, firstNumberOrder, templateConflicts,
-  analogLineup, circularTimetables,
+  analogLineup, circularTimetables, gradePairs,
 ];
 
 /** Where the record of what has already run lives, next to the database. */
