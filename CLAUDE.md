@@ -657,6 +657,18 @@ approval, `validateBlock()`) is identical and only the push destination differs.
 - Tests: `test/analog.test.mjs` against `test/fake-analog.mjs`. Never point a test at the real
   device; the handoff's rule for live checks is the Saturday sandbox + rollback.
 
+## MCP for GLC AI (`mcp/`)
+
+`mcp/http.js` + `mcp/tools.js`, mounted by `src/app.js` at `/mcp` (Streamable HTTP, stateless) and
+`/sse` + `/messages` (legacy SSE) on the automator's own port, for AnythingLLM ("GLC AI"). No
+dependencies (the Macs update by `git pull`). Off until `config.mcp.token` is set (503); auth is
+`Authorization: Bearer <token>` only — never a query param, `requestLogger` writes URLs to the log.
+**Every tool calls the REST API over loopback, never the DB or a service**, so approve/push gates,
+the today-on-air confirmation and the missing-file / black-day refusals apply to the LLM too; keep it
+that way. Answers are compacted (week grid, week check grouped, 40k-char cap). `mcp.readOnly` hides
+the write tools; `push_to_air` refuses without `confirm: true` and returns a `job` id when it runs
+past 20s. `node mcp/server.js` runs it standalone against `AUTOMATOR_URL`. Tests: `test/mcp.test.mjs`.
+
 ## OnTheAir Video REST API (integration target)
 
 Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>/...` (per `ChannelType` row) — this project talks to 6 of them independently, not one shared instance.

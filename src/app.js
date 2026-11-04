@@ -32,6 +32,7 @@ import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
 import { startFaultSync } from './services/playbackFaults.js';
+import { mcpHandler } from '../mcp/http.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -87,6 +88,18 @@ app.get('/playout', (req, res) => {
   res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   res.sendFile(join(ROOT, 'glc-wall', 'public', 'index.html'));
 });
+
+// MCP for GLC AI (AnythingLLM): /mcp (Streamable HTTP) and /sse + /messages
+// (legacy SSE). Off until config `mcp.token` is set; every tool goes through
+// the REST API above, so the UI's gates apply. See mcp/README.md.
+app.use(mcpHandler(() => {
+  const c = loadConfig();
+  return {
+    token: c.mcp?.token || process.env.MCP_TOKEN || '',
+    readOnly: !!c.mcp?.readOnly,
+    automatorUrl: `http://127.0.0.1:${c.server?.port || 8090}`,
+  };
+}));
 
 // Static frontend (served last so /api/* wins).
 app.use(express.static(join(ROOT, 'public')));

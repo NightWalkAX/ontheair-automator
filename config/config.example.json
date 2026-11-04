@@ -2,6 +2,10 @@
   "server": {
     "port": 8090
   },
+  "mcp": {
+    "token": "",
+    "readOnly": false
+  },
   "smb": {
     "host": "1.1.1.1",
     "share": "Drive",
