@@ -433,6 +433,186 @@ export const TOOLS = [
     }, ['paths', 'playout', 'status']),
     run: (api, a) => api.put('/api/faults', { paths: a.paths, playout: a.playout, status: a.status, note: a.note }),
   },
+
+  // ---- Air Spec (conversion) control + watchdog ----
+  {
+    name: 'transcode_watchdog',
+    description: 'The Air Spec watchdog: whether it is on, its window, what it last did (restart, scan, failure alert) and whether an operator Stop is holding it.',
+    inputSchema: S(),
+    run: (api) => api.get('/api/transcode/watchdog'),
+  },
+  {
+    name: 'transcode_failed',
+    description: 'Clips whose conversion failed (or another status), with the error, so they can be retried, skipped or confirmed as bad.',
+    inputSchema: S({
+      status: { type: 'string', enum: ['failed', 'blocked', 'pending', 'missing', 'running', 'replaced'], description: 'Default failed.' },
+      limit: { type: 'integer', description: 'Default 50, max 300.' },
+    }),
+    run: async (api, a) => {
+      const r = await api.get(`/api/transcode/items${qs({ status: a.status || 'failed', limit: Math.min(300, Number(a.limit) || 50) })}`);
+      return { counts: r.counts, items: (r.items || []).map((i) => ({ id: i.id, file_path: i.file_path, status: i.status, attempts: i.attempts, error: i.error && String(i.error).slice(0, 300) })) };
+    },
+  },
+  {
+    name: 'transcode_control',
+    write: true,
+    description: 'Start, stop or scan the Air Spec conversion. start = work the queue; stop = finish the clip in flight then stop (holds the watchdog for a few hours); scan = judge newly catalogued clips (incremental); retry/skip = one item id.',
+    inputSchema: S({
+      action: { type: 'string', enum: ['start', 'stop', 'scan', 'retry', 'skip'] },
+      channel_id: P.channel_id,
+      item_id: { type: 'integer', description: 'For retry/skip.' },
+    }, ['action']),
+    run: (api, a) => {
+      if (a.action === 'start') return api.post(`/api/transcode/start${qs({ channel: a.channel_id })}`, undefined, { allowStatus: [409] });
+      if (a.action === 'stop') return api.post('/api/transcode/stop');
+      if (a.action === 'scan') return api.post(`/api/transcode/scan${qs({ channel: a.channel_id })}`, undefined, { allowStatus: [409] });
+      const id = int(a.item_id, 'item_id');
+      return api.post(`/api/transcode/items/${id}/${a.action}`, undefined, { allowStatus: [409] });
+    },
+  },
+  {
+    name: 'transcode_watchdog_set',
+    write: true,
+    description: 'Configure the Air Spec watchdog (persisted): enabled, interval_minutes, hours [from,to] local window for restarts (null = any time), fail_alert_threshold, rescan_hours.',
+    inputSchema: S({
+      enabled: { type: 'boolean' },
+      interval_minutes: { type: 'integer' },
+      hours: { type: ['array', 'null'], items: { type: 'integer' } },
+      fail_alert_threshold: { type: 'integer' },
+      rescan_hours: { type: 'integer' },
+    }),
+    run: (api, a) => {
+      const body = {};
+      if (a.enabled != null) body.enabled = !!a.enabled;
+      if (a.interval_minutes != null) body.intervalMinutes = int(a.interval_minutes, 'interval_minutes');
+      if (a.hours !== undefined) body.hours = a.hours;
+      if (a.fail_alert_threshold != null) body.failAlertThreshold = int(a.fail_alert_threshold, 'fail_alert_threshold');
+      if (a.rescan_hours != null) body.rescanHours = Number(a.rescan_hours);
+      return api.put('/api/transcode/watchdog', body);
+    },
+  },
+
+  // ---- Analog device (UltraNEXUS-HD): Vol1 housekeeping and the week routine ----
+  {
+    name: 'analog_vol1',
+    description: 'Vol1 (the analog device disk): free space, how many files per kind/state, the archive and week-routine jobs. Set `files` to list rows (filter by kind: filler|movie|programme, or `unused` = not in the device schedule and not used from today on).',
+    inputSchema: S({
+      files: { type: 'boolean' },
+      kind: { type: 'string' },
+      unused: { type: 'boolean' },
+      limit: { type: 'integer', description: 'Default 100.' },
+    }),
+    run: async (api, a) => {
+      const r = await api.get(`/api/analog/vol1${a.files ? '' : '?rows=0'}`);
+      const out = { summary: r.summary, archive: r.archive, routine: r.routine };
+      if (a.files) {
+        let rows = r.files || [];
+        if (a.kind) rows = rows.filter((f) => f.kind === a.kind);
+        if (a.unused) rows = rows.filter((f) => !f.in_schedule && !f.upcoming);
+        out.total = rows.length;
+        out.files = rows.slice(0, Math.min(500, Number(a.limit) || 100));
+      }
+      return out;
+    },
+  },
+  {
+    name: 'analog_cleanup_plan',
+    description: 'What the Vol1 clean-up would delete now (aired programmes, unused, with a verified copy on the share) and how much space it frees. Read-only.',
+    inputSchema: S(),
+    run: (api) => api.get('/api/analog/vol1/cleanup'),
+  },
+  {
+    name: 'analog_cleanup',
+    write: true,
+    destructive: true,
+    description: 'Delete from Vol1 exactly what analog_cleanup_plan lists. Never deletes a file without a verified copy on the share. Requires confirm=true after showing the operator the plan.',
+    inputSchema: S({ confirm: { type: 'boolean' } }, ['confirm']),
+    run: (api, a) => {
+      if (a.confirm !== true) throw new ToolError('show the operator analog_cleanup_plan first, then call with confirm=true');
+      return api.post('/api/analog/vol1/cleanup', { confirm: true }, { allowStatus: [409] });
+    },
+  },
+  {
+    name: 'analog_delete_files',
+    write: true,
+    destructive: true,
+    description: 'Delete chosen files from Vol1 by device filename. Files on air or used from today on are refused (listed) unless force=true; a file with no verified copy on the share is ALWAYS refused. Requires confirm=true.',
+    inputSchema: S({
+      filenames: { type: 'array', items: { type: 'string' } },
+      force: { type: 'boolean', description: 'Also delete files the schedule still uses (only with the operator\'s explicit consent).' },
+      confirm: { type: 'boolean' },
+    }, ['filenames', 'confirm']),
+    run: (api, a) => {
+      if (a.confirm !== true) throw new ToolError('deleting from the analog device needs the operator\'s confirmation: call again with confirm=true');
+      return api.post('/api/analog/storage/delete', { filenames: a.filenames, force: a.force === true }, { allowStatus: [409] });
+    },
+  },
+  {
+    name: 'analog_week_routine',
+    write: true,
+    destructive: true,
+    description: 'Run the analog week routine for from..to (default tomorrow..+6): scan Vol1 → delete aired programmes → copy (and bitrate-cap) what the APPROVED days need, refusing if free space would drop under the minimum → push (today held) → delete what the old week used. Long: poll analog_vol1 for routine progress. Requires confirm=true.',
+    inputSchema: S({ from: { type: 'string' }, to: { type: 'string' }, confirm: { type: 'boolean' } }, ['confirm']),
+    run: (api, a) => {
+      if (a.confirm !== true) throw new ToolError('the routine deletes and pushes to the analog device: confirm with the operator, then call with confirm=true');
+      const body = {};
+      if (a.from) body.from = date(a.from, 'from');
+      if (a.to) body.to = date(a.to, 'to');
+      return api.post('/api/analog/routine', body, { allowStatus: [409] });
+    },
+  },
+  {
+    name: 'analog_routine_cancel',
+    write: true,
+    description: 'Cancel the analog week routine at its next safe point.',
+    inputSchema: S(),
+    run: (api) => api.post('/api/analog/routine/cancel'),
+  },
+
+  // ---- Schedule configuration (templates) ----
+  {
+    name: 'update_template',
+    write: true,
+    description: 'Change a weekly template: name, weekdays (e.g. "mon,wed,fri" or [1,3,5]), time slots [{start_time,end_time}] (HH:MM; edited in place by position, an extra slot is added, a missing one is removed with its blocks), series (ordered subjects), channels, max_per_show, is_movie_block, movie_limit. Applies to blocks generated from now on: regenerate the draft days afterwards and re-push days from tomorrow. Never re-push today without the operator.',
+    inputSchema: S({
+      template_id: { type: 'integer' },
+      name: { type: 'string' },
+      weekdays: {},
+      slots: { type: 'array', items: { type: 'object', properties: { start_time: { type: 'string' }, end_time: { type: 'string' } } } },
+      series: { type: 'array', items: { type: 'string' } },
+      channels: { type: 'array', items: { type: 'integer' } },
+      max_per_show: { type: 'integer' },
+      is_movie_block: { type: 'boolean' },
+      movie_limit: { type: 'integer' },
+    }, ['template_id']),
+    run: (api, a) => {
+      const { template_id: id, ...body } = a;
+      if (body.slots) {
+        for (const s of body.slots) {
+          if (!/^\d{2}:\d{2}$/.test(s?.start_time || '') || !/^\d{2}:\d{2}$/.test(s?.end_time || '')) {
+            throw new ToolError('each slot needs start_time and end_time as HH:MM');
+          }
+        }
+      }
+      return api.put(`/api/blocks/templates/${int(id, 'template_id')}`, body);
+    },
+  },
+  {
+    name: 'create_template',
+    write: true,
+    description: 'Create a weekly template: channels [ids], name, weekdays, slots [{start_time,end_time}], series (ordered subjects), content_type, is_movie_block, max_per_show. Generate the week afterwards to see it.',
+    inputSchema: S({
+      name: { type: 'string' },
+      channels: { type: 'array', items: { type: 'integer' } },
+      weekdays: {},
+      slots: { type: 'array', items: { type: 'object' } },
+      series: { type: 'array', items: { type: 'string' } },
+      content_type: { type: 'string' },
+      is_movie_block: { type: 'boolean' },
+      max_per_show: { type: 'integer' },
+    }, ['name', 'channels', 'weekdays', 'slots']),
+    run: (api, a) => api.post('/api/blocks/templates', a),
+  },
 ];
 
 /** The tools visible under this configuration, in MCP `tools/list` shape. */

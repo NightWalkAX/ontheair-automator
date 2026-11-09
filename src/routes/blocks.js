@@ -76,12 +76,32 @@ function toWeekdaysCsv(v) {
 
 // Replace a template's time slots. `slots` is [{ start_time, end_time }]; the
 // first is the primary airing (slot_order 0), the rest mirror it.
-function setSlots(templateId, slots) {
-  db.prepare('DELETE FROM BlockTemplateSlot WHERE template_id = ?').run(templateId);
+// Slots are edited IN PLACE, by position. ScheduledBlock.slot_id cascades on
+// delete, so the old delete-and-reinsert wiped every block the template ever
+// made — today's exported ones included — on any time edit. Only slots beyond
+// the new list's length are deleted (taking their blocks with them, as they
+// must: that airing no longer exists). Exported for tests.
+export function setSlots(templateId, slots) {
+  const cur = db.prepare(
+    'SELECT id FROM BlockTemplateSlot WHERE template_id = ? ORDER BY slot_order, id'
+  ).all(templateId);
+  const park = db.prepare("UPDATE BlockTemplateSlot SET start_time = '~' || id WHERE id = ?");
+  const upd = db.prepare('UPDATE BlockTemplateSlot SET start_time = ?, end_time = ?, slot_order = ? WHERE id = ?');
   const ins = db.prepare(
     'INSERT OR IGNORE INTO BlockTemplateSlot (template_id, start_time, end_time, slot_order) VALUES (?, ?, ?, ?)'
   );
-  slots.forEach((s, idx) => ins.run(templateId, s.start_time, s.end_time, idx));
+  const del = db.prepare('DELETE FROM BlockTemplateSlot WHERE id = ?');
+  const inTx = db.isTransaction;
+  const run = (fn) => (inTx ? fn() : withTx(fn));
+  run(() => {
+    // Park the kept rows first so swapping two start times can't trip UNIQUE(template_id, start_time).
+    cur.slice(0, slots.length).forEach((r) => park.run(r.id));
+    cur.slice(slots.length).forEach((r) => del.run(r.id));
+    slots.forEach((s, idx) => {
+      if (cur[idx]) upd.run(s.start_time, s.end_time, idx, cur[idx].id);
+      else ins.run(templateId, s.start_time, s.end_time, idx);
+    });
+  });
 }
 
 // Replace a template's assigned series. `series` is an ordered list of subject

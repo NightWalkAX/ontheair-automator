@@ -37,6 +37,13 @@ before(async () => {
     res.json({ ok: true, channels: [{ channel: 'Discover', ok: true }] });
   });
   app.get('/api/log', (req, res) => res.type('text/plain').send('line 1\nline 2'));
+  app.get('/api/analog/vol1', (req, res) => res.json({ ok: true, summary: { files: 2 }, routine: null, archive: null,
+    files: req.query.rows === '0' ? undefined : [{ filename: 'a.mov', kind: 'programme', in_schedule: false, upcoming: null }, { filename: 'b.mov', kind: 'filler', in_schedule: true }] }));
+  app.post('/api/analog/vol1/cleanup', (req, res) => res.json({ ok: true, deleted: ['a.mov'], body: req.body }));
+  app.post('/api/analog/routine', (req, res) => res.json({ ok: true, routine: { from: req.body.from, to: req.body.to } }));
+  app.put('/api/blocks/templates/:id', (req, res) => res.json({ ok: true, id: req.params.id, body: req.body }));
+  app.post('/api/transcode/start', (req, res) => res.status(409).json({ ok: false, error: 'a convert is already running' }));
+  app.put('/api/transcode/watchdog', (req, res) => res.json({ ok: true, config: req.body }));
   fakeBase = await listen(createServer(app));
 });
 
@@ -164,4 +171,33 @@ test('mounted behind express.json() (as in src/app.js) it reads the parsed body'
   const r = await rpc(base, 'tools/list');
   assert.ok(r.body.result.tools.length > 10);
   assert.equal((await fetch(`${base}/other`)).status, 404);
+});
+
+test('ops tools: Vol1, clean-up and routine need confirm, templates, Air Spec control', async () => {
+  const base = await mcpServer({ token: TOKEN });
+  const call = (name, args) => rpc(base, 'tools/call', { name, arguments: args });
+  const v = JSON.parse(toolText(await call('analog_vol1', { files: true, unused: true })));
+  assert.deepEqual(v.files.map((f) => f.filename), ['a.mov']);
+
+  assert.equal((await call('analog_cleanup', { confirm: false })).body.result.isError, true);
+  assert.ok(!calls.includes('POST /api/analog/vol1/cleanup'));
+  assert.deepEqual(JSON.parse(toolText(await call('analog_cleanup', { confirm: true }))).deleted, ['a.mov']);
+
+  assert.equal((await call('analog_week_routine', {})).body.result.isError, true);
+  const rt = JSON.parse(toolText(await call('analog_week_routine', { confirm: true, from: '2026-11-11', to: '2026-11-17' })));
+  assert.deepEqual(rt.routine, { from: '2026-11-11', to: '2026-11-17' });
+
+  assert.equal((await call('update_template', { template_id: 5, slots: [{ start_time: '9am', end_time: '10:00' }] })).body.result.isError, true);
+  const up = JSON.parse(toolText(await call('update_template', { template_id: 5, slots: [{ start_time: '09:00', end_time: '10:00' }] })));
+  assert.equal(up.id, '5');
+  assert.deepEqual(up.body, { slots: [{ start_time: '09:00', end_time: '10:00' }] });
+
+  // A 409 from start ("already running") comes back as data, not an error.
+  assert.match(toolText(await call('transcode_control', { action: 'start' })), /already running/);
+  const wd = JSON.parse(toolText(await call('transcode_watchdog_set', { enabled: true, hours: [22, 6] })));
+  assert.deepEqual(wd.config, { enabled: true, hours: [22, 6] });
+
+  const ro = await mcpServer({ token: TOKEN, readOnly: true });
+  const roNames = (await rpc(ro, 'tools/list')).body.result.tools.map((t) => t.name);
+  assert.ok(roNames.includes('analog_vol1') && !roNames.includes('analog_cleanup') && !roNames.includes('update_template'));
 });

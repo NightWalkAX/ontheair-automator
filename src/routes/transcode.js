@@ -12,6 +12,9 @@ import {
   setExportedDaysMode, exportedDaysPolicy, EXPORTED_DAYS_MODES, setTarget,
   rollbackItem, rollbackItems,
 } from '../services/transcode.js';
+import {
+  watchdogState, setWatchdogConfig, noteManualStop, clearHold, tick as watchdogTick,
+} from '../services/transcodeWatchdog.js';
 
 export const router = Router();
 
@@ -114,6 +117,7 @@ router.post('/scan', (req, res) => {
 router.post('/start', (req, res) => {
   const q = { ...req.body, ...req.query };
   try {
+    clearHold();
     const r = startConvert({
       channelId: num(q.channel),
       limit: num(q.limit),
@@ -130,6 +134,8 @@ router.post('/start', (req, res) => {
 router.post('/stop', (req, res) => {
   const hard = String(req.query.now ?? req.body?.now ?? '') === '1';
   const stopped = hard ? abortNow() : requestStop();
+  // The watchdog would restart it within minutes; an operator Stop holds it.
+  if (stopped && String(req.query.watchdog ?? '') !== 'ignore') noteManualStop();
   res.json({ ok: true, stopped, hard });
 });
 
@@ -192,3 +198,20 @@ router.post('/items/:id/skip', (req, res) => {
 
 // GET /api/transcode/events — SSE: phase changes, per-clip progress, log lines.
 router.get('/events', (req, res) => subscribe(res));
+
+// GET /api/transcode/watchdog — the auto-restart's settings and what it last did.
+router.get('/watchdog', (req, res) => res.json({ ok: true, ...watchdogState() }));
+
+// PUT /api/transcode/watchdog { enabled, intervalMinutes, rescanHours,
+// failAlertThreshold, holdAfterStopHours, hours: [from, to] | null } — persisted.
+router.put('/watchdog', (req, res) => {
+  try {
+    const config = setWatchdogConfig(req.body || {});
+    res.json({ ok: true, config, ...watchdogState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// POST /api/transcode/watchdog/tick — run one pass now (what it would do every N minutes).
+router.post('/watchdog/tick', async (req, res) => res.json({ ok: true, result: await watchdogTick(), ...watchdogState() }));

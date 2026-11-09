@@ -32,6 +32,7 @@ import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
 import { startFaultSync } from './services/playbackFaults.js';
+import { startTranscodeWatchdog } from './services/transcodeWatchdog.js';
 import { mcpHandler } from '../mcp/http.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -116,6 +117,8 @@ const httpServer = app.listen(PORT, () => {
   try { startShiftNotifier({ context: handoverLines }); } catch (err) { log('roster').error('shift notices did not start', err); }
   // Failed events and player recoveries from the analog device's own logs.
   try { startFaultSync(); } catch (err) { log('faults').error('analog fault sync did not start', err); }
+  // Keeps Air Spec converting: restarts an idle queue, rescans daily, alerts on failures.
+  try { startTranscodeWatchdog(); } catch (err) { log('watchdog').error('Air Spec watchdog did not start', err); }
 });
 // A port already taken is the classic "it didn't start and I don't know why".
 httpServer.on('error', (err) => {

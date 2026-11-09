@@ -373,6 +373,18 @@ started and left alone:
   re-queues clips that were mid-conversion. `GET /api/transcode/status` re-derives the whole
   panel; `GET /api/transcode/events` (SSE) carries ffmpeg progress + log lines.
 
+### Air Spec watchdog (2026-11-09)
+
+`src/services/transcodeWatchdog.js`, started from `src/app.js` after `listen`. Every
+`transcode.watchdog.intervalMinutes` (10): idle with `pending` clips → `startConvert()`; idle with
+nothing pending and the last probe older than `rescanHours` (24) → incremental `startScan()`; a run
+in flight is never touched (ffmpeg's `perFileTimeoutMinutes` already kills a stuck encode). New
+`failed` clips ≥ `failAlertThreshold` (5) since the last alert → one e-mail via `sendMail()`. An
+operator Stop (`POST /api/transcode/stop`) holds it for `holdAfterStopHours` (6); a manual Start or
+`enabled: true` clears the hold. Optional `hours: [from, to]` (local, may cross midnight) confines
+restarts. `GET|PUT /api/transcode/watchdog`, `POST /api/transcode/watchdog/tick`. Why: on
+2026-11-09 the queue sat idle with 3,427 pending clips. Tests: `test/transcodeWatchdog.test.mjs`.
+
 ## Signal monitor ("Signal Monitor" tab)
 
 `src/services/signalMonitor.js` + `src/routes/monitor.js` + `src/services/mailer.js` watch the
@@ -687,3 +699,29 @@ Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>
 - If asked to scaffold the project, follow the portable/vanilla-frontend/SQLite stack above rather than substituting alternatives (no Docker, no frontend framework, no bundler), unless the user asks for a different stack.
 - Keep dependencies minimal and vendored/installable in a way that survives being copied via USB and run offline on a Mac — avoid assumptions that require internet access or a package registry at runtime.
 - Since there's no existing test/build/lint tooling yet, don't invent commands — add this section to CLAUDE.md once real tooling exists (e.g. `npm run dev`, `npm test`).
+
+## Template slots are edited in place (2026-11-09)
+
+`setSlots()` (src/routes/blocks.js, exported for `test/templateSlots.test.mjs`) updates slots BY
+POSITION, parking the kept rows' start times first so a swap can't trip
+`UNIQUE(template_id, start_time)`. It used to delete and re-insert every slot, and
+`ScheduledBlock.slot_id` cascades — so any time edit in the template editor wiped every block the
+template had ever made, today's exported ones included. Only slots past the new list's length are
+deleted (with their blocks: that airing no longer exists). A time change re-labels blocks already
+generated; regenerate the drafts and re-push from tomorrow.
+
+## Running on the automator Mac (2026-11-09)
+
+`scripts/mac/run-automator.command` runs `node server.js` in a restart loop inside Terminal (Terminal
+holds the TCC grants for ~/Documents and the NAS; a bare launchd job would not), writing its pid to
+`data/run-automator.pid`; `data/STOP` ends the loop. `scripts/mac/com.glc.ontheair-automator.plist`
+(→ `~/Library/LaunchAgents/`) opens it at login. `scripts/mac/deploy.sh` = `git pull --ff-only`, `npm
+ci` only if the lockfile moved, `node --check`, kill the listener on :8090, wait for `/api/health`
+(refuses while the analog routine runs or when the loop isn't there). Reached from the CRM mini-pc as
+`ssh automator-mac` (ProxyJump through the WinLGX PC).
+
+MCP ops tools added the same day (`mcp/tools.js`): `transcode_watchdog`, `transcode_failed`,
+`transcode_control`, `transcode_watchdog_set`, `analog_vol1`, `analog_cleanup_plan`,
+`analog_cleanup`, `analog_delete_files`, `analog_week_routine`, `analog_routine_cancel`,
+`update_template`, `create_template`. Every destructive one requires `confirm: true`.
+
