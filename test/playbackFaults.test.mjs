@@ -256,3 +256,59 @@ test('marks follow a file Air Spec converted, back to suspect', () => {
   assert.match(flag(to, 'otav').note, /converted by Air Spec/);
   assert.equal(flag(to, 'otav').faults, 1, 'the history moved with it');
 });
+
+// Asked by the operator 2026-11-09: a clip that plays badly may be off format, so Air Spec converts
+// it first and then checks, on the airings after the swap, whether that fixed it.
+test('after an Air Spec conversion: clean airings → fixed; a new fault → still failing', () => {
+  const today = localDate();
+  const tpl = db.prepare(`INSERT INTO BlockTemplate (channel_id, name, weekday, start_time, end_time)
+    VALUES (?, 'Verify', 'Mon', '10:00', '12:00') RETURNING id`).get(otavA).id;
+  const airOn = (resourceId, date) => {
+    const b = db.prepare(`INSERT INTO ScheduledBlock (template_id, channel_id, target_date, status)
+      VALUES (?, ?, ?, 'exported') RETURNING id`).get(tpl, otavA, date).id;
+    db.prepare('INSERT INTO ScheduleItem (block_id, resource_id, play_order) VALUES (?, ?, 0)').run(b, resourceId);
+  };
+  const swapDay = addDays(today, -5);
+  const swapAt = new Date(`${swapDay}T15:00:00`);
+  const convert = (name) => {
+    const from = `/Volumes/Public/Films/${name}.avi`;
+    const to = `/Volumes/Public/Films/${name}.mov`;
+    pf.recordFault({ filePath: from, playout: 'otav', source: 'monitor', kind: 'black', occurredAt: addDays(today, -7) + 'T12:00:00Z' });
+    pf.moveFlags(from, to, { reencoded: true });
+    db.prepare('UPDATE PlaybackFlag SET reencoded_at = ? WHERE file_path = ?').run(swapAt.toISOString(), to);
+    const rid = film(otavA, name);
+    db.prepare('UPDATE Resource SET file_path = ? WHERE id = ?').run(to, rid);
+    return { to, rid };
+  };
+
+  const good = convert('NowFine');
+  const bad = convert('StillBad');
+  assert.equal(flag(good.to, 'otav').verdict, 'watching');
+
+  airOn(good.rid, swapDay);              // the swap day itself doesn't count
+  airOn(good.rid, addDays(today, -3));
+  let r = pf.verifyReencoded();
+  assert.equal(flag(good.to, 'otav').verdict, 'watching', 'one clean airing is not enough');
+  airOn(good.rid, addDays(today, -2));
+  airOn(good.rid, today);                // today has not finished airing
+  airOn(bad.rid, addDays(today, -3));
+  airOn(bad.rid, addDays(today, -2));
+  pf.recordFault({ filePath: bad.to, playout: 'otav', source: 'monitor', kind: 'frozen', occurredAt: addDays(today, -2) + 'T18:00:00Z' });
+  r = pf.verifyReencoded();
+  const g = flag(good.to, 'otav');
+  assert.equal(g.verdict, 'fixed');
+  assert.equal(g.clean_airings, 2);
+  assert.equal(g.status, 'dismissed', 'a suspect the conversion fixed is dismissed');
+  assert.match(g.note, /fixed by the Air Spec conversion/);
+  const b = flag(bad.to, 'otav');
+  assert.equal(b.verdict, 'still_failing');
+  assert.equal(b.status, 'suspect');
+  assert.match(b.note, /format was not the cause/);
+  assert.ok(r.changed.length >= 2);
+
+  // A fault after the automatic dismissal re-opens it.
+  pf.recordFault({ filePath: good.to, playout: 'otav', source: 'monitor', kind: 'silent', occurredAt: new Date().toISOString() });
+  pf.verifyReencoded();
+  assert.equal(flag(good.to, 'otav').verdict, 'still_failing');
+  assert.equal(flag(good.to, 'otav').status, 'suspect');
+});

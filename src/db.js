@@ -747,6 +747,11 @@ function playbackFaultSchema() {
     );
   `);
   addColumnIfMissing('SignalEvent', 'culprit', 'TEXT');
+  // Did an Air Spec conversion fix a clip that played badly? (playbackFaults.verifyReencoded)
+  addColumnIfMissing('PlaybackFlag', 'reencoded_at', 'TEXT');   // when Air Spec swapped in the converted file
+  addColumnIfMissing('PlaybackFlag', 'verdict', 'TEXT');        // watching | fixed | still_failing
+  addColumnIfMissing('PlaybackFlag', 'verdict_at', 'TEXT');
+  addColumnIfMissing('PlaybackFlag', 'clean_airings', 'INTEGER'); // OTAV airings since, with no fault
 }
 
 /**

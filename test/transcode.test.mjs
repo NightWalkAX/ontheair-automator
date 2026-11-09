@@ -1003,3 +1003,31 @@ test('a re-check does not undo work already done on an unchanged clip', async ()
   assert.equal(after.out_path, converted.out_path, 'and so is the work it points at');
   assert.equal(after.backup_path, converted.backup_path);
 });
+
+// Operator 2026-11-09: a clip that played badly is converted before the rest, most faults first.
+test('clips flagged as playing badly jump the conversion queue', () => {
+  const ids = [];
+  const pend = (path, secs) => ids.push(db.prepare(`INSERT INTO TranscodeItem (file_path, status, src_duration)
+    VALUES (?, 'pending', ?) RETURNING id`).get(path, secs).id);
+  const held = db.prepare("SELECT id FROM TranscodeItem WHERE status = 'pending'").all().map((r) => r.id);
+  db.prepare(`UPDATE TranscodeItem SET status = 'skipped' WHERE id IN (${held.join(',') || 0})`).run();
+  try {
+    pend('/Volumes/Public/Q/short.mov', 60);
+    pend('/Volumes/Public/Q/long-bad.mov', 7200);
+    pend('/Volumes/Public/Q/mid-worse.mov', 1800);
+    pend('/Volumes/Public/Q/dismissed.mov', 30);
+    const fl = db.prepare(`INSERT INTO PlaybackFlag (file_path, playout, status, faults) VALUES (?, ?, ?, ?)`);
+    fl.run('/Volumes/Public/Q/long-bad.mov', 'otav', 'suspect', 2);
+    fl.run('/Volumes/Public/Q/mid-worse.mov', 'analog', 'confirmed', 5);
+    fl.run('/Volumes/Public/Q/dismissed.mov', 'otav', 'dismissed', 9);
+    assert.equal(tx.nextPending().file_path, '/Volumes/Public/Q/mid-worse.mov', 'most faults first');
+    db.prepare("UPDATE TranscodeItem SET status = 'replaced' WHERE file_path = '/Volumes/Public/Q/mid-worse.mov'").run();
+    assert.equal(tx.nextPending().file_path, '/Volumes/Public/Q/long-bad.mov', 'a flagged feature beats a short clean clip');
+    db.prepare("UPDATE TranscodeItem SET status = 'replaced' WHERE file_path = '/Volumes/Public/Q/long-bad.mov'").run();
+    assert.equal(tx.nextPending().file_path, '/Volumes/Public/Q/dismissed.mov', 'a dismissed flag is just the normal order');
+  } finally {
+    db.prepare(`DELETE FROM TranscodeItem WHERE id IN (${ids.join(',')})`).run();
+    db.prepare("DELETE FROM PlaybackFlag WHERE file_path LIKE '/Volumes/Public/Q/%'").run();
+    db.prepare(`UPDATE TranscodeItem SET status = 'pending' WHERE id IN (${held.join(',') || 0})`).run();
+  }
+});

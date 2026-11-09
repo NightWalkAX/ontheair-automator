@@ -3,7 +3,7 @@
 // the analog device's logs.
 
 import { Router } from 'express';
-import { listFlags, faultsFor, setFlags, syncAnalogFaults, STATUSES } from '../services/playbackFaults.js';
+import { listFlags, faultsFor, setFlags, syncAnalogFaults, verifyReencoded, STATUSES } from '../services/playbackFaults.js';
 
 export const router = Router();
 
@@ -33,6 +33,11 @@ router.put('/', (req, res) => {
   if (status !== 'clear' && !STATUSES.includes(status)) return res.status(400).json({ error: 'unknown status' });
   const note = typeof req.body.note === 'string' && req.body.note.trim() ? req.body.note.trim().slice(0, 300) : undefined;
   res.json({ ok: true, changed: setFlags(paths, playout, status, note) });
+});
+
+// POST /api/faults/verify — judge the clips Air Spec converted now (also runs every faults.verifyMinutes).
+router.post('/verify', (req, res) => {
+  try { res.json({ ok: true, ...verifyReencoded() }); } catch (err) { res.status(500).json({ ok: false, error: String(err.message || err) }); }
 });
 
 // POST /api/faults/sync-analog — read the analog as-run and recoveries now.

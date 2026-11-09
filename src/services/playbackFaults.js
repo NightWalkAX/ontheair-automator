@@ -63,6 +63,9 @@ export function faultsConfig(raw = loadConfig().faults) {
     correlatedWindowSeconds: clampNum(f.correlatedWindowSeconds, 5, 600, 60),
     analogAsrunOk: okRe,
     analogSyncMinutes: clampNum(f.analogSyncMinutes, 0, 1440, 10),
+    // A converted clip counts as fixed after this many OTAV airings (full past days) without a fault.
+    verifyAirings: clampNum(f.verifyAirings, 1, 50, 2),
+    verifyMinutes: clampNum(f.verifyMinutes, 0, 1440, 30),
   };
 }
 
@@ -384,17 +387,86 @@ export async function syncAnalogFaults({ days = null, cfg = faultsConfig() } = {
 }
 
 let syncTimer = null;
-/** Every `analogSyncMinutes`, read the analog logs. Started from src/app.js. */
+let verifyTimer = null;
+/** Every `analogSyncMinutes`, read the analog logs; every `verifyMinutes`, judge converted clips. Started from src/app.js. */
 export function startFaultSync() {
   clearInterval(syncTimer);
-  const minutes = faultsConfig().analogSyncMinutes;
-  if (!minutes) return;
+  clearInterval(verifyTimer);
+  const cfg = faultsConfig();
+  const verify = () => { try { verifyReencoded(); } catch (err) { L.warn(`Air Spec verification: ${err.message}`); } };
+  if (cfg.verifyMinutes) {
+    verify();
+    verifyTimer = setInterval(verify, cfg.verifyMinutes * 60_000);
+    verifyTimer.unref?.();
+  }
+  if (!cfg.analogSyncMinutes) return;
   syncTimer = setInterval(() => {
     syncAnalogFaults().catch((err) => L.warn(`analog fault sync: ${err.message}`));
-  }, minutes * 60_000);
+  }, cfg.analogSyncMinutes * 60_000);
   syncTimer.unref?.();
 }
-export function stopFaultSync() { clearInterval(syncTimer); syncTimer = null; }
+export function stopFaultSync() { clearInterval(syncTimer); clearInterval(verifyTimer); syncTimer = verifyTimer = null; }
+
+// --- Did the conversion fix it? ------------------------------------------------------
+//
+// A clip that plays badly may simply be off the house format (asked by the operator 2026-11-09):
+// Air Spec converts flagged clips first (transcode.js nextPending), and this judges each converted
+// clip on what happened AFTER the swap. OTAV only — the analog plays its own Vol1 copy, which a
+// conversion of the master does not change until it is copied again.
+//   watching       converted, not enough clean airings yet
+//   fixed          `verifyAirings` OTAV airings on full days after the swap, no fault → a suspect is
+//                  dismissed automatically (note says why)
+//   still_failing  faulted again after the swap → the format was not the cause; an automatic
+//                  dismissal is undone (the operator's own decisions are never touched)
+// Airings = ScheduleItems of exported blocks on OTAV channels, target_date strictly between the swap
+// day and today, so a day counts only once it has fully aired on the converted file.
+
+const AIRINGS_SINCE = () => db.prepare(`
+  SELECT COUNT(*) AS n FROM ScheduleItem si
+  JOIN ScheduledBlock sb ON sb.id = si.block_id
+  JOIN BlockTemplate bt ON bt.id = sb.template_id
+  JOIN Resource r ON r.id = si.resource_id
+  JOIN ChannelType c ON c.id = COALESCE(sb.channel_id, bt.channel_id)
+  WHERE r.file_path = ? AND COALESCE(c.playout, 'otav') = 'otav' AND sb.status = 'exported'
+    AND sb.target_date > ? AND sb.target_date < ?`);
+
+export function verifyReencoded({ cfg = faultsConfig(), today = localDate(), now = new Date() } = {}) {
+  // Flags on files Air Spec replaced before this existed (or by a path moveFlags didn't see).
+  db.prepare(`
+    UPDATE PlaybackFlag SET verdict = 'watching', verdict_at = ?,
+      reencoded_at = (SELECT ti.replaced_at FROM TranscodeItem ti WHERE ti.file_path = PlaybackFlag.file_path)
+    WHERE playout = 'otav' AND reencoded_at IS NULL AND EXISTS (SELECT 1 FROM TranscodeItem ti
+      WHERE ti.file_path = PlaybackFlag.file_path AND ti.status = 'replaced' AND ti.replaced_at IS NOT NULL)`)
+    .run(now.toISOString());
+  const airings = AIRINGS_SINCE();
+  const after = db.prepare(`SELECT COUNT(*) AS n FROM PlaybackFault
+    WHERE file_path = ? AND playout = 'otav' AND discarded = 0 AND occurred_at > ?`);
+  const out = { watching: 0, fixed: 0, still_failing: 0, changed: [] };
+  for (const f of db.prepare("SELECT * FROM PlaybackFlag WHERE playout = 'otav' AND reencoded_at IS NOT NULL").all()) {
+    const day = localDate(new Date(f.reencoded_at));
+    const clean = airings.get(f.file_path, day, today).n;
+    const failed = after.get(f.file_path, f.reencoded_at).n;
+    const verdict = failed ? 'still_failing' : clean >= cfg.verifyAirings ? 'fixed' : 'watching';
+    out[verdict]++;
+    const sets = { clean_airings: failed ? 0 : clean };
+    if (verdict !== f.verdict) {
+      Object.assign(sets, { verdict, verdict_at: now.toISOString() });
+      out.changed.push({ file_path: f.file_path, from: f.verdict, to: verdict });
+      if (verdict === 'fixed' && f.status === 'suspect') {
+        Object.assign(sets, { status: 'dismissed', decided_at: now.toISOString(),
+          note: `fixed by the Air Spec conversion of ${day}: ${clean} clean airings since` });
+      } else if (verdict === 'still_failing') {
+        sets.note = `faulted again after the Air Spec conversion of ${day}: the format was not the cause`;
+        if (f.status === 'dismissed' && f.verdict === 'fixed') Object.assign(sets, { status: 'suspect', decided_at: null });
+      }
+      L.info(`Air Spec check: ${f.file_path} ${f.verdict || '—'} → ${verdict}`);
+    }
+    const cols = Object.keys(sets);
+    db.prepare(`UPDATE PlaybackFlag SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE file_path = ? AND playout = 'otav'`)
+      .run(...cols.map((c) => sets[c]), f.file_path);
+  }
+  return out;
+}
 
 // --- Reading and deciding -----------------------------------------------------------
 
@@ -411,7 +483,8 @@ export function listFlags({ status = null, playout = null, includeDismissed = tr
            (SELECT COALESCE(ov.display_name, r.name) FROM Resource r LEFT JOIN ResourceOverride ov ON ov.resource_id = r.id
              WHERE r.file_path = pf.file_path LIMIT 1) AS display_name,
            (SELECT r.subject FROM Resource r WHERE r.file_path = pf.file_path LIMIT 1) AS subject,
-           (SELECT COUNT(*) FROM Resource r WHERE r.file_path = pf.file_path) AS catalogued
+           (SELECT COUNT(*) FROM Resource r WHERE r.file_path = pf.file_path) AS catalogued,
+           (SELECT ti.status FROM TranscodeItem ti WHERE ti.file_path = pf.file_path) AS transcode_status
     FROM PlaybackFlag pf LEFT JOIN ChannelType c ON c.id = pf.last_channel_id
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY CASE pf.status WHEN 'suspect' THEN 0 WHEN 'confirmed' THEN 1 ELSE 2 END, pf.last_at DESC
@@ -486,6 +559,12 @@ export function moveFlags(from, to, { reencoded = false } = {}) {
     // A re-encode may well have fixed it: what the operator confirmed was the
     // OLD file, so it is a suspect again until it is seen to play.
     if (reencoded) {
+      // Start watching whether the conversion fixed it (verifyReencoded); OTAV only, see there.
+      if (f.playout === 'otav') {
+        const at = new Date().toISOString();
+        db.prepare(`UPDATE PlaybackFlag SET reencoded_at = ?, verdict = 'watching', verdict_at = ?, clean_airings = 0
+          WHERE file_path = ? AND playout = 'otav'`).run(at, at, to);
+      }
       db.prepare(`UPDATE PlaybackFlag SET status = 'suspect', decided_at = NULL,
         note = 'converted by Air Spec on ' || ? || ' — check that it now plays' WHERE file_path = ? AND playout = ? AND status = 'confirmed'`)
         .run(localDate(), to, f.playout);

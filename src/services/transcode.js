@@ -106,6 +106,8 @@ export function transcodeConfig() {
     perFileTimeoutMinutes: Number.isFinite(Number(c.perFileTimeoutMinutes))
       ? Number(c.perFileTimeoutMinutes) : 240,
     order: c.order || 'shortest',
+    // Clips that played badly go first (most faults first): the format may be what fails.
+    prioritizeFaults: c.prioritizeFaults !== false,
     target: { ...DEFAULT_TARGET, ...(c.target || {}) },
     exportedDays: {
       ...DEFAULT_EXPORTED_DAYS,
@@ -1176,9 +1178,15 @@ const ORDER_SQL = {
   path: 'file_path ASC',
 };
 
-function nextPending(channelId) {
+// A clip flagged as playing badly (suspect or confirmed, either kind of node) jumps the queue,
+// most faults first; verifyReencoded() in playbackFaults.js then checks whether it plays well.
+const FAULT_COUNT = `(SELECT MAX(f.faults) FROM PlaybackFlag f WHERE f.file_path = TranscodeItem.file_path
+  AND f.status IN ('suspect', 'confirmed'))`;
+const FAULTS_FIRST = `${FAULT_COUNT} IS NULL, ${FAULT_COUNT} DESC`;
+
+export function nextPending(channelId) {
   const cfg = transcodeConfig();
-  const order = ORDER_SQL[cfg.order] || ORDER_SQL.shortest;
+  const order = (cfg.prioritizeFaults ? `${FAULTS_FIRST}, ` : '') + (ORDER_SQL[cfg.order] || ORDER_SQL.shortest);
   const args = [];
   let where = "status = 'pending'";
   if (channelId) { where += ' AND channel_id = ?'; args.push(channelId); }

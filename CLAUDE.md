@@ -495,6 +495,17 @@ badly" panel of the Signal Monitor tab. A **fault** (`PlaybackFault`) is one obs
   flag back into a suspect — the re-encode may have fixed it), its rollback, and catalogue repair.
 - Tests: `test/playbackFaults.test.mjs`; the fakes take `playing` (OTAV) and `live`/`asrun`/`recoverLog`
   (analog).
+- **Bad clips convert first, then get judged (operator 2026-11-09: the format may be what fails).**
+  `transcode.prioritizeFaults` (default on): `nextPending()` puts any `pending` clip with a suspect or
+  confirmed flag (either node kind) ahead of the configured order, most faults first. After the swap,
+  `moveFlags(..., { reencoded: true })` stamps the OTAV flag `reencoded_at` + `verdict = watching`, and
+  `verifyReencoded()` (every `faults.verifyMinutes` = 30 from `startFaultSync`, `POST /api/faults/verify`,
+  backfills flags of files replaced earlier from `TranscodeItem.replaced_at`) judges it: any fault after
+  the swap → `still_failing` (note: the format was not the cause; an automatic dismissal is undone);
+  `faults.verifyAirings` (2) OTAV airings of exported blocks on full days after the swap day and before
+  today with no fault → `fixed` (a suspect is dismissed with a note); else `watching`. Operator decisions
+  are never overridden. OTAV only: the analog plays its own Vol1 copy. `GET /api/faults` adds
+  `transcode_status`, `verdict`, `reencoded_at`, `clean_airings`.
 
 ## Day continuity (why channels went black)
 

@@ -63,6 +63,7 @@
   },
   "ffmpegPath": "ffmpeg",
   "transcode": {
+    "prioritizeFaults": true,
     "workDir": "/Volumes/Public/_transcode/work",
     "archiveDir": "/Volumes/Public/_transcode/originals",
     "concurrency": 1,
@@ -140,7 +141,9 @@
     "correlatedFeeds": 3,
     "correlatedWindowSeconds": 60,
     "analogAsrunOk": "^(ok|played|complete|normal|success)",
-    "analogSyncMinutes": 10
+    "analogSyncMinutes": 10,
+    "verifyAirings": 2,
+    "verifyMinutes": 30
   },
   "email": {
     "user": "",
