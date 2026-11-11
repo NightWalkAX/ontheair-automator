@@ -73,23 +73,34 @@ function run(bin, args, { timeoutMs = 60000, input = null } = {}) {
   });
 }
 
-/** A still from 35% into the clip, cached; resolves to its URL or null. */
+/**
+ * A still of the clip, cached; resolves to its URL or null. Three candidates
+ * (30/45/60 %) and the one with the biggest JPEG wins: size tracks detail, so
+ * a black or near-black frame (a film's dark scene) loses.
+ */
 export async function frameFor(filePath, duration) {
   if (!filePath) return null;
   mkdirSync(FRAMES_DIR, { recursive: true });
   const name = `${sha(filePath)}.jpg`;
   const out = join(FRAMES_DIR, name);
   if (existsSync(out)) return `/guide/frames/${name}`;
-  const at = Math.max(1, Math.round((Number(duration) || 60) * 0.35));
-  try {
-    await run(ffmpegBin(), ['-nostdin', '-loglevel', 'error', '-ss', String(at), '-i', localizePath(filePath),
-      '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', '-y', `${out}.tmp.jpg`], { timeoutMs: 30000 });
-    renameSync(`${out}.tmp.jpg`, out);
-    return `/guide/frames/${name}`;
-  } catch (err) {
-    L.warn(`no frame for ${filePath}: ${err.message}`);
-    return null;
+  const len = Number(duration) || 60;
+  const tries = [];
+  for (const [k, f] of [0.3, 0.45, 0.6].entries()) {
+    const tmp = `${out}.${k}.tmp.jpg`;
+    try {
+      await run(ffmpegBin(), ['-nostdin', '-loglevel', 'error', '-ss', String(Math.max(1, Math.round(len * f))), '-i', localizePath(filePath),
+        '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', '-y', tmp], { timeoutMs: 30000 });
+      tries.push({ tmp, size: statSync(tmp).size });
+    } catch (err) {
+      if (!tries.length && k === 2) L.warn(`no frame for ${filePath}: ${err.message}`);
+    }
   }
+  if (!tries.length) return null;
+  tries.sort((a, b) => b.size - a.size);
+  renameSync(tries[0].tmp, out);
+  for (const t of tries.slice(1)) rmSync(t.tmp, { force: true });
+  return `/guide/frames/${name}`;
 }
 
 /** The plan as the template wants it: pictures resolved, dates as words. */

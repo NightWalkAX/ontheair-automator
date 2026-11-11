@@ -35,6 +35,15 @@ const TITLE_FIX = {
   'Beauty & Beast Enchanted Cmas': 'Beauty and the Beast: Enchanted Christmas',
   'Pirates! Band Of Misfits': 'The Pirates! Band of Misfits', 'Shaun The Sheep Farmageddon': 'Shaun the Sheep: Farmageddon',
   'The B F G': 'The BFG',
+  HarryPotter1PhilosopStone: "Harry Potter and the Philosopher's Stone", HarryPotter2ChamberSecrets: 'Harry Potter and the Chamber of Secrets',
+  HarryPotter3PrisonerAzkaban: 'Harry Potter and the Prisoner of Azkaban', HarryPotter5OrderOfPhoenix: 'Harry Potter and the Order of the Phoenix',
+  HarryPotter6HalfBloodPrince: 'Harry Potter and the Half-Blood Prince', HarryPotter7DeathHallows1: 'Harry Potter and the Deathly Hallows – Part 1',
+  HarryPotter8DeathHallows2: 'Harry Potter and the Deathly Hallows – Part 2',
+  ChroniclesOfNarnia1_TLTWATW: 'The Chronicles of Narnia: The Lion, the Witch and the Wardrobe',
+  ChroniclesOfNarnia2_PC: 'The Chronicles of Narnia: Prince Caspian', 'ChroniclesOfNarnia3._TVOTDT': 'The Chronicles of Narnia: The Voyage of the Dawn Treader',
+  CloudyWAChanceOfMeatballs2: 'Cloudy with a Chance of Meatballs 2', LandB4TimeJourneyOfTheHeart: 'The Land Before Time: Journey of the Heart',
+  Madagascar_2_Escape2Africa: 'Madagascar: Escape 2 Africa', The_Lego_Movie_2_The2ndPart: 'The Lego Movie 2: The Second Part',
+  Cars1: 'Cars', Cars2: 'Cars 2', Cars3: 'Cars 3', 'The_Jungle_Book_3_(2016)': 'The Jungle Book (2016)',
 };
 
 /** A file name made readable: "Peter_Pan_(2003)" → "Peter Pan (2003)". */
@@ -42,7 +51,9 @@ export function prettyName(name) {
   let s = String(name || '').replace(/\.(mp4|mov|mpg|mxf|avi|mkv)$/i, '');
   s = s.replace(/_/g, ' ').replace(/&/g, ' & ');
   s = s.replace(/(?<=[a-z])(?=[A-Z0-9])/g, ' ');
-  return s.replace(/\s+/g, ' ').trim();
+  s = s.replace(/(?<=[0-9])(?=[A-Z][a-z])/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s.replace(/ ((?:19|20)\d\d)$/, ' ($1)'); // "Scrooged 1988" → "Scrooged (1988)"
 }
 function fixTitle(t) {
   const extra = guideConfig().titles || {};
