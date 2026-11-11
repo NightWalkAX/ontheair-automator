@@ -144,8 +144,13 @@ class Browser {
       child.on('exit', (c) => { clearTimeout(t); reject(new Error(`Chrome exited (${c}) before DevTools came up`)); });
     });
     const b = new Browser(child, dir);
-    await b.connect(wsUrl);
-    return b;
+    // The socket can refuse for a moment right after Chrome prints its URL.
+    for (let i = 0; ; i++) {
+      try { await b.connect(wsUrl); return b; } catch (err) {
+        if (i >= 4) { await b.close(); throw err; }
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+      }
+    }
   }
   constructor(child, dir) { this.child = child; this.dir = dir; this.id = 0; this.pending = new Map(); this.events = []; }
   connect(url) {
@@ -153,7 +158,7 @@ class Browser {
       const ws = new WebSocket(url);
       this.ws = ws;
       ws.onopen = () => resolve();
-      ws.onerror = (e) => reject(new Error(`DevTools socket: ${e.message || 'error'}`));
+      ws.onerror = (e) => reject(new Error(`DevTools socket: ${e.message || e.error?.message || 'error'}`));
       ws.onmessage = (m) => {
         const msg = JSON.parse(typeof m.data === 'string' ? m.data : Buffer.from(m.data).toString());
         if (msg.id && this.pending.has(msg.id)) {
