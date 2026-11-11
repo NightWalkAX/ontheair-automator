@@ -711,6 +711,53 @@ Each OTAV instance is a separate server reachable at `http://<api_ip>:<api_port>
 - Keep dependencies minimal and vendored/installable in a way that survives being copied via USB and run offline on a Mac — avoid assumptions that require internet access or a package registry at runtime.
 - Since there's no existing test/build/lint tooling yet, don't invent commands — add this section to CLAUDE.md once real tooling exists (e.g. `npm run dev`, `npm test`).
 
+## Channel guide ("cartelera", approved by the GLC direction 2026-11-11)
+
+At the end of every block of the six digital channels a 20 s clip lists what is still to come in
+the current bracket (06–12, 12–18, 18–24, 00–06), counted from the moment the block ends; the last
+block of a bracket shows the next bracket (or the first one with anything on, for a channel off
+air). Each channel has its own approved look (App Lab board 50 in the CRM: Discover glass +
+featured film, Jr. timeline, Teen trailer + tiles, Elevate floors, Elementary notebook, MoE Central
+newscast), a little different per bracket (sunrise/sun, high light, violet dusk/moon, stars + the
+mascot asleep). The analog channel has none. Off until `guide.enabled` (config section `guide`).
+
+- **The time is reserved, the clip is not a ScheduleItem.** `linkShifts()` takes
+  `guideSecondsFor()` (`guideConfig.js`) out of every block window: `r.windowSeconds` is the whole
+  block, `r.guide_seconds` the guide, `r.blockSeconds` what CONTENT must fill. Generation,
+  validation, `balanceDay()` and the push gates therefore fit content to window − 20 s without
+  knowing about guides. `crossChannel.dayWindows()` adds it back (the guide is air time of that
+  block) and the week check adds it to the simulated playlist. A block under `minBlockSeconds`
+  keeps none. **`guide.startDate`**: only blocks on/after it reserve time — enable with a start
+  date, then regenerate the drafts from there; earlier approved/exported days stay valid.
+- **What it lists** (`guidePlan.js`): clips of the channel's blocks back to back from each shifted
+  window start, fillers out; times on the quarter hour when within 90 s (`guideTime()`, so an
+  auto-balanced 7:59:20 reads 8:00); consecutive airings fold (`S02E23–E24`), a run of lessons is
+  one row ("Grade 3 English +2 more · 5 lessons"), ≤ 10 rows. Movies are `movies` ≥ 40 min.
+  Titles: subject for shows/lessons, file name made readable for films, `TITLE_FIX` +
+  `guide.titles` for the ones the catalogue spells oddly.
+- **Rendering** (`guideRender.js`, `guideTemplates.js`, assets in `public/guide/assets`): the
+  system Google Chrome driven over the DevTools protocol with Node's own WebSocket — no
+  dependency (a static import of a package would stop the app on a Mac updated by `git pull`).
+  Every animation is CSS; each frame pauses and seeks them (deterministic), JPEG frames are piped
+  to ffmpeg → house spec (1920x1080 30000/1001, h264 High yuv420p tv-range BT.709, GOP 15 closed, no
+  B-frames, PCM s16le 48 kHz stereo, .mov), 599 frames = 19.99 s, channel music with fades and
+  loudnorm −24. ~35 s per clip on the M1. Programme stills come from the clip itself (35 %),
+  cached in `data/guide/frames`. Output `guide.outDir/<channel>/<date>/b<block>.mov`, replaced
+  atomically under the same name, so a day already on OTAV picks up a re-render without a
+  re-push; a block airing within `frozenMinutes` is not re-rendered. `GuideRender` records hash
+  (plan + template version) and status; a different plan = re-render.
+- **Background loop** `startGuideRenderer()`: every `intervalMinutes` renders missing/stale
+  guides of approved/exported blocks for today..today+`daysAhead`, `concurrency` Chromes, and
+  prunes days older than `keepDays`. `/api/guide`: `status`, `render {from,to,channels,blocks,force}`,
+  `stop`, `blocks/:id/plan`, `blocks/:id/page` (open it to preview a block's guide),
+  `fallback/:channel/page`.
+- **Push**: `pushChannelDays()` appends `guideItemsForDay()` after each block's clips — the
+  block's own guide when rendered and on disk, else the channel's `_stay-with-us.mov` (same
+  length, rendered on demand). If neither can exist (no Chrome/ffmpeg) the DAY is refused before
+  its schedule or playlist is touched: pushed without guides it would end 20 s early per block.
+- Tests: `test/guide.test.mjs` (reserve, startDate, plan + bracket rule, every look × bracket,
+  fallback selection, the OTAV push against `fake-otav`).
+
 ## Template slots are edited in place (2026-11-09)
 
 `setSlots()` (src/routes/blocks.js, exported for `test/templateSlots.test.mjs`) updates slots BY

@@ -761,14 +761,29 @@ async function pushChannelDays(channel, days, progress = NULL_PROGRESS) {
   const client = new OtavClient(channel);
   const chan = channel.channel_name || channel.name;
   const plans = [];
+  // The channel guide (guideRender.js) closes each block that keeps time for it.
+  const { guideItemsForDay } = await import('./guideRender.js');
   for (const [targetDate, blocks] of days) {
+    let guides = new Map();
+    let guideError = null;
+    try {
+      guides = await guideItemsForDay(channel.channel_id, targetDate);
+    } catch (err) {
+      // Without them the day would end 20 s early per block: refuse the day, before its playlist is touched.
+      guideError = new Error(`channel guide clips are not available (${err.message}) — fix Chrome/ffmpeg or turn guide.enabled off`);
+    }
     // Read the day's clips up front: the schedule event needs their total run
     // time, and pushing them is the next step anyway.
-    const dayItems = blocks.map((b) => ({ block_id: b.block_id, items: blockItems(b.block_id) }));
+    const dayItems = blocks.map((b) => {
+      const items = blockItems(b.block_id);
+      const g = guides.get(b.block_id);
+      return { block_id: b.block_id, items: g ? [...items, g] : items };
+    });
     plans.push({
       targetDate,
       blocks,
       dayItems,
+      guideError,
       daySeconds: dayItems.reduce((sum, b) => sum + b.items.reduce((s, i) => s + (i.duration || 0), 0), 0),
       result: {
         channel: channel.channel_name,
@@ -807,6 +822,8 @@ async function pushChannelDays(channel, days, progress = NULL_PROGRESS) {
   }
   const batch = createScheduleBatch();
   for (const plan of plans) {
+    // No guide clips: don't touch this day's schedule or playlist at all.
+    if (plan.guideError) { plan.prepareError = plan.guideError; continue; }
     try {
       plan.prepared = prepareDaySchedule(channel, {
         playlistName: plan.result.playlist,

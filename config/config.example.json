@@ -150,5 +150,20 @@
     "appPassword": "",
     "fromName": "GLC Signal Monitor",
     "recipients": []
+  },
+  "guide": {
+    "enabled": false,
+    "startDate": null,
+    "seconds": 20,
+    "minBlockSeconds": 300,
+    "outDir": "/Volumes/Public/Broadcast/Channel Guide",
+    "chromePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "concurrency": 2,
+    "daysAhead": 3,
+    "intervalMinutes": 15,
+    "frozenMinutes": 30,
+    "keepDays": 3,
+    "styles": {},
+    "titles": {}
   }
 }

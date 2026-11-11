@@ -28,6 +28,8 @@ import { router as monitor } from './routes/monitor.js';
 import { router as holidays } from './routes/holidays.js';
 import { router as analog } from './routes/analog.js';
 import { router as faults } from './routes/faults.js';
+import { router as guide } from './routes/guide.js';
+import { startGuideRenderer, FRAMES_DIR } from './services/guideRender.js';
 import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
@@ -66,6 +68,7 @@ app.use('/api/monitor', monitor);
 app.use('/api/holidays', holidays);
 app.use('/api/analog', analog);
 app.use('/api/faults', faults);
+app.use('/api/guide', guide);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,
@@ -102,6 +105,8 @@ app.use(mcpHandler(() => {
   };
 }));
 
+// Stills of the programmes the channel guide shows (guideRender.frameFor).
+app.use('/guide/frames', express.static(FRAMES_DIR, { maxAge: '1d' }));
 // Static frontend (served last so /api/* wins).
 app.use(express.static(join(ROOT, 'public')));
 
@@ -119,6 +124,8 @@ const httpServer = app.listen(PORT, () => {
   try { startFaultSync(); } catch (err) { log('faults').error('analog fault sync did not start', err); }
   // Keeps Air Spec converting: restarts an idle queue, rescans daily, alerts on failures.
   try { startTranscodeWatchdog(); } catch (err) { log('watchdog').error('Air Spec watchdog did not start', err); }
+  // Renders the channel guide clips for the next days; idle unless guide.enabled.
+  try { startGuideRenderer(); } catch (err) { log('guide').error('channel guide renderer did not start', err); }
 });
 // A port already taken is the classic "it didn't start and I don't know why".
 httpServer.on('error', (err) => {

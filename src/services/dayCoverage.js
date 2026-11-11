@@ -127,7 +127,8 @@ export async function checkRange(from, to, channelIds = []) {
         if (!fitsTolerance(diff, tol) && !m.override_reason) {
           add('unfit', `${label} is ${diff > 0 ? `${diff}s short` : `${-diff}s long`}`, { blockId: r.id, seconds: diff });
         }
-        if (r.status === 'approved' || r.status === 'exported') content += total;
+        // the push appends the block's channel guide after its clips
+        if (r.status === 'approved' || r.status === 'exported') content += total + (r.guide_seconds || 0);
       }
       for (const f of missing) {
         const here = f.blocks.filter((b) => b.channel_id === ch.id && b.target_date === date);

@@ -135,7 +135,7 @@ export function validateBlock(blockId, { windows = null, labels = true } = {}) {
   const overridden = !!block.override_reason;
 
   return {
-    block, items, blockSeconds, totalSeconds, diff, overrun, maxUnderrun, maxOverrun,
+    block, items, blockSeconds, guideSeconds: win?.guide_seconds ?? 0, totalSeconds, diff, overrun, maxUnderrun, maxOverrun,
     durationFits, fillerRun, maxFillerRun, fillerFits,
     offTypeIds: offType.map((i) => i.id),
     typeFits: offType.length === 0,

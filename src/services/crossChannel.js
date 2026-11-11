@@ -69,7 +69,7 @@ export function dayWindows(channelId, date, cache = null) {
   const out = new Map();
   for (const r of linkShifts(channelDayBlocks(channelId, date))) {
     const start = dayNumber(r.target_date) * DAY + hhmm(r.start_time) + r.start_shift;
-    out.set(r.id, { start, end: start + r.blockSeconds, effective_start: r.effective_start, effective_end: r.effective_end });
+    out.set(r.id, { start, end: start + r.blockSeconds + (r.guide_seconds || 0), effective_start: r.effective_start, effective_end: r.effective_end });
   }
   cache?.set(k, out);
   return out;

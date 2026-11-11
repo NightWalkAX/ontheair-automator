@@ -90,7 +90,7 @@ function renderModalMeta() {
   $('#modalMeta').textContent = (moved
     ? `airs ${v.effectiveStart}–${v.effectiveEnd} (slot ${v.block.start_time}–${v.block.end_time})`
     : `${v.block.start_time}–${v.block.end_time}`)
-    + ` · block ${fmt(v.blockSeconds)} · ${scheduleChannels.find((c) => c.id === v.block.channel_id)?.name ?? `channel ${v.block.channel_id}`}`
+    + ` · block ${fmt(v.blockSeconds)}${v.guideSeconds ? ` + ${fmt(v.guideSeconds)} channel guide` : ''} · ${scheduleChannels.find((c) => c.id === v.block.channel_id)?.name ?? `channel ${v.block.channel_id}`}`
     + (currentMirror ? ' · 🔁 mirrored airing (read-only — edit the primary airing)' : '');
 }
 

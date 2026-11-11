@@ -12,6 +12,7 @@ import { nextChapter, cooldownEligible } from './playHistory.js';
 import { log } from '../logger.js';
 import { holidaySql } from './holidays.js';
 import { busyFiles, crossBusy } from './crossChannel.js';
+import { guideConfig, guideSecondsFor } from './guideConfig.js';
 
 const l = log('scheduling');
 
@@ -270,9 +271,15 @@ export function linkShifts(rows, { nextDayStart = nextDayFirstStart } = {}) {
     }
   }
 
+  const guideCfg = guideConfig();
   for (const r of rows) {
     const start = hhmmSeconds(r.start_time);
     r.blockSeconds = r.slotSeconds - r.start_shift + r.end_shift + r.extend_seconds;
+    // The channel guide airs in the last seconds of the window (guideConfig.js):
+    // blockSeconds is what the CONTENT must fill, windowSeconds the whole block.
+    r.windowSeconds = r.blockSeconds;
+    r.guide_seconds = guideSecondsFor(r.channel_id, r.target_date, r.blockSeconds, guideCfg);
+    r.blockSeconds -= r.guide_seconds;
     r.effective_start = clockString(start + r.start_shift);
     r.effective_end = clockString(start + r.slotSeconds + r.end_shift + r.extend_seconds);
     delete r._start;

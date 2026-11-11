@@ -745,6 +745,20 @@ function playbackFaultSchema() {
       decided_at      TEXT,                            -- set when the operator chose the status
       PRIMARY KEY (file_path, playout)
     );
+
+    -- Channel guide clip rendered for a block (src/services/guideRender.js).
+    -- hash = what it shows; a different plan means a re-render.
+    CREATE TABLE IF NOT EXISTS GuideRender (
+      block_id    INTEGER PRIMARY KEY REFERENCES ScheduledBlock(id) ON DELETE CASCADE,
+      channel_id  INTEGER,
+      target_date TEXT,
+      path        TEXT,                    -- canonical path of the clip on the share
+      hash        TEXT,
+      status      TEXT NOT NULL,           -- ok | failed | empty
+      error       TEXT,
+      seconds     REAL,
+      rendered_at TEXT
+    );
   `);
   addColumnIfMissing('SignalEvent', 'culprit', 'TEXT');
   // Did an Air Spec conversion fix a clip that played badly? (playbackFaults.verifyReencoded)
