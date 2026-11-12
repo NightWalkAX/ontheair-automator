@@ -79,7 +79,7 @@ export function describeClip(c) {
 }
 
 /**
- * A run of mixed lessons is named after the grade most of them are for — "Grade 6 Classes" —
+ * A run of mixed lessons (`subjects` = one entry PER LESSON) is named after the grade most of them are for — "Grade 6 Classes" —
  * not after its first clip: a DEU timetable can open Grade 6's morning with a Grade 2 lesson,
  * and "Grade 2 English Language +5 more" on the Grade 6 channel reads as a mistake (2026-11-12).
  */
@@ -106,20 +106,20 @@ export function groupRows(items, max = MAX_ROWS) {
       last.n++; last.lastTag = x.tag; continue;
     }
     if (last && x.kind === 'lesson' && last.kind === 'lesson') { // a run of classes is one row
-      last.n++; if (!last.subjects.includes(x.title)) last.subjects.push(x.title); continue;
+      last.n++; last.all.push(x.title); if (!last.subjects.includes(x.title)) last.subjects.push(x.title); continue;
     }
-    rows.push({ ...x, n: 1, lastTag: x.tag, subjects: [x.title] });
+    rows.push({ ...x, n: 1, lastTag: x.tag, subjects: [x.title], all: [x.title] });
   }
   for (const r of rows) {
     if (r.kind === 'lesson') {
-      r.title = r.subjects.length > 1 ? classesTitle(r.subjects) : r.subjects[0];
+      r.title = r.subjects.length > 1 ? classesTitle(r.all) : r.subjects[0];
       r.tag = r.n > 1 ? `${r.n} LESSONS` : 'LESSON';
     } else if (r.n > 1) {
       if (/^S\d+E\d+$/.test(r.tag) && /^S\d+E\d+$/.test(r.lastTag) && r.lastTag !== r.tag) {
         r.tag = r.tag.slice(0, 3) === r.lastTag.slice(0, 3) ? `${r.tag}–${r.lastTag.slice(3)}` : `${r.tag}–${r.lastTag}`;
       } else r.tag = `${r.n} EPS`;
     }
-    delete r.subjects; delete r.lastTag;
+    delete r.subjects; delete r.all; delete r.lastTag;
   }
   if (rows.length > max) {
     const extra = rows.length - (max - 1);
