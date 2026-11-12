@@ -79,6 +79,22 @@ export function describeClip(c) {
 }
 
 /**
+ * A run of mixed lessons is named after the grade most of them are for — "Grade 6 Classes" —
+ * not after its first clip: a DEU timetable can open Grade 6's morning with a Grade 2 lesson,
+ * and "Grade 2 English Language +5 more" on the Grade 6 channel reads as a mistake (2026-11-12).
+ */
+export function classesTitle(subjects) {
+  const count = new Map();
+  for (const s of subjects) {
+    const g = /\bGrade\s*(\d+)/i.exec(s)?.[1];
+    if (g) count.set(g, (count.get(g) || 0) + 1);
+  }
+  if (!count.size) return 'Classes';
+  const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0][0]; // ties: the first grade seen
+  return `Grade ${top} Classes`;
+}
+
+/**
  * Fold consecutive airings into rows and cap them. `items` are
  * { at, title, tag, kind, duration, file_path } in air order.
  */
@@ -96,7 +112,7 @@ export function groupRows(items, max = MAX_ROWS) {
   }
   for (const r of rows) {
     if (r.kind === 'lesson') {
-      r.title = r.subjects.length > 1 ? `${r.subjects[0]} +${r.subjects.length - 1} more` : r.subjects[0];
+      r.title = r.subjects.length > 1 ? classesTitle(r.subjects) : r.subjects[0];
       r.tag = r.n > 1 ? `${r.n} LESSONS` : 'LESSON';
     } else if (r.n > 1) {
       if (/^S\d+E\d+$/.test(r.tag) && /^S\d+E\d+$/.test(r.lastTag) && r.lastTag !== r.tag) {
@@ -131,7 +147,9 @@ function dayAir(channelId, date) {
     let t = start;
     const clips = [];
     for (const c of itemsOf.all(r.id)) {
-      if (!c.is_filler) clips.push({ ...c, at: guideTime(t) });
+      // Fillers that open a block are not what the viewer waits for: the block's first
+      // programme is announced at the block's own start (9:00, not 9:04).
+      if (!c.is_filler) clips.push({ ...c, at: guideTime(clips.length ? t : start) });
       t += Number(c.duration) || 0;
     }
     blocks.push({ ...r, absStart: start, absEnd: start + r.blockSeconds + (r.guide_seconds || 0), clips });

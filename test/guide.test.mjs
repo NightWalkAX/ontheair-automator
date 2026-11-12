@@ -25,7 +25,7 @@ writeCfg({});
 const { db, initSchema } = await import('../src/db.js');
 const { linkShifts, channelDayBlocks } = await import('../src/services/scheduling.js');
 const { guideSecondsFor, resetGuideConfigCache, channelStyle } = await import('../src/services/guideConfig.js');
-const { guidePlan, groupRows, guideTime, describeClip } = await import('../src/services/guidePlan.js');
+const { guidePlan, groupRows, guideTime, describeClip, classesTitle } = await import('../src/services/guidePlan.js');
 const { guideHtml, identHtml } = await import('../src/services/guideTemplates.js');
 const { guideItemsForDay, guidePath, fallbackPath } = await import('../src/services/guideRender.js');
 
@@ -83,7 +83,9 @@ test('times read on the quarter hour, rows fold and cap', () => {
     { title: 'Turbo', tag: 'MOVIE', kind: 'movie', at: 240 },
   ];
   const rows = groupRows(items);
-  assert.deepEqual(rows.map((r) => [r.title, r.tag]), [['Bluey', 'S02E23–E24'], ['Grade 3 Maths +1 more', '2 LESSONS'], ['Turbo', 'MOVIE']]);
+  assert.deepEqual(rows.map((r) => [r.title, r.tag]), [['Bluey', 'S02E23–E24'], ['Grade 3 Classes', '2 LESSONS'], ['Turbo', 'MOVIE']]);
+  assert.equal(classesTitle(['Grade 2 English Language', 'Grade 6 English Language', 'Grade 7 English Language', 'Grade 6 Mathematics', 'Math Intervention']), 'Grade 6 Classes');
+  assert.equal(classesTitle(['Literacy', 'Math Intervention']), 'Classes');
   const many = Array.from({ length: 14 }, (_, i) => ({ title: `Show ${i}`, tag: '', kind: 'show', at: i }));
   const capped = groupRows(many);
   assert.equal(capped.length, 10);
