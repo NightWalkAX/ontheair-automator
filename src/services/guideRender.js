@@ -168,13 +168,18 @@ class Browser {
           for (const w of [...this.events]) if (w.method === msg.method && w.sessionId === msg.sessionId) { this.events.splice(this.events.indexOf(w), 1); w.res(msg.params); }
         }
       };
-      ws.onclose = () => { for (const { rej } of this.pending.values()) rej(new Error('DevTools socket closed')); this.pending.clear(); };
+      ws.onclose = () => { this.dead = true; for (const { rej } of this.pending.values()) rej(new Error('DevTools socket closed')); this.pending.clear(); };
     });
   }
-  send(method, params = {}, sessionId) {
+  // A send on a closed socket is silently dropped, so a call made after Chrome
+  // died used to wait forever and freeze the whole render (2026-11-12). Refuse
+  // it up front, and give every call a deadline in case Chrome hangs instead.
+  send(method, params = {}, sessionId, timeoutMs = 90000) {
+    if (this.dead || this.ws?.readyState !== 1) return Promise.reject(new Error('DevTools socket closed'));
     const id = ++this.id;
     return new Promise((res, rej) => {
-      this.pending.set(id, { res, rej });
+      const t = setTimeout(() => { if (this.pending.delete(id)) rej(new Error(`${method} timed out`)); }, timeoutMs);
+      this.pending.set(id, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } });
       this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
@@ -379,9 +384,15 @@ export async function renderRange(from, to, { channelIds = [], force = false, bl
     }
     let next = 0;
     const nowAbs = nowAbsolute();
-    await Promise.all(browsers.map(async (browser) => {
+    await Promise.all(browsers.map(async (first, slot) => {
+      let browser = first;
       while (!state.cancel && next < list.length) {
         const item = list[next++];
+        // Chrome can die mid-run; a dead one fails every later block, so start a new one.
+        if (browser.dead) {
+          await browser.close();
+          try { browser = browsers[slot] = await Browser.launch(cfg.chromePath); } catch (err) { state.lastError = `relaunch: ${err.message}`; L.error('could not relaunch Chrome', err); }
+        }
         state.current.push(item.id);
         const res = await renderBlockGuide(item.id, { browser, force, nowAbs });
         state.current.splice(state.current.indexOf(item.id), 1);
