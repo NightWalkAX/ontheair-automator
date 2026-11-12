@@ -90,8 +90,9 @@ export function classesTitle(subjects) {
     if (g) count.set(g, (count.get(g) || 0) + 1);
   }
   if (!count.size) return 'Classes';
-  const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0][0]; // ties: the first grade seen
-  return `Grade ${top} Classes`;
+  const [top, n] = [...count.entries()].sort((a, b) => b[1] - a[1])[0]; // ties: the first grade seen
+  // Only a clear majority names the grade: a DEU day mixes grades, and a wrong grade is worse than none.
+  return n * 2 > subjects.length ? `Grade ${top} Classes` : 'Classes';
 }
 
 /**

@@ -84,9 +84,10 @@ test('times read on the quarter hour, rows fold and cap', () => {
   ];
   const rows = groupRows(items);
   assert.deepEqual(rows.map((r) => [r.title, r.tag]), [['Bluey', 'S02E23–E24'], ['Grade 3 Classes', '2 LESSONS'], ['Turbo', 'MOVIE']]);
-  assert.equal(classesTitle(['Grade 2 English Language', 'Grade 6 English Language', 'Grade 7 English Language', 'Grade 6 Mathematics', 'Math Intervention']), 'Grade 6 Classes');
+  assert.equal(classesTitle(['Grade 2 English Language', 'Grade 6 English Language', 'Grade 6 Science', 'Grade 6 Mathematics', 'Math Intervention']), 'Grade 6 Classes');
+  assert.equal(classesTitle(['Junior Literacy', 'Grade 5 English Language', 'Grade 2 English', 'Literacy']), 'Classes');
   assert.equal(classesTitle(['Literacy', 'Math Intervention']), 'Classes');
-  assert.equal(groupRows(['Grade 2 English', 'Grade 6 English', 'Grade 7 English', 'Grade 7 Maths', 'Grade 6 English', 'Grade 6 Science'].map((title, i) => ({ title, tag: 'LESSON', kind: 'lesson', at: i })))[0].title, 'Grade 6 Classes');
+  assert.equal(groupRows(['Grade 2 English', 'Grade 6 English', 'Grade 6 Maths', 'Grade 7 Maths', 'Grade 6 English', 'Grade 6 Science'].map((title, i) => ({ title, tag: 'LESSON', kind: 'lesson', at: i })))[0].title, 'Grade 6 Classes');
   const many = Array.from({ length: 14 }, (_, i) => ({ title: `Show ${i}`, tag: '', kind: 'show', at: i }));
   const capped = groupRows(many);
   assert.equal(capped.length, 10);
