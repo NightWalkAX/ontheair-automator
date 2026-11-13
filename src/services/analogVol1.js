@@ -394,7 +394,7 @@ export async function spaceFor(client, channelId, paths) {
     if (!st) { unreadable.push(p.file_path); return; }
     sizes.set(p.file_path, st.size);
     const dur = durationOf.get(p.file_path)?.d;
-    const capped = (p.over_bitrate || overCap(kbpsOf(st.size, dur), cfg)) && dur
+    const capped = (p.over_bitrate || p.rejected || overCap(kbpsOf(st.size, dur), cfg)) && dur
       ? Math.min(st.size, Math.ceil((cfg.maxBitrateKbps * 1000 / 8) * dur)) : st.size;
     bytes += capped;
   }));

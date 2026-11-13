@@ -632,6 +632,12 @@ approval, `validateBlock()`) is identical and only the push destination differs.
   week routine replace it under a NEW name (PUT never overwrites, and the old copy may be on air)
   and hand the old one to the Vol1 clean-up (`AnalogDeviceFile`, `matched`). A push with over-cap
   copies still goes ahead, with a warning. `maxBitrateKbps: 0` turns the cap off.
+  **Format, not only bitrate (2026-11-13):** the device BLOCKLISTS files it can't play ("PLAY FILE
+  FAILED. VIDEO IS BLOCKLISTED", as-run "Failed to play file") — PCM audio, 44.1 kHz, odd frame
+  sizes, all under the cap. So `runUpload()` also encodes any master that isn't `deviceReady()`
+  (H.264 yuv420p 1920x1080 29.97, AAC 48 kHz or no audio, under the cap), and `planFiles()` flags
+  `rejected` a copy sent as it was that the device then refused (as-run/recovery fault after the
+  upload): it is re-encoded under a NEW name (the blocklist is per name), like `over_bitrate`.
   Every capped copy is recorded in `AnalogConversion`; the tab's "Capped copies" panel rolls them
   back (`rollbackConversions()`, `POST /api/analog/conversions/rollback { ids }`): the file goes back
   to the over-cap copy it replaced when that is still on Vol1, otherwise to its master as it is

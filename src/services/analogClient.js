@@ -38,7 +38,8 @@ import { log } from '../logger.js';
 import { NULL_PROGRESS } from './pushProgress.js';
 import { channelDayBlocks, linkShifts } from './scheduling.js';
 import { blockItems } from './otavClient.js';
-import { encodedExt, encodeForDevice, kbpsOf } from './analogEncode.js';
+import { deviceReady, encodedExt, encodeForDevice, kbpsOf } from './analogEncode.js';
+import { probeFormat } from './transcode.js';
 
 const l = log('analog');
 
@@ -80,8 +81,32 @@ export function overCap(kbps, cfg = analogConfig()) {
   return cfg.maxBitrateKbps > 0 && kbps != null && kbps > cfg.maxBitrateKbps;
 }
 
-/** A plan entry the upload job has to send: missing, or on the device above the cap. */
-export const needsCopy = (p) => p.state === 'missing' || !!p.over_bitrate;
+/**
+ * A plan entry the upload job has to send: missing, on the device above the
+ * cap, or a copy we sent as it was that the device refused to play.
+ */
+export const needsCopy = (p) => p.state === 'missing' || !!p.over_bitrate || !!p.rejected;
+
+/** The copy on the device must be replaced under a new name (over the cap, or refused by the player). */
+export const replacesCopy = (p) => !!p.over_bitrate || !!p.rejected;
+
+/**
+ * Device copies the upload sent as they were (no capped copy in use) that the
+ * device then refused: an as-run "Failed to play file" or a recovery answered
+ * "VIDEO IS BLOCKLISTED", after the upload. The UltraNEXUS blocklists the NAME,
+ * so the fix is an encode to the house format under a new name (2026-11-13:
+ * eleven such copies left the channel black 18:45–09:47).
+ */
+function rejectedCopies() {
+  return new Set(db.prepare(`
+    SELECT af.device_filename AS name FROM AnalogFile af
+    WHERE af.uploaded_at IS NOT NULL AND af.no_cap = 0
+      AND NOT EXISTS (SELECT 1 FROM AnalogConversion c WHERE c.device_filename = af.device_filename AND c.rolled_back_at IS NULL)
+      AND EXISTS (SELECT 1 FROM PlaybackFault f WHERE f.playout = 'analog' AND f.discarded = 0
+        AND f.file_path = af.file_path AND f.occurred_at >= af.uploaded_at
+        AND (f.detail LIKE '%Failed to play file%' OR f.detail LIKE '%BLOCKLISTED%'))
+  `).all().map((r) => r.name));
+}
 
 // The device's FTP serves one transfer at a time (analog-automator holds a lock
 // around every FTP call), so a multi-GB archive download would hold a push or an
@@ -349,6 +374,7 @@ export async function planFiles(client, paths, { source = 'device' } = {}) {
     .map((r) => [r.file_path, r.device_filename]));
   const uncapped = new Set(db.prepare('SELECT file_path FROM AnalogFile WHERE no_cap = 1').all().map((r) => r.file_path));
   const takenBy = new Map([...mapped].map(([p, n]) => [n, p]));
+  const rejected = rejectedCopies();
   const durationOf = db.prepare('SELECT MAX(duration) AS d FROM Resource WHERE file_path = ?');
   const remember = db.prepare('INSERT OR REPLACE INTO AnalogFile (file_path, device_filename) VALUES (?, ?)');
 
@@ -382,6 +408,7 @@ export async function planFiles(client, paths, { source = 'device' } = {}) {
       if (r) { entry.resource_id = r.resource_id; entry.length_s = r.length_s; }
       entry.kbps = kbpsOf(disk.get(name).size, r?.length_s || durationOf.get(filePath)?.d);
       entry.over_bitrate = !uncapped.has(filePath) && overCap(entry.kbps, cfg);
+      entry.rejected = !entry.over_bitrate && rejected.has(name);
     }
     out.push(entry);
   }
@@ -771,7 +798,14 @@ export async function runUpload(client, todo, j) {
       // A device copy over the cap is replaced by an encode even if the master
       // reads under it — the device's own length is the one that judged it.
       const kbps = kbpsOf(st.size, duration);
-      const encode = !p.no_cap && (!!p.over_bitrate || overCap(kbps, cfg));
+      // Not only over the cap: a master that isn't already in the device's
+      // house format is encoded too, or the device may refuse it (blocklist).
+      const fmt = p.no_cap ? null : await probeFormat(localizePath(p.file_path));
+      // Unreadable by ffprobe: judged by the cap alone, as before (an encode
+      // would fail on it too); a refusal on air flags it as rejected later.
+      const offFormat = fmt ? !deviceReady(fmt, kbps, cfg) : false;
+      if (!fmt && !p.no_cap) l.warn(`upload ${p.file_path}: ffprobe cannot read it — format not checked`);
+      const encode = !p.no_cap && (replacesCopy(p) || overCap(kbps, cfg) || offFormat);
       const size = encode && duration ? Math.min(st.size, Math.ceil((cfg.maxBitrateKbps * 1000 / 8) * duration)) : st.size;
       sized.push({ ...p, size, duration, encode, masterKbps: kbps });
     } catch (err) {
@@ -803,7 +837,7 @@ export async function runUpload(client, todo, j) {
           // A new name when the device already holds the old copy (PUT never
           // overwrites, and that copy may be in the week on air) or when the
           // container changed (.mpg → .mp4).
-          if (p.over_bitrate || extname(name).toLowerCase() !== encodedExt(p.file_path)) {
+          if (replacesCopy(p) || extname(name).toLowerCase() !== encodedExt(p.file_path)) {
             taken ??= new Set([...db.prepare('SELECT device_filename FROM AnalogFile').all().map((r) => r.device_filename),
               ...(await client.files()).map((f) => f.filename)]);
             name = freshName(p.file_path, taken);
@@ -831,12 +865,13 @@ export async function runUpload(client, todo, j) {
         if (encoded) {
           j.converted.push({ device_filename: name, kbps: encoded.kbps });
           db.prepare(`INSERT INTO AnalogConversion (file_path, device_filename, previous_filename, kbps_before, kbps_after, converted_at)
-            VALUES (?, ?, ?, ?, ?, ?)`).run(p.file_path, name, p.over_bitrate ? p.device_filename : null,
+            VALUES (?, ?, ?, ?, ?, ?)`).run(p.file_path, name, replacesCopy(p) ? p.device_filename : null,
             p.over_bitrate ? p.kbps : p.masterKbps, encoded.kbps, new Date().toISOString());
         }
         l.info(`uploaded ${p.file_path} → ${name} (${Math.round(size / 1048576)} MB`
           + `${encoded ? `, capped copy at ${encoded.kbps} kb/s` : ''})`
-          + `${p.over_bitrate ? ` — replaces ${p.device_filename} (${p.kbps} kb/s)` : ''}`);
+          + `${p.over_bitrate ? ` — replaces ${p.device_filename} (${p.kbps} kb/s)` : ''}`
+          + `${p.rejected ? ` — replaces ${p.device_filename} (refused by the device)` : ''}`);
       } catch (err) {
         if (err.cancelled) break;
         j.failed.push({ file_path: p.file_path, error: err.message });
@@ -877,14 +912,15 @@ function freshName(filePath, taken) {
  */
 function repoint(p, name) {
   db.prepare('UPDATE AnalogFile SET device_filename = ?, size = NULL, uploaded_at = NULL WHERE file_path = ?').run(name, p.file_path);
-  if (!p.over_bitrate) return;
+  if (!replacesCopy(p)) return;
   db.prepare(`
     INSERT INTO AnalogDeviceFile (filename, length_s, kind, kind_reason, kind_manual, share_path, archive, scanned_at)
     VALUES (@filename, @length_s, 'program', @reason, 1, @share_path, 'matched', @at)
     ON CONFLICT(filename) DO UPDATE SET kind = 'program', kind_reason = excluded.kind_reason, kind_manual = 1,
       share_path = excluded.share_path, archive = 'matched', archive_error = NULL
   `).run({ filename: p.device_filename, length_s: p.length_s, share_path: p.file_path, at: new Date().toISOString(),
-    reason: `over ${analogConfig().maxBitrateKbps} kb/s (${p.kbps}) — replaced by ${name}` });
+    reason: p.rejected ? `refused by the device — replaced by ${name}`
+      : `over ${analogConfig().maxBitrateKbps} kb/s (${p.kbps}) — replaced by ${name}` });
 }
 
 // --- Rolling a capped copy back ---------------------------------------------------

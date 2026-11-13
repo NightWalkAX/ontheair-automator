@@ -27,18 +27,18 @@ copyFileSync(join(__dirname, '..', 'config', 'config.example.json'), process.env
 const { db, initSchema, ensureAnalogChannel } = await import('../src/db.js');
 const analog = await import('../src/services/analogClient.js');
 const { cleanupPlan } = await import('../src/services/analogVol1.js');
-const { deviceEncodeArgs, kbpsOf, videoKbpsFor } = await import('../src/services/analogEncode.js');
+const { deviceEncodeArgs, deviceReady, kbpsOf, videoKbpsFor } = await import('../src/services/analogEncode.js');
 
 let fake, analogId;
 
 /** A master on the "share": `bytes` long, `seconds` by its ffprobe sidecar. */
-const master = (name, bytes, seconds) => {
+const master = (name, bytes, seconds, audio = { codec_name: 'aac', sample_rate: '48000' }) => {
   const p = join(work, name);
   writeFileSync(p, Buffer.alloc(bytes, 7));
   writeFileSync(`${p}.json`, JSON.stringify({
     streams: [
       { codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080, avg_frame_rate: '30000/1001', pix_fmt: 'yuv420p' },
-      { codec_type: 'audio', codec_name: 'pcm_s16le', sample_rate: '48000', channels: 2 },
+      { codec_type: 'audio', channels: 2, ...audio },
     ],
     format: { duration: String(seconds), size: String(bytes) },
   }));
@@ -70,6 +70,20 @@ test('the capped encode: constant 1-second VBV under the cap, AAC audio, 1920x10
   assert.equal(analog.overCap(9000, { ...cfg, maxBitrateKbps: 0 }), false, '0 turns the cap off');
 });
 
+test('device-ready: only the house format goes as it is (2026-11-13 blocklist)', () => {
+  const cfg = analog.analogConfig();
+  const ok = { vcodec: 'h264', pix_fmt: 'yuv420p', width: 1920, height: 1080, fps: 29.97003, acodec: 'aac', sample_rate: 48000 };
+  assert.equal(deviceReady(ok, 3000, cfg), true);
+  assert.equal(deviceReady({ ...ok, acodec: null, sample_rate: null }, 3000, cfg), true, 'no audio is fine');
+  assert.equal(deviceReady({ ...ok, acodec: 'pcm_s16le' }, 3000, cfg), false, 'PCM (Grade 7 Scanning.mov)');
+  assert.equal(deviceReady({ ...ok, sample_rate: 44100 }, 3000, cfg), false, '44.1 kHz (Planet Earth 03)');
+  assert.equal(deviceReady({ ...ok, width: 502, height: 368 }, 500, cfg), false, 'odd size (Bill Nye 29)');
+  assert.equal(deviceReady({ ...ok, fps: 25 }, 3000, cfg), false);
+  assert.equal(deviceReady(ok, 4500, cfg), false, 'over the cap');
+  assert.equal(deviceReady(ok, null, cfg), false, 'unknown bitrate');
+  assert.equal(deviceReady(null, 3000, cfg), false, 'unreadable');
+});
+
 test('upload: over-cap masters go as capped copies, over-cap device copies are replaced, the rest as is', async () => {
   // Old_Movie.mov is on Vol1 already: 1 MiB over 1s = ~8.4 Mb/s.
   fake = await startFakeAnalog({
@@ -81,26 +95,27 @@ test('upload: over-cap masters go as capped copies, over-cap device copies are r
 
   const old = master('Old Movie.mov', 1000, 1);          // the master itself reads under: the device copy decides
   const big = master('Big Show.mpg', 1048576, 1);         // ~8.4 Mb/s, not on the device, .mpg → .mp4
-  const small = master('Small.mov', 1000, 60);            // well under: uploaded as is
+  const small = master('Small.mov', 1000, 60);            // well under, house format: uploaded as is
+  const pcm = master('Pcm Lesson.mov', 1000, 60, { codec_name: 'pcm_s16le', sample_rate: '48000' }); // under, but PCM: encoded
   const client = new analog.AnalogClient(analog.analogChannel());
 
-  const plan = await analog.planFiles(client, [old, big, small]);
+  const plan = await analog.planFiles(client, [old, big, small, pcm]);
   const byPath = Object.fromEntries(plan.map((p) => [p.file_path, p]));
   assert.equal(byPath[old].state, 'ready');
   assert.equal(byPath[old].over_bitrate, true);
   assert.ok(byPath[old].kbps > 8000, String(byPath[old].kbps));
   assert.equal(byPath[big].state, 'missing');
-  assert.equal(plan.filter(analog.needsCopy).length, 3);
+  assert.equal(plan.filter(analog.needsCopy).length, 4);
 
-  const st = await analog.startUpload([old, big, small]);
-  assert.equal(st.total, 3);
+  const st = await analog.startUpload([old, big, small, pcm]);
+  assert.equal(st.total, 4);
   for (let i = 0; i < 200 && analog.uploadStatus().running; i++) await new Promise((ok) => setTimeout(ok, 20));
   const up = analog.uploadStatus();
   assert.equal(up.failed.length, 0, JSON.stringify(up.failed));
   // fake-ffmpeg writes 2048 bytes: those two are the capped copies.
   assert.deepEqual(fake.state.uploads.map((u) => [u.filename, u.bytes]).sort(),
-    [['Big_Show.mp4', 2048], ['Old_Movie_1.mov', 2048], ['Small.mov', 1000]]);
-  assert.deepEqual(up.converted.map((c) => c.device_filename).sort(), ['Big_Show.mp4', 'Old_Movie_1.mov']);
+    [['Big_Show.mp4', 2048], ['Old_Movie_1.mov', 2048], ['Pcm_Lesson.mov', 2048], ['Small.mov', 1000]]);
+  assert.deepEqual(up.converted.map((c) => c.device_filename).sort(), ['Big_Show.mp4', 'Old_Movie_1.mov', 'Pcm_Lesson.mov']);
 
   const mapped = Object.fromEntries(db.prepare('SELECT file_path, device_filename FROM AnalogFile').all()
     .map((r) => [r.file_path, r.device_filename]));
@@ -122,12 +137,12 @@ test('upload: over-cap masters go as capped copies, over-cap device copies are r
   assert.ok((await cleanupPlan(client, analogId)).delete.some((d) => d.filename === 'Old_Movie.mov'));
 
   // A second plan has nothing left to send.
-  const again = await analog.planFiles(client, [old, big, small]);
+  const again = await analog.planFiles(client, [old, big, small, pcm]);
   assert.deepEqual(again.filter(analog.needsCopy), []);
 });
 
 test('rollback: back to the previous device copy, or the master as it is; the capped copy leaves the device', async () => {
-  const convs = analog.listConversions();
+  const convs = analog.listConversions().filter((c) => c.device_filename !== 'Pcm_Lesson.mov');
   assert.equal(convs.length, 2);
   assert.ok(convs.every((c) => c.in_use));
   const byName = Object.fromEntries(convs.map((c) => [c.device_filename, c]));
@@ -167,4 +182,26 @@ test('rollback: back to the previous device copy, or the master as it is; the ca
   const again = await analog.rollbackConversions([byName['Big_Show.mp4'].id]);
   assert.equal(again[0].ok, false);
   assert.match(again[0].error, /already rolled back/);
+});
+
+test('a copy sent as it was that the device refused is re-encoded under a new name', async () => {
+  const client = new analog.AnalogClient(analog.analogChannel());
+  const small = join(work, 'Small.mov');
+  const { uploaded_at: at } = db.prepare('SELECT uploaded_at FROM AnalogFile WHERE file_path = ?').get(small);
+  fake.state.library?.push?.({ resource_id: 12, title: 'Small', filename: 'Small.mov', length_s: 60 });
+  db.prepare(`INSERT INTO PlaybackFault (file_path, playout, channel_id, source, kind, occurred_at, detail, recorded_at)
+    VALUES (?, 'analog', ?, 'asrun', 'exception', ?, 'Small · Failed to play file Vol1:Small.mov', ?)`)
+    .run(small, analogId, new Date(Date.parse(at) + 60000).toISOString(), new Date().toISOString());
+  const [p] = await analog.planFiles(client, [small]);
+  assert.equal(p.rejected, true);
+  assert.equal(analog.needsCopy(p), true);
+  await analog.startUpload([small]);
+  for (let i = 0; i < 200 && analog.uploadStatus().running; i++) await new Promise((ok) => setTimeout(ok, 20));
+  assert.equal(analog.uploadStatus().failed.length, 0, JSON.stringify(analog.uploadStatus().failed));
+  const now = db.prepare('SELECT device_filename FROM AnalogFile WHERE file_path = ?').get(small).device_filename;
+  assert.equal(now, 'Small_1.mov');
+  assert.equal(db.prepare("SELECT kind_reason FROM AnalogDeviceFile WHERE filename = 'Small.mov'").get().kind_reason,
+    'refused by the device — replaced by Small_1.mov');
+  const [after] = await analog.planFiles(client, [small]);
+  assert.equal(analog.needsCopy(after), false, 'the encoded copy is not judged by the old copy\'s faults');
 });

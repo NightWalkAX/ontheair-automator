@@ -142,15 +142,18 @@ async function checkFiles() {
       f.state === 'missing' ? (f.size != null ? mbText(f.size) : 'unreadable') : '',
       f.over_bitrate
         ? badge(['tx-blocked', `over the cap · ${(f.kbps / 1000).toFixed(1)} Mb/s`])
+        : f.rejected ? badge(['tx-blocked', 'refused by the device · re-encode'])
         : badge(STATE[f.state] || ['', f.state]),
       f.first_date));
   }
   renderSpace(d.space);
   const missing = d.files.filter((f) => f.state === 'missing').length;
   const over = d.files.filter((f) => f.over_bitrate).length;
-  const what = [missing ? `${missing} missing` : '', over ? `replace ${over} over the cap` : ''].filter(Boolean).join(', ');
-  $('#anUploadBtn').disabled = !(missing + over) || d.space?.fits === false;
-  $('#anUploadBtn').textContent = !(missing + over) ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload: ${what}`;
+  const refused = d.files.filter((f) => f.rejected).length;
+  const what = [missing ? `${missing} missing` : '', over ? `replace ${over} over the cap` : '',
+    refused ? `re-encode ${refused} refused` : ''].filter(Boolean).join(', ');
+  $('#anUploadBtn').disabled = !(missing + over + refused) || d.space?.fits === false;
+  $('#anUploadBtn').textContent = !(missing + over + refused) ? 'Nothing to upload' : d.space?.fits === false ? "Doesn't fit on Vol1" : `Upload: ${what}`;
 }
 
 /** One line for a running copy job (the upload button's or the week routine's). */

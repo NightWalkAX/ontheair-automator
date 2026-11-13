@@ -22,6 +22,25 @@ export function kbpsOf(bytes, seconds) {
   return Math.round((bytes * 8) / seconds / 1000);
 }
 
+/**
+ * Does the master already play on the device as it is? Only the house format
+ * this module encodes to: H.264 4:2:0 at cfg.width×height and cfg.fps, AAC at
+ * 48 kHz (or no audio), under the cap. Anything else (PCM audio, 44.1 kHz, an
+ * odd frame size) the UltraNEXUS refuses with "PLAY FILE FAILED. VIDEO IS
+ * BLOCKLISTED" — seen on 2026-11-12/13: 13 of the 30 masters sent as they were
+ * left the channel black, while all 27 encoded copies played.
+ */
+export function deviceReady(fmt, kbps, cfg) {
+  if (!fmt) return false;
+  const [n, d = 1] = String(cfg.fps).split('/').map(Number);
+  const fps = n / d;
+  return fmt.vcodec === 'h264' && fmt.pix_fmt === 'yuv420p'
+    && fmt.width === cfg.width && fmt.height === cfg.height
+    && fmt.fps != null && Math.abs(fmt.fps - fps) < 0.05
+    && (!fmt.acodec || (fmt.acodec === 'aac' && fmt.sample_rate === 48000))
+    && kbps != null && !(cfg.maxBitrateKbps > 0 && kbps > cfg.maxBitrateKbps);
+}
+
 /** Video kb/s for a total cap: 95% of it, less the audio. */
 export function videoKbpsFor(cfg) {
   return Math.max(500, Math.floor(cfg.maxBitrateKbps * 0.95) - cfg.audioKbps);
