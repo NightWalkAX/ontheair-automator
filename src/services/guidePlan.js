@@ -8,8 +8,8 @@
 //
 // Times are the playlist's: each block's clips run back to back from its
 // shifted window start (what a push sends), fillers left out of the list.
-// Consecutive airings of one show fold into one row ("S02E23–E24"), a run of
-// lessons into one ("Grade 3 English Language +2 more · 5 lessons"), and a
+// Consecutive airings of one show fold into one row ("S02E23–E24"); every lesson is
+// its own row with its topic and subject (operator 2026-11-12), and a
 // bracket never lists more than 10 rows. Pure apart from the SQL reads, so the
 // grouping can be tested on its own (groupRows).
 
@@ -60,6 +60,43 @@ function fixTitle(t) {
   return extra[t] ?? TITLE_FIX[t] ?? t;
 }
 
+const SUBJECT_SHORT = { 'english language': 'English', 'mathematics': 'Maths', 'math': 'Maths' };
+const FILLER_WORDS = new Set(['program', 'programme', 'read', 'enjoy', 'discover', '&', 'and', 'junior', 'the']);
+
+/**
+ * A lesson as the guide must print it (operator 2026-11-12: "always the subject and the topic, and the
+ * time — otherwise it serves no purpose"): title = the TOPIC the clip teaches, tag = its subject.
+ * "Grade 2- English language- Singular & Plural Nouns" → { title: 'Singular & Plural Nouns', tag: 'Grade 2 · English' };
+ * "Math_Intervention_Program_045_Algebra_and_Measurement_Part_1" → { title: 'Algebra and Measurement Part 1', tag: 'Math Intervention' }.
+ */
+export function lessonParts(c) {
+  const base = String(c.display_name || c.name || '').replace(/\.(mp4|mov|mpg|mxf|avi|mkv)$/i, '').trim();
+  const subjectRaw = String(c.subject || '').trim();
+  const grade = /^(?:grade|garde)\s*(\d+)/i.exec(base)?.[1] ?? /^grade\s*(\d+)/i.exec(subjectRaw)?.[1] ?? null;
+  let subj = subjectRaw.replace(/^grade\s*\d+\s*/i, '').trim();
+  subj = SUBJECT_SHORT[subj.toLowerCase()] ?? subj;
+  const subjWords = new Set(subjectRaw.toLowerCase().replace(/^grade\s*\d+\s*/, '').split(/\s+/).filter(Boolean));
+  let topic = '';
+  if (grade && /^(?:grade|garde)\s*\d+\s*-/i.test(base)) {
+    const seg = base.split(/\s*-\s*/).map((x) => x.trim()).filter(Boolean).slice(1);
+    // drop the subject segment(s): "English language", "Social", "Studies", "English"
+    while (seg.length > 1 && seg[0].toLowerCase().split(/\s+/).every((w) => subjWords.has(w) || w === 'english' || w === 'language')) seg.shift();
+    topic = seg.join(': ');
+  } else {
+    const words = prettyName(base).split(' ');
+    while (words.length > 1 && (subjWords.has(words[0].toLowerCase()) || FILLER_WORDS.has(words[0].toLowerCase()) || /^\d+$/.test(words[0]))) words.shift();
+    topic = words.join(' ');
+    const ep = /^(?:ep|e|episode)\s*(\d+)\s*(.*)$/i.exec(topic);
+    if (topic.split(' ').every((w) => subjWords.has(w.toLowerCase()) || FILLER_WORDS.has(w.toLowerCase()))) topic = prettyName(base);
+    else if (ep && ep[2]) topic = `${ep[2]} · Ep ${Number(ep[1])}`;           // "Ep12 Letter L" → "Letter L · Ep 12"
+    else if (ep && subjWords.size && !/^e\d+$/i.test(words.join(''))) topic = `Episode ${Number(ep[1])}`;
+    else if (ep) topic = prettyName(base);                                     // "Junior Literacy E39": the name is all there is
+  }
+  topic = topic.replace(/\s+/g, ' ').replace(/[:\s]+$/, '').trim() || prettyName(base);
+  const tag = grade ? `Grade ${grade}${subj ? ` · ${subj}` : ''}` : (subj || 'Lesson');
+  return { title: fixTitle(topic), tag };
+}
+
 /** One clip → { title, tag, kind } as the guide prints it. */
 export function describeClip(c) {
   const type = c.show_type_code;
@@ -70,29 +107,12 @@ export function describeClip(c) {
     const title = fixed !== raw ? fixed : fixTitle(c.display_name || prettyName(c.name));
     return { title, tag: 'MOVIE', kind: 'movie' };
   }
+  if (type === 'lessons') return { ...lessonParts(c), kind: 'lesson' };
   const title = fixTitle(c.subject || c.display_name || prettyName(c.name));
-  if (type === 'lessons') return { title, tag: 'LESSON', kind: 'lesson' };
   const ep = statedEpisode(c.name, c.subject) ?? (Number(c.chapter) > 0 && Number(c.chapter) < 1000 ? Number(c.chapter) : null);
   const pad = (n) => String(n).padStart(2, '0');
   const tag = ep == null ? '' : c.season != null ? `S${pad(c.season)}E${pad(ep)}` : `EP ${ep}`;
   return { title, tag, kind: type === 'documentaries' ? 'doc' : 'show' };
-}
-
-/**
- * A run of mixed lessons (`subjects` = one entry PER LESSON) is named after the grade most of them are for — "Grade 6 Classes" —
- * not after its first clip: a DEU timetable can open Grade 6's morning with a Grade 2 lesson,
- * and "Grade 2 English Language +5 more" on the Grade 6 channel reads as a mistake (2026-11-12).
- */
-export function classesTitle(subjects) {
-  const count = new Map();
-  for (const s of subjects) {
-    const g = /\bGrade\s*(\d+)/i.exec(s)?.[1];
-    if (g) count.set(g, (count.get(g) || 0) + 1);
-  }
-  if (!count.size) return 'Classes';
-  const [top, n] = [...count.entries()].sort((a, b) => b[1] - a[1])[0]; // ties: the first grade seen
-  // Only a clear majority names the grade: a DEU day mixes grades, and a wrong grade is worse than none.
-  return n * 2 > subjects.length ? `Grade ${top} Classes` : 'Classes';
 }
 
 /**
@@ -106,15 +126,11 @@ export function groupRows(items, max = MAX_ROWS) {
     if (last && x.kind !== 'movie' && last.kind === x.kind && last.title === x.title) {
       last.n++; last.lastTag = x.tag; continue;
     }
-    if (last && x.kind === 'lesson' && last.kind === 'lesson') { // a run of classes is one row
-      last.n++; last.all.push(x.title); if (!last.subjects.includes(x.title)) last.subjects.push(x.title); continue;
-    }
     rows.push({ ...x, n: 1, lastTag: x.tag, subjects: [x.title], all: [x.title] });
   }
   for (const r of rows) {
     if (r.kind === 'lesson') {
-      r.title = r.subjects.length > 1 ? classesTitle(r.all) : r.subjects[0];
-      r.tag = r.n > 1 ? `${r.n} LESSONS` : 'LESSON';
+      // every lesson is its own row (topic + subject); only the same lesson twice in a row folds
     } else if (r.n > 1) {
       if (/^S\d+E\d+$/.test(r.tag) && /^S\d+E\d+$/.test(r.lastTag) && r.lastTag !== r.tag) {
         r.tag = r.tag.slice(0, 3) === r.lastTag.slice(0, 3) ? `${r.tag}–${r.lastTag.slice(3)}` : `${r.tag}–${r.lastTag}`;

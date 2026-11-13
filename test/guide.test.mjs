@@ -25,7 +25,7 @@ writeCfg({});
 const { db, initSchema } = await import('../src/db.js');
 const { linkShifts, channelDayBlocks } = await import('../src/services/scheduling.js');
 const { guideSecondsFor, resetGuideConfigCache, channelStyle } = await import('../src/services/guideConfig.js');
-const { guidePlan, groupRows, guideTime, describeClip, classesTitle } = await import('../src/services/guidePlan.js');
+const { guidePlan, groupRows, guideTime, describeClip, lessonParts } = await import('../src/services/guidePlan.js');
 const { guideHtml, identHtml } = await import('../src/services/guideTemplates.js');
 const { guideItemsForDay, guidePath, fallbackPath } = await import('../src/services/guideRender.js');
 
@@ -83,11 +83,14 @@ test('times read on the quarter hour, rows fold and cap', () => {
     { title: 'Turbo', tag: 'MOVIE', kind: 'movie', at: 240 },
   ];
   const rows = groupRows(items);
-  assert.deepEqual(rows.map((r) => [r.title, r.tag]), [['Bluey', 'S02E23–E24'], ['Grade 3 Classes', '2 LESSONS'], ['Turbo', 'MOVIE']]);
-  assert.equal(classesTitle(['Grade 2 English Language', 'Grade 6 English Language', 'Grade 6 Science', 'Grade 6 Mathematics', 'Math Intervention']), 'Grade 6 Classes');
-  assert.equal(classesTitle(['Junior Literacy', 'Grade 5 English Language', 'Grade 2 English', 'Literacy']), 'Classes');
-  assert.equal(classesTitle(['Literacy', 'Math Intervention']), 'Classes');
-  assert.equal(groupRows(['Grade 2 English', 'Grade 6 English', 'Grade 6 Maths', 'Grade 7 Maths', 'Grade 6 English', 'Grade 6 Science'].map((title, i) => ({ title, tag: 'LESSON', kind: 'lesson', at: i })))[0].title, 'Grade 6 Classes');
+  assert.deepEqual(rows.map((r) => [r.title, r.tag]), [['Bluey', 'S02E23–E24'], ['Grade 3 Maths', 'LESSON'], ['Grade 3 Science', 'LESSON'], ['Turbo', 'MOVIE']]);
+  // every lesson is its own row: topic + subject (operator 2026-11-12)
+  assert.deepEqual(lessonParts({ name: 'Grade 2- English language- Singular & Plural Nouns.mov', subject: 'Grade 2 English Language' }), { title: 'Singular & Plural Nouns', tag: 'Grade 2 · English' });
+  assert.deepEqual(lessonParts({ name: 'Grade 6- Social - Studies - Symbols of Nationhood.mp4', subject: 'Grade 6 Social Studies' }), { title: 'Symbols of Nationhood', tag: 'Grade 6 · Social Studies' });
+  assert.deepEqual(lessonParts({ name: 'Math_Intervention_Program_045_Algebra_and_Measurement_Part_1.mov', subject: 'Math Intervention' }), { title: 'Algebra and Measurement Part 1', tag: 'Math Intervention' });
+  assert.deepEqual(lessonParts({ name: 'R.E.A.D_Read_Enjoy_&_Discover_Ep12_Letter_L.mov', subject: 'R.E.A.D' }), { title: 'Letter L · Ep 12', tag: 'R.E.A.D' });
+  const lessons = groupRows(['Nouns', 'Verbs', 'Verbs'].map((title, i) => ({ title, tag: 'Grade 2 · English', kind: 'lesson', at: i })));
+  assert.deepEqual(lessons.map((r) => [r.title, r.n]), [['Nouns', 1], ['Verbs', 2]]);
   const many = Array.from({ length: 14 }, (_, i) => ({ title: `Show ${i}`, tag: '', kind: 'show', at: i }));
   const capped = groupRows(many);
   assert.equal(capped.length, 10);
