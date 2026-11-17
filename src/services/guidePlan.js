@@ -63,7 +63,7 @@ function fixTitle(t) {
 
 // Lesson file names carry scaffolding the DEU/IDB editors type ("lesson 25 Topic-…", "Lesson 4 - Topic X Subtopic - Y",
 // "TABLES 4 5 6") and a few recurring typos. Operator 2026-11-17: the guide and the stories must read clean.
-const TOPIC_TYPOS = { Equivelant: 'Equivalent', Paragrah: 'Paragraph', Diagraphs: 'Digraphs', Langauge: 'Language', Survivial: 'Survival', Climactic: 'Climatic' };
+const TOPIC_TYPOS = { Decimlas: 'Decimals', Equivelant: 'Equivalent', Paragrah: 'Paragraph', Diagraphs: 'Digraphs', Langauge: 'Language', Survivial: 'Survival', Climactic: 'Climatic' };
 const SMALL_WORDS = new Set(['a', 'an', 'and', 'of', 'the', 'to', 'in', 'on', 'with', 'for', 'or', 'at', 'by', 'from', 'vs']);
 export function tidyTopic(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
@@ -71,6 +71,9 @@ export function tidyTopic(t) {
   t = t.replace(/^[-–\s]*grade\s*\d+\s*[-–]\s*/i, '');
   t = t.replace(/^grade\s*\d+\s*(english language|english|mathematics|maths|science|social studies)\s*[-–:]?\s*/i, '');
   t = t.replace(/^(?:lesson|lession)\s*\d+\s*[-:]?\s*/i, '');
+  t = t.replace(/^grades?\s*\d+\s*[-–]\s*(?:english language|english|mathematics|maths|science|social studies)\s*[-–]\s*/i, '');
+  t = t.replace(/^nursery\s*[-–]\s*/i, '').replace(/\s+(?:edited|final|v\d+)$/i, '');
+  t = t.replace(/^S(\d+)\s*Ep\s*(\d+)$/i, 'Season $1 · Ep $2');
   t = t.replace(/^topic\s*[-:]?\s*/i, '');
   t = t.replace(/\s*[-:]?\s*sub-?topic\s*[-:]?\s*/i, ': ');
   t = t.replace(/\s+-\s+/g, ' – ').replace(/,(?=\S)/g, ', ');

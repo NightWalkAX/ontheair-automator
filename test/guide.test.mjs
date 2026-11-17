@@ -94,6 +94,10 @@ test('times read on the quarter hour, rows fold and cap', () => {
   assert.equal(lessonParts({ name: 'Lesson 1 Topic- word formation Subtopic - Prefixes.mp4', subject: 'Grade 5 English Language' }).title, 'Word Formation: Prefixes');
   assert.equal(lessonParts({ name: 'Grade 5- Mathematics- TABLES 4 5 6.mp4', subject: 'Grade 5 Mathematics' }).title, 'Tables of 4, 5 and 6');
   assert.equal(lessonParts({ name: 'Grade 5 - Mathematics - Equivelant Fractions.mp4', subject: 'Grade 5 Mathematics' }).title, 'Equivalent Fractions');
+  assert.equal(tidyTopic('Grades 1- English Language- Apples'), 'Apples');
+  assert.equal(tidyTopic('Nursery- Birthdays'), 'Birthdays');
+  assert.equal(tidyTopic('How Animals Care for Their Young by Feeding Them Edited'), 'How Animals Care for Their Young by Feeding Them');
+  assert.equal(tidyTopic('Comparing Decimlas'), 'Comparing Decimals');
   assert.equal(tidyTopic('Lesson 4 - Topic Paragrah Writing Subtopic - The Descriptive Paragraph'), 'Paragraph Writing: The Descriptive Paragraph');
   assert.equal(tidyTopic('lesson 24 Topic-Forming the plural of Nouns ending with s, o, ss, ch,x'), 'Forming the Plural of Nouns Ending with s, o, ss, ch, x');
   const lessons = groupRows(['Nouns', 'Verbs', 'Verbs'].map((title, i) => ({ title, tag: 'Grade 2 · English', kind: 'lesson', at: i })));
