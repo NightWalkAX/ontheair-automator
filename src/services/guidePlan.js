@@ -109,7 +109,7 @@ function fixTitle(t) {
 
 // Lesson file names carry scaffolding the DEU/IDB editors type ("lesson 25 Topic-…", "Lesson 4 - Topic X Subtopic - Y",
 // "TABLES 4 5 6") and a few recurring typos. Operator 2026-11-17: the guide and the stories must read clean.
-const TOPIC_TYPOS = { Decimlas: 'Decimals', Equivelant: 'Equivalent', Paragrah: 'Paragraph', Diagraphs: 'Digraphs', Langauge: 'Language', Survivial: 'Survival', Climactic: 'Climatic' };
+const TOPIC_TYPOS = { Decimlas: 'Decimals', Equivelant: 'Equivalent', Paragrah: 'Paragraph', Diagraphs: 'Digraphs', Langauge: 'Language', Survivial: 'Survival', Climactic: 'Climatic', Ingles: 'Inglés', Espanol: 'Español' };
 const SMALL_WORDS = new Set(['a', 'an', 'and', 'of', 'the', 'to', 'in', 'on', 'with', 'for', 'or', 'at', 'by', 'from', 'vs']);
 export function tidyTopic(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
@@ -129,6 +129,9 @@ export function tidyTopic(t) {
   const tables = /^tables?((?:\s*\d+)+)$/i.exec(t);
   if (tables) { const n = tables[1].trim().split(/\s+/); t = `Tables of ${n.length > 1 ? `${n.slice(0, -1).join(', ')} and ${n.at(-1)}` : n[0]}`; }
   for (const [a, b] of Object.entries(TOPIC_TYPOS)) t = t.replace(new RegExp(`\\b${a}\\b`, 'g'), b);
+  t = t.replace(/^(Junior (?:English|Mathematics|Literacy|Numeracy))\s*E(\d+)$/i, '$1 · Ep $2');
+  t = t.replace(/\b(Ep \d+) (\w)/g, (_m, a, b) => `${a} · ${b.toUpperCase()}`);
+  if (/^agri talk new$/i.test(t)) t = 'Agri Talk';
   const ws = t.split(' ');
   t = ws.map((w, i) => {
     const start = i === 0 || ws[i - 1].endsWith(':') || ws[i - 1] === '·' || ws[i - 1] === '–';
@@ -204,7 +207,8 @@ export function describeClip(c) {
     return { title, tag: 'MOVIE', kind: 'movie' };
   }
   if (type === 'lessons') return { ...lessonParts(c), kind: 'lesson' };
-  const title = fixTitle(isFolderSubject(c.subject) ? cleanFileTitle(c.display_name || c.name) : (c.subject || c.display_name || prettyName(c.name)));
+  const raw = isFolderSubject(c.subject) ? cleanFileTitle(c.display_name || c.name) : (c.subject || c.display_name || prettyName(c.name));
+  const title = fixTitle(raw) !== raw ? fixTitle(raw) : fixTitle(tidyTopic(raw)); // same clean-up the social stories get
   const ep = statedEpisode(c.name, c.subject) ?? (Number(c.chapter) > 0 && Number(c.chapter) < 1000 ? Number(c.chapter) : null);
   const pad = (n) => String(n).padStart(2, '0');
   const tag = ep == null ? '' : c.season != null ? `S${pad(c.season)}E${pad(ep)}` : `EP ${ep}`;

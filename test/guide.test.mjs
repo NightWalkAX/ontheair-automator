@@ -99,6 +99,10 @@ test('times read on the quarter hour, rows fold and cap', () => {
   assert.equal(lessonParts({ name: 'Grade 4 - Maths_17_ Addition of Decimals.mp4', subject: 'Grade 4 Mathematics' }).title, 'Addition of Decimals');
   assert.equal(lessonParts({ name: 'Grade 5 - Social-Studies_Lesson 4 - A Leader.mp4', subject: 'Grade 5 Social Studies' }).title, 'A Leader');
   assert.deepEqual(lessonParts({ name: 'Beatin_Da_Maths_S2Ep1', subject: 'Beatin da Maths' }), { title: 'Beatin da Maths', tag: 'Season 2 · Ep 1' });
+  assert.equal(lessonParts({ name: 'La_Escuelita_De_Espanol_Ep29_The_Bathroom.mp4', subject: 'La Escuelita de Español' }).title, 'Español Ep 29 · The Bathroom');
+  assert.equal(lessonParts({ name: 'Junior Mathematics E8.mp4', subject: 'Junior Mathematics' }).title, 'Junior Mathematics · Ep 8');
+  assert.equal(describeClip({ name: 'x.mov', subject: 'Agri talk new', show_type_code: 'tv_shows', duration: 900 }).title, 'Agri Talk');
+  assert.equal(describeClip({ name: 'x.mov', subject: 'Bill Nye The Science Guy', show_type_code: 'tv_shows', duration: 900 }).title, 'Bill Nye the Science Guy');
   assert.equal(describeClip({ name: 'Fred_Clause', duration: 6000, show_type_code: 'movies', subject: 'Movies' }).title, 'Fred Claus');
   assert.equal(tidyTopic('Nursery- Birthdays'), 'Birthdays');
   assert.equal(tidyTopic('How Animals Care for Their Young by Feeding Them Edited'), 'How Animals Care for Their Young by Feeding Them');
