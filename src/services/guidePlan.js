@@ -43,6 +43,52 @@ const TITLE_FIX = {
   ChroniclesOfNarnia2_PC: 'The Chronicles of Narnia: Prince Caspian', 'ChroniclesOfNarnia3._TVOTDT': 'The Chronicles of Narnia: The Voyage of the Dawn Treader',
   CloudyWAChanceOfMeatballs2: 'Cloudy with a Chance of Meatballs 2', LandB4TimeJourneyOfTheHeart: 'The Land Before Time: Journey of the Heart',
   Madagascar_2_Escape2Africa: 'Madagascar: Escape 2 Africa', The_Lego_Movie_2_The2ndPart: 'The Lego Movie 2: The Second Part',
+  // operator 2026-11-17: film titles as the public knows them (the stories went out with 'Fred Clause', 'Cloudy WAChance…')
+  "AliceThruTheLookingGlass": "Alice Through the Looking Glass",
+  "Alice_In_Wonderland": "Alice in Wonderland",
+  "Alice_In_Wonderland_2010": "Alice in Wonderland (2010)",
+  "Atlantis_Milo’s_Return": "Atlantis: Milo's Return",
+  "Back_To_The_Future_1": "Back to the Future",
+  "BahHumduck!LooneyTunesCmas": "Bah, Humduck! A Looney Tunes Christmas",
+  "Beauty_And_The_Beast_2017": "Beauty and the Beast",
+  "Charlie&TheChocolateFactory": "Charlie and the Chocolate Factory",
+  "Charlotte’s_Web": "Charlotte's Web",
+  "ET_The_Extra_Terrestrial": "E.T. the Extra-Terrestrial",
+  "Fantastic_Mr_Fox": "Fantastic Mr. Fox",
+  "Fred_Clause": "Fred Claus",
+  "Into_The_Spider_Verse": "Spider-Man: Into the Spider-Verse",
+  "Jingle_All_The_Way": "Jingle All the Way",
+  "Kronk’s_New_Groove": "Kronk's New Groove",
+  "Mary_Poppins_1": "Mary Poppins",
+  "MickeyTwiceUponAChristmas": "Mickey's Twice Upon a Christmas",
+  "OctonautsCavesOfSacActun": "Octonauts & the Caves of Sac Actun",
+  "OctonautsGreatBarrier_Reef": "Octonauts: The Great Barrier Reef",
+  "Octonauts_The_Ring_Of_Fire": "Octonauts & the Ring of Fire",
+  "OneHundred&OneDalmatians": "One Hundred and One Dalmatians",
+  "Open_Season_4_Scared_Silly": "Open Season: Scared Silly",
+  "Over_The_Hedge": "Over the Hedge",
+  "Oz_The_Great_And_Powerful": "Oz the Great and Powerful",
+  "Polar_Express": "The Polar Express",
+  "Ralph_Breaks_The_Internet": "Ralph Breaks the Internet",
+  "RudolphTheRedNoseReindeer": "Rudolph the Red-Nosed Reindeer",
+  "SeriesOfUnfortunateEvents": "A Series of Unfortunate Events",
+  "Shaun_The_Sheep_Movie": "Shaun the Sheep Movie",
+  "Son_Of_The_Mask": "Son of the Mask",
+  "Stuart_Little_1": "Stuart Little",
+  "Tarzan_1": "Tarzan",
+  "The_Emperor’s_New_Groove": "The Emperor's New Groove",
+  "The_Incredibles_1": "The Incredibles",
+  "The_Incredibles_2": "Incredibles 2",
+  "The_Princess_And_The_Frog": "The Princess and the Frog",
+  "The_Secret_Life_Of_Pets_1": "The Secret Life of Pets",
+  "The_Secret_Life_Of_Pets_2": "The Secret Life of Pets 2",
+  "TheMitchellsVsTheMachines": "The Mitchells vs. the Machines",
+  "The_Super_Mario_Bros_Movie": "The Super Mario Bros. Movie",
+  "Wall_E": "WALL-E",
+  "Wreck_It_Ralph": "Wreck-It Ralph",
+  "Zathura_A_Space_Adventure": "Zathura: A Space Adventure",
+  "Beauty&BeastEnchantedCmas": "Beauty and the Beast: Enchanted Christmas",
+  "Muppets_Haunted_Mansion": "Muppets Haunted Mansion",
   Cars1: 'Cars', Cars2: 'Cars 2', Cars3: 'Cars 3', 'The_Jungle_Book_3_(2016)': 'The Jungle Book (2016)',
 };
 
@@ -68,11 +114,14 @@ const SMALL_WORDS = new Set(['a', 'an', 'and', 'of', 'the', 'to', 'in', 'on', 'w
 export function tidyTopic(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
   t = t.replace(/^\d+\.\s*/, '');
+  t = t.replace(/^(?:[A-Za-z-]+_)?(?:lesson\s*)?\d+\s*_\s*|^[A-Za-z-]+_lesson\s*\d+\s*[-–:]\s*/i, '');  // 'Science_Lesson 1_X', 'Maths_16_X' (DEU 2026)
+  t = t.replace(/\s*_+\s*/g, ' ').trim();
+  t = t.replace(/^Structure, Function and Information Processing\s*[-–:]\s*/i, '');
   t = t.replace(/^[-–\s]*grade\s*\d+\s*[-–]\s*/i, '');
   t = t.replace(/^grade\s*\d+\s*(english language|english|mathematics|maths|science|social studies)\s*[-–:]?\s*/i, '');
   t = t.replace(/^(?:lesson|lession)\s*\d+\s*[-:]?\s*/i, '');
   t = t.replace(/^grades?\s*\d+\s*[-–]\s*(?:english language|english|mathematics|maths|science|social studies)\s*[-–]\s*/i, '');
-  t = t.replace(/^nursery\s*[-–]\s*/i, '').replace(/\s+(?:edited|final|v\d+)$/i, '');
+  t = t.replace(/^nursery\s*[-–]\s*/i, '').replace(/\s+(?:edited|final|copy|v\d+)$/i, '');
   t = t.replace(/^S(\d+)\s*Ep\s*(\d+)$/i, 'Season $1 · Ep $2');
   t = t.replace(/^topic\s*[-:]?\s*/i, '');
   t = t.replace(/\s*[-:]?\s*sub-?topic\s*[-:]?\s*/i, ': ');
