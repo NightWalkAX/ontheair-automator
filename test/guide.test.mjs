@@ -98,6 +98,7 @@ test('times read on the quarter hour, rows fold and cap', () => {
   assert.equal(lessonParts({ name: 'Grade 4 - Science_Lesson 1_Structure, Function and Information Processing - Reflection of Light and How We See.mp4', subject: 'Grade 4 Science' }).title, 'Reflection of Light and How We See');
   assert.equal(lessonParts({ name: 'Grade 4 - Maths_17_ Addition of Decimals.mp4', subject: 'Grade 4 Mathematics' }).title, 'Addition of Decimals');
   assert.equal(lessonParts({ name: 'Grade 5 - Social-Studies_Lesson 4 - A Leader.mp4', subject: 'Grade 5 Social Studies' }).title, 'A Leader');
+  assert.deepEqual(lessonParts({ name: 'Beatin_Da_Maths_S2Ep1', subject: 'Beatin da Maths' }), { title: 'Beatin da Maths', tag: 'Season 2 · Ep 1' });
   assert.equal(describeClip({ name: 'Fred_Clause', duration: 6000, show_type_code: 'movies', subject: 'Movies' }).title, 'Fred Claus');
   assert.equal(tidyTopic('Nursery- Birthdays'), 'Birthdays');
   assert.equal(tidyTopic('How Animals Care for Their Young by Feeding Them Edited'), 'How Animals Care for Their Young by Feeding Them');

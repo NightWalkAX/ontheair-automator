@@ -173,6 +173,8 @@ export function lessonParts(c) {
   }
   topic = tidyTopic(topic.replace(/\s+/g, ' ').replace(/[:\s]+$/, '').trim()) || prettyName(base);
   const tag = grade ? `Grade ${grade}${subj ? ` · ${subj}` : ''}` : (subj || 'Lesson');
+  // 'Beatin_Da_Maths_S2Ep1': the show is the title, the episode the tag (operator 2026-11-17)
+  if (/^Season \d+ · Ep \d+$/.test(topic) && !tag.startsWith('Grade')) return { title: fixTitle(tag), tag: topic };
   return { title: fixTitle(topic), tag };
 }
 
