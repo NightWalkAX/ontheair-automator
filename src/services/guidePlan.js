@@ -60,6 +60,33 @@ function fixTitle(t) {
   return extra[t] ?? TITLE_FIX[t] ?? t;
 }
 
+
+// Lesson file names carry scaffolding the DEU/IDB editors type ("lesson 25 Topic-…", "Lesson 4 - Topic X Subtopic - Y",
+// "TABLES 4 5 6") and a few recurring typos. Operator 2026-11-17: the guide and the stories must read clean.
+const TOPIC_TYPOS = { Equivelant: 'Equivalent', Paragrah: 'Paragraph', Diagraphs: 'Digraphs', Langauge: 'Language', Survivial: 'Survival', Climactic: 'Climatic' };
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'of', 'the', 'to', 'in', 'on', 'with', 'for', 'or', 'at', 'by', 'from', 'vs']);
+export function tidyTopic(t) {
+  t = String(t || '').replace(/\s+/g, ' ').trim();
+  t = t.replace(/^\d+\.\s*/, '');
+  t = t.replace(/^[-–\s]*grade\s*\d+\s*[-–]\s*/i, '');
+  t = t.replace(/^grade\s*\d+\s*(english language|english|mathematics|maths|science|social studies)\s*[-–:]?\s*/i, '');
+  t = t.replace(/^(?:lesson|lession)\s*\d+\s*[-:]?\s*/i, '');
+  t = t.replace(/^topic\s*[-:]?\s*/i, '');
+  t = t.replace(/\s*[-:]?\s*sub-?topic\s*[-:]?\s*/i, ': ');
+  t = t.replace(/\s+-\s+/g, ' – ').replace(/,(?=\S)/g, ', ');
+  const tables = /^tables?((?:\s*\d+)+)$/i.exec(t);
+  if (tables) { const n = tables[1].trim().split(/\s+/); t = `Tables of ${n.length > 1 ? `${n.slice(0, -1).join(', ')} and ${n.at(-1)}` : n[0]}`; }
+  for (const [a, b] of Object.entries(TOPIC_TYPOS)) t = t.replace(new RegExp(`\\b${a}\\b`, 'g'), b);
+  const ws = t.split(' ');
+  t = ws.map((w, i) => {
+    const start = i === 0 || ws[i - 1].endsWith(':') || ws[i - 1] === '·' || ws[i - 1] === '–';
+    if ((w === w.toUpperCase() && w.length > 1) || /\d/.test(w) || (w.replace(/,$/, '').length <= 2 && !start)) return w;
+    if (!start && SMALL_WORDS.has(w.toLowerCase())) return w.toLowerCase();
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+  return t.replace(/^[\s:–-]+|[\s:–-]+$/g, '');
+}
+
 const SUBJECT_SHORT = { 'english language': 'English', 'mathematics': 'Maths', 'math': 'Maths' };
 const FILLER_WORDS = new Set(['program', 'programme', 'read', 'enjoy', 'discover', '&', 'and', 'junior', 'the']);
 
@@ -92,7 +119,7 @@ export function lessonParts(c) {
     else if (ep && subjWords.size && !/^e\d+$/i.test(words.join(''))) topic = `Episode ${Number(ep[1])}`;
     else if (ep) topic = prettyName(base);                                     // "Junior Literacy E39": the name is all there is
   }
-  topic = topic.replace(/\s+/g, ' ').replace(/[:\s]+$/, '').trim() || prettyName(base);
+  topic = tidyTopic(topic.replace(/\s+/g, ' ').replace(/[:\s]+$/, '').trim()) || prettyName(base);
   const tag = grade ? `Grade ${grade}${subj ? ` · ${subj}` : ''}` : (subj || 'Lesson');
   return { title: fixTitle(topic), tag };
 }
