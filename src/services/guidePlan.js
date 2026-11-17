@@ -124,6 +124,21 @@ export function lessonParts(c) {
   return { title: fixTitle(topic), tag };
 }
 
+// A clip filed straight under a production/hand-off folder gets that FOLDER as its subject
+// ("TRANSMISSION FOLDER 2026", operator 2026-11-17: it aired in the stories as a programme name).
+// Such a subject names where the file sits, not what it is: print the clip's own name instead.
+export function isFolderSubject(s) {
+  return /\b(?:folder|completed projects|transmission|new folder|untitled|final renders?)\b/i.test(String(s || ''));
+}
+/** A one-off clip's file name made printable: "TVET EMIS.jpg.mp4" → "TVET EMIS", "WHIZ KIDS AD FINAL 2" → "Whiz Kids Ad". */
+export function cleanFileTitle(name) {
+  let t = String(name || '').replace(/(\.(?:mp4|mov|mpg|mxf|avi|mkv|jpe?g|png))+$/i, '');
+  t = t.replace(/\((?:deu|hd|final[^)]*)\)/gi, ' ').replace(/\b(?:final(?: render)?|hd|edited|v\d+)\b(?:\s*\d+)?/gi, ' ');
+  t = prettyName(t).replace(/\s+/g, ' ').trim();
+  if (t === t.toUpperCase() && t.length > 12) t = t.toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase());
+  return t;
+}
+
 /** One clip → { title, tag, kind } as the guide prints it. */
 export function describeClip(c) {
   const type = c.show_type_code;
@@ -135,7 +150,7 @@ export function describeClip(c) {
     return { title, tag: 'MOVIE', kind: 'movie' };
   }
   if (type === 'lessons') return { ...lessonParts(c), kind: 'lesson' };
-  const title = fixTitle(c.subject || c.display_name || prettyName(c.name));
+  const title = fixTitle(isFolderSubject(c.subject) ? cleanFileTitle(c.display_name || c.name) : (c.subject || c.display_name || prettyName(c.name)));
   const ep = statedEpisode(c.name, c.subject) ?? (Number(c.chapter) > 0 && Number(c.chapter) < 1000 ? Number(c.chapter) : null);
   const pad = (n) => String(n).padStart(2, '0');
   const tag = ep == null ? '' : c.season != null ? `S${pad(c.season)}E${pad(ep)}` : `EP ${ep}`;

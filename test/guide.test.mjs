@@ -103,6 +103,7 @@ test('times read on the quarter hour, rows fold and cap', () => {
   assert.equal(capped.length, 10);
   assert.equal(capped[9].title, '+ 5 more programmes');
   assert.equal(describeClip({ name: 'HarryPotter4GobletOfFire', duration: 9000, show_type_code: 'movies', subject: 'Movies' }).title, 'Harry Potter and the Goblet of Fire');
+  assert.equal(describeClip({ name: 'TVET EMIS.jpg.mp4', duration: 3687, show_type_code: 'tv_shows', subject: 'TRANSMISSION FOLDER 2026' }).title, 'TVET EMIS');
   assert.equal(describeClip({ name: 'Peter_Pan_(2003)', duration: 6000, show_type_code: 'movies', subject: 'Movies' }).title, 'Peter Pan (2003)');
 });
 
@@ -134,6 +135,7 @@ test('every look renders every bracket', () => {
       assert.match(html, /id="stage"/);
       assert.match(html, /Turbo/);
       assert.ok(html.includes('Bluey &lt;b&gt;'), `${style}/${bk} escapes titles`);
+      assert.ok(html.includes('Schedule subject to change without notice'), `${style}/${bk} carries the notice`);
     }
     assert.match(identHtml(style, 20), /STAY WITH US/);
   }

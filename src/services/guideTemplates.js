@@ -12,6 +12,8 @@
 
 const AS = '/guide/assets';
 const MASCOT = `${AS}/mascot.png`;
+// Operator 2026-11-17: every guide, on air and on social media, says at the bottom that it can change.
+export const NOTICE = 'Schedule subject to change without notice';
 const LOGO = {
   discover: `${AS}/logo-discover.png`, jr: `${AS}/logo-jr.png`, teen: `${AS}/logo-teen.png`,
   elevate: `${AS}/logo-elevate.png`, elementary: `${AS}/logo-elementary.png`, moe: `${AS}/logo-moe.png`,
@@ -121,7 +123,7 @@ function discover(v) {
  ${feat}
  ${mascot(bk, 'right:14px;bottom:42px', 84)}
  <div style="position:absolute;left:0;right:0;bottom:0;height:38px;background:rgba(0,0,0,.5);display:flex;align-items:center;padding:0 28px;gap:14px;font-size:11px">
-  <span style="font-weight:800;letter-spacing:2px;color:#7fd3f5">GLC DISCOVER</span><span style="opacity:.6">${E(v.dateTitle)}</span><span style="margin-left:auto;opacity:.6">${b.range}</span>
+  <span style="font-weight:800;letter-spacing:2px;color:#7fd3f5">GLC DISCOVER</span><span style="opacity:.6">${E(v.dateTitle)}</span><span style="margin-left:auto;opacity:.6;font-style:italic">${NOTICE}</span><span style="margin-left:14px;opacity:.6">${b.range}</span>
   <div class="g-bar" style="position:absolute;left:0;bottom:0;height:3px;background:#36b0e0"></div></div>
 </div>`;
   return { css, st };
@@ -169,6 +171,7 @@ function jr(v) {
  <div style="position:absolute;left:30px;right:30px;bottom:54px;height:4px;border-radius:2px;background:rgba(255,255,255,.2)"><div style="height:4px;border-radius:2px;background:#e83440;animation:j_grow 2s .3s both"></div></div>
  ${pins}
  <div style="position:absolute;left:30px;right:30px;bottom:22px;display:flex;justify-content:space-between;font-size:11px;font-weight:800;letter-spacing:2px">${b.ruler.map((t) => `<span>${t}</span>`).join('')}</div>
+ <div style="position:absolute;left:0;right:0;bottom:5px;text-align:center;font-size:9.5px;letter-spacing:.5px;opacity:.75;font-style:italic">${NOTICE}</div>
 </div>`;
   return { css, st };
 }
@@ -219,6 +222,7 @@ function teen(v) {
   </div>
   <div style="position:absolute;left:32px;right:32px;top:${two ? 92 : 110}px;display:flex;flex-wrap:wrap;gap:${gap}px">${tiles}</div>
   <div style="position:absolute;left:32px;bottom:16px;font-size:11px;letter-spacing:3px;opacity:.6">GLC TEEN · ${E(v.dateLong)}</div>
+  <div style="position:absolute;right:32px;bottom:16px;font-size:10px;letter-spacing:.5px;opacity:.65;font-style:italic">${NOTICE}</div>
  </div>
 </div>`;
   return { css, st };
@@ -271,7 +275,7 @@ function elevate(v) {
    <div style="font-size:${hero && hero.title.length < 24 ? 22 : 19}px;font-weight:900;line-height:1.05;margin-top:8px">${E(hero?.title)}</div>
    <div style="font-size:12px;color:#bfe9ff;font-weight:700;margin-top:6px">${hero ? `${hero.time} · ${E(sub(hero))}` : ''}</div></div></div>
  <div style="position:absolute;left:0;right:0;bottom:0;height:40px;background:#fff;color:#0a5ea8;display:flex;align-items:center;padding:0 30px;gap:14px;font-size:11px;font-weight:800;letter-spacing:2px">
-  <span>GLC ELEVATE</span><span style="opacity:.5;font-weight:600;letter-spacing:1px">${E(v.dateLong)}</span><span style="margin-left:auto;opacity:.5">${b.range}</span>
+  <span>GLC ELEVATE</span><span style="opacity:.5;font-weight:600;letter-spacing:1px">${E(v.dateLong)}</span><span style="margin-left:auto;opacity:.6;font-weight:600;letter-spacing:.5px;font-style:italic">${NOTICE}</span><span style="margin-left:14px;opacity:.5">${b.range}</span>
   <div class="g-bar" style="position:absolute;left:0;top:0;height:3px;background:#29abe2"></div></div>
 </div>`;
   return { css, st };
@@ -326,7 +330,7 @@ function elementary(v) {
   <div class="hand" style="font-size:13px;color:#24476b;margin-top:4px">${hero ? `${hero.time} · ${E(sub(hero))}` : ''}</div></div>
  <div style="position:absolute;right:28px;bottom:34px;height:96px">${peek}</div>
  <div style="position:absolute;left:0;right:0;bottom:0;height:30px;background:${tape};display:flex;align-items:center;padding:0 84px;gap:14px;font-size:11px;color:#fff;font-weight:800;letter-spacing:2px">
-  <span>GLC ELEMENTARY</span><span style="opacity:.85;font-weight:600;letter-spacing:1px">${E(v.dateLong)}</span>
+  <span>GLC ELEMENTARY</span><span style="opacity:.85;font-weight:600;letter-spacing:1px">${E(v.dateLong)}</span><span style="margin-left:auto;opacity:.9;font-weight:600;letter-spacing:.5px;font-style:italic">${NOTICE}</span>
   <div class="g-bar" style="position:absolute;left:0;top:0;height:3px;background:#e8892b"></div></div>
 </div>`;
   return { css, st };
@@ -378,6 +382,7 @@ function moe(v) {
     <div style="position:absolute;top:0;bottom:0;width:30%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.25),transparent);animation:g_sweep 4s 1.5s infinite"></div>
     <div style="position:absolute;left:14px;bottom:14px;right:14px"><span class="nxt">${hero ? hero.time : ''} · ${hero?.kind === 'movie' ? 'MOVIE' : 'FEATURE'}</span><div style="font-size:${hero && hero.title.length < 20 ? 22 : 18}px;font-weight:900;margin-top:6px;line-height:1.05">${E(hero?.title)}</div><div style="font-size:11px;opacity:.8;margin-top:3px">${E(sub(hero))}</div></div>
    </div></div></div>
+ <div style="position:absolute;right:28px;bottom:38px;font-size:10px;letter-spacing:.5px;opacity:.8;font-style:italic;text-shadow:0 1px 3px rgba(0,0,0,.7)">${NOTICE}</div>
  <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:#ffd400;color:#7a0000;display:flex;align-items:center;overflow:hidden">
   <div style="flex:none;height:100%;background:#7a0000;color:#ffd400;font-weight:900;font-size:11px;letter-spacing:2px;display:flex;align-items:center;padding:0 14px;z-index:1">UP NEXT</div>
   <div style="white-space:nowrap;font-weight:800;font-size:12px;letter-spacing:1px;animation:m_crawl 30s linear infinite">&nbsp; ${tick}${tick}</div></div>
@@ -428,4 +433,4 @@ ${COMMON(seconds)}
 </div></body></html>`;
 }
 
-export const TEMPLATE_VERSION = 1; // bump when a look changes: every guide re-renders
+export const TEMPLATE_VERSION = 2; // bump when a look changes: every guide re-renders
