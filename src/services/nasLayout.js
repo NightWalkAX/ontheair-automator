@@ -26,7 +26,7 @@
 //   - media roots follow once every file under them has moved, with the same
 //     channels and show type, so a scan keeps finding new files.
 
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname } from 'node:path';
 import { db, withTx } from '../db.js';
 import { loadConfig, localizePath, delocalizePath } from '../config.js';
@@ -673,6 +673,155 @@ export async function rescueGhosts({ today = localDate() } = {}) {
     l.info(`rescued ${g.path} → ${to} (was ${pick})`);
   }
   return { ghosts: ghosts.length, rescued, stillMissing };
+}
+
+// ---------------------------------------------------------------------------
+// Unlabeled lessons (operator, 2026-11-18: "move the videos with no topic to an
+// Unlabeled folder, ready for the guide"). A lesson whose file name says only
+// level + subject + number ("Teen English E12", "5 CPCE Maths") gives the guide
+// nothing to print; those go to <root>/Unlabeled/<the path below the root>, so
+// what is left in the content folders always has a topic and the Unlabeled
+// folder is the to-do list for naming. Same air safety as organize (moveFile):
+// exported OTAV days re-pointed, clip on air / starting soon deferred. Media
+// roots are cloned onto the Unlabeled mirror with the same channels and show
+// type (moved outright when nothing is left behind), so scheduling is unchanged.
+
+const NO_TOPIC_WORDS = new Set(('english language literature mathematics math maths science social studies '
+  + 'geography history spanish information technology it office administration principles of business pob '
+  + 'literacy numeracy phonics reading writing nursery grade grades teen junior elementary year term lesson '
+  + 'lessons ep episode part pt e s g local academic new edpm class video final v cpce teacher and the of').split(' '));
+
+/** Does a lesson's file name say what it is about, beyond level/subject/number? */
+export function hasTopic(stem, subject = '') {
+  const skip = new Set([...NO_TOPIC_WORDS, ...String(subject || '').toLowerCase().split(/[^a-z]+/).filter(Boolean)]);
+  const words = String(stem).toLowerCase().replace(/[_\-.,()[\]]/g, ' ').split(/\s+/)
+    .filter((w) => w && !/^[a-z]?\d+[a-z]?$/.test(w) && !skip.has(w));
+  return words.join('').replace(/[^a-z]/g, '').length >= 3;
+}
+
+/** Read-only: catalogued Lessons under the root with no topic in their name. */
+export function planUnlabeled() {
+  const cfg = layoutConfig();
+  const unl = `${cfg.root}/Unlabeled`;
+  const names = typeNames();
+  const rows = db.prepare(`SELECT file_path, MIN(show_type_id) AS t, MAX(subject) AS subject
+    FROM Resource GROUP BY file_path ORDER BY file_path`).all();
+  const onAir = exportedPaths(localDate());
+  const moves = [];
+  for (const r of rows) {
+    const p = String(r.file_path);
+    if (!p.startsWith(`${cfg.root}/`) || p.startsWith(`${unl}/`)) continue;
+    if (p.startsWith(`${cfg.root}/Duplicates/`) || p.startsWith(`${cfg.root}/_Not Catalogued/`)) continue;
+    if (names.get(r.t) !== 'Lessons') continue;
+    if (hasTopic(basename(p, extname(p)), r.subject)) continue;
+    moves.push({ from: p, to: `${unl}/${p.slice(cfg.root.length + 1)}`, onAir: onAir.has(p) });
+  }
+  return { root: unl, moves, onAirCount: moves.filter((m) => m.onAir).length };
+}
+
+/** Give every media root that lost files to Unlabeled a twin there (or move it when emptied). */
+function followRootsToUnlabeled(cfg) {
+  const unl = `${cfg.root}/Unlabeled`;
+  const esc = (x) => x.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const under = db.prepare("SELECT 1 FROM Resource WHERE file_path LIKE ? ESCAPE '\\' LIMIT 1");
+  const out = [];
+  for (const root of db.prepare('SELECT DISTINCT path FROM MediaRoot').all().map((r) => r.path)) {
+    if (!root.startsWith(`${cfg.root}/`) || root.startsWith(`${unl}/`)) continue;
+    const twin = `${unl}/${root.slice(cfg.root.length + 1)}`;
+    if (!under.get(`${esc(twin)}/%`)) continue;            // nothing of this root went to Unlabeled
+    const left = under.get(`${esc(root)}/%`);
+    withTx(() => {
+      for (const row of db.prepare('SELECT id, channel_id, show_type_id FROM MediaRoot WHERE path = ?').all(root)) {
+        const dup = db.prepare('SELECT 1 FROM MediaRoot WHERE channel_id = ? AND show_type_id = ? AND path = ?').get(row.channel_id, row.show_type_id, twin);
+        if (left) { if (!dup) db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)').run(row.channel_id, row.show_type_id, twin); }
+        else if (dup) db.prepare('DELETE FROM MediaRoot WHERE id = ?').run(row.id);
+        else db.prepare('UPDATE MediaRoot SET path = ? WHERE id = ?').run(twin, row.id);
+      }
+    });
+    out.push({ root, twin, kept: !!left });
+  }
+  return out;
+}
+
+const unlRun = { active: null, last: null };
+export function unlabeledState() { return { running: unlRun.active, last: unlRun.last }; }
+
+export async function runUnlabeled({ today = localDate(), limit = null } = {}) {
+  if (run.active || sweepRun.active || unlRun.active) throw new Error('another NAS job is running');
+  const busy = busyReason();
+  if (busy) throw new Error(busy);
+  const cfg = layoutConfig();
+  const plan = planUnlabeled();
+  const todo = plan.moves.slice().sort((a, b) => Number(a.onAir) - Number(b.onAir)).slice(0, limit || Infinity);
+  const report = { startedAt: new Date().toISOString(), planned: todo.length, moved: 0, patched: 0, deferred: [], other: [] };
+  unlRun.active = { startedAt: report.startedAt, planned: todo.length, done: 0 };
+  try {
+    for (const m of todo) {
+      const reason = busyReason();
+      if (reason) { report.stopped = reason; break; }
+      const r = await moveFile(m.from, m.to, { source: 'organize', today });
+      unlRun.active.done++;
+      if (r.status === 'moved') { report.moved++; report.patched += r.patched || 0; }
+      else if (r.status === 'deferred') report.deferred.push({ from: m.from, error: r.error });
+      else report.other.push({ from: m.from, status: r.status });
+    }
+    report.roots = followRootsToUnlabeled(cfg);
+  } finally {
+    report.finishedAt = new Date().toISOString();
+    unlRun.last = report;
+    unlRun.active = null;
+    l.info(`unlabeled: moved ${report.moved} (${report.patched} OTAV clip(s)), ${report.deferred.length} deferred`);
+  }
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// Empty folders (operator, 2026-11-18). Bottom-up rmdir under the old content
+// trees and the on-air root. rmdir itself refuses a folder with anything in it;
+// OS litter (.DS_Store, ._*, Thumbs.db, desktop.ini) counts as empty and goes
+// with it. Never: a media root or a folder above one, the playout's schedules,
+// the guide output, Air Spec's folders, Chrome's download folder, or the
+// top-level folders of the share.
+const LITTER = /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*|\.localized)$/i;
+const EMPTY_SCOPES = ['Broadcast', 'Transmission', 'Local Academic Videos - Sorted',
+  'Completed Projects/TRANSMISSION FOLDER 2026', 'Videos for Broadcast', 'GLC On Air'];
+const EMPTY_KEEP = ['Transmission/Schedules', 'Broadcast/Channel Guide', 'Transmission/Promos', '_transcode'];
+
+export async function removeEmptyDirs({ dryRun = true } = {}) {
+  const cfg = layoutConfig();
+  const keep = new Set([
+    ...EMPTY_KEEP.map((k) => `${cfg.share}/${k}`),
+    ...EMPTY_SCOPES.map((k) => `${cfg.share}/${k}`),
+    `${cfg.root}/Duplicates`, `${cfg.root}/_Not Catalogued`, `${cfg.root}/Unlabeled`,
+    ...['Lessons', 'TV Shows', 'Movies', 'Documentaries', 'Fillers', 'Promos'].map((f) => `${cfg.root}/${f}`),
+  ]);
+  const roots = db.prepare('SELECT DISTINCT path FROM MediaRoot').all().map((r) => String(r.path).replace(/\/+$/, ''));
+  const protectedDir = (p) => keep.has(p) || roots.some((r) => r === p || r.startsWith(`${p}/`))
+    || EMPTY_KEEP.some((k) => p.startsWith(`${cfg.share}/${k}/`));
+  const removed = [];
+  const litter = [];
+  const walk = async (dir) => {   // returns true when dir is (now) empty
+    let entries;
+    try { entries = await readdir(localizePath(dir), { withFileTypes: true }); } catch { return false; }
+    let empty = true;
+    const junk = [];
+    for (const e of entries) {
+      const full = `${dir}/${e.name}`;
+      if (e.isDirectory()) { if (!(await walk(full))) empty = false; }
+      else if (LITTER.test(e.name)) junk.push(full);
+      else empty = false;
+    }
+    if (!empty || protectedDir(dir)) return false;
+    if (!dryRun) {
+      for (const j of junk) { try { await unlink(localizePath(j)); litter.push(j); } catch { return false; } }
+      try { await rmdir(localizePath(dir)); } catch { return false; }
+    } else litter.push(...junk);
+    removed.push(dir);
+    return true;
+  };
+  for (const scope of EMPTY_SCOPES) await walk(`${cfg.share}/${scope}`);
+  l.info(`empty folders: ${dryRun ? 'would remove' : 'removed'} ${removed.length} (${litter.length} OS litter file(s))`);
+  return { dryRun, removed, litter: litter.length };
 }
 
 export { DEFAULT_MAP, SWEEP_SOURCES };

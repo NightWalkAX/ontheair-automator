@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { db } from '../db.js';
-import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig, runSweep, sweepState, rescueGhosts } from '../services/nasLayout.js';
+import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig, runSweep, sweepState, rescueGhosts, planUnlabeled, runUnlabeled, unlabeledState, removeEmptyDirs } from '../services/nasLayout.js';
 import { dirname, join } from 'node:path';
 import { logPath } from '../logger.js';
 import { tick, watchState, watchConfig, setWatchConfig } from '../services/playlistWatch.js';
@@ -98,4 +98,24 @@ router.post('/sweep/run', (req, res) => {
 router.post('/rescue', async (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'confirm: true is required' });
   try { res.json({ ok: true, ...(await rescueGhosts()) }); } catch (err) { res.status(409).json({ ok: false, error: err.message }); }
+});
+
+// ---- lessons with no topic → Unlabeled; empty folders ----
+router.get('/unlabeled/plan', (req, res) => {
+  const p = planUnlabeled();
+  res.json({ root: p.root, files: p.moves.length, onAir: p.onAirCount, sample: p.moves.slice(0, 40) });
+});
+router.get('/unlabeled/status', (req, res) => res.json(unlabeledState()));
+router.post('/unlabeled/run', (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'confirm: true is required' });
+  runUnlabeled({ limit: Number(req.body?.limit) > 0 ? Number(req.body.limit) : null }).catch(() => {});
+  res.status(202).json({ ok: true, started: true });
+});
+router.post('/empty-dirs', async (req, res) => {
+  const dryRun = req.body?.dryRun !== false;
+  if (!dryRun && req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'confirm: true is required' });
+  try {
+    const r = await removeEmptyDirs({ dryRun });
+    res.json({ ok: true, dryRun, count: r.removed.length, litter: r.litter, removed: r.removed.slice(0, 300) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });

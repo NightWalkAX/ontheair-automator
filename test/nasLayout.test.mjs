@@ -349,3 +349,51 @@ test('rescue: a catalogued file gone before the organize takes back its copy fro
   assert.equal(db.prepare('SELECT file_path FROM Resource WHERE file_path = ?').get(to)?.file_path, to);
   assert.ok(!db.prepare('SELECT 1 FROM Resource WHERE file_path = ?').get(ghost));
 });
+
+test('hasTopic: level + subject + number is not a topic', () => {
+  assert.equal(nas.hasTopic('Teen English E12', 'Teen English'), false);
+  assert.equal(nas.hasTopic('Elementary English E119', ''), false);
+  assert.equal(nas.hasTopic('5 CPCE Maths', 'CPCE Teacher Lessons'), false);
+  assert.equal(nas.hasTopic('Grade 2 - Mathematics - Comparing Numbers', 'Grade 2 Mathematics'), true);
+  assert.equal(nas.hasTopic('Grade 7 - English Language - Comprehension Poetry Pt.1', 'Grade 7 English Language'), true);
+  assert.equal(nas.hasTopic('Teen Science E29 Photosynthesis', 'Teen Science'), true);
+});
+
+test('unlabeled: topic-less lessons move to Unlabeled, OTAV and the root follow; the rest stay', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'Unl');
+  const rootPath = `${share}/GLC On Air/Lessons/Local Academic New/Teen`;
+  db.prepare('INSERT INTO MediaRoot (channel_id, show_type_id, path) VALUES (?, ?, ?)').run(ch, typeId('Lessons'), rootPath);
+  const bare = file('GLC On Air/Lessons/Local Academic New/Teen/Teen Maths E7.mov');
+  const named = file('GLC On Air/Lessons/Local Academic New/Teen/Teen Maths E8 Fractions.mov');
+  const rb = catalogue(ch, bare, 'Lessons');
+  catalogue(ch, named, 'Lessons');
+  db.prepare("UPDATE Resource SET subject = 'Teen Maths' WHERE file_path IN (?, ?)").run(bare, named);
+  const pl = await exportDay(f, ch, rb, addDays(localDate(), 1), bare);
+  const r = await nas.runUnlabeled();
+  assert.equal(r.moved >= 1, true, JSON.stringify(r));
+  const to = `${share}/GLC On Air/Unlabeled/Lessons/Local Academic New/Teen/Teen Maths E7.mov`;
+  assert.ok(existsSync(to) && existsSync(named));
+  assert.equal((await clipsOf(f, pl))[0].url, to);
+  assert.ok(db.prepare('SELECT 1 FROM MediaRoot WHERE channel_id = ? AND path = ?').get(ch, `${share}/GLC On Air/Unlabeled/Lessons/Local Academic New/Teen`), 'twin root');
+  assert.ok(db.prepare('SELECT 1 FROM MediaRoot WHERE channel_id = ? AND path = ?').get(ch, rootPath), 'original root kept (a file is still there)');
+});
+
+test('empty folders: only truly empty ones go (OS litter counts as empty), never roots or kept folders', async () => {
+  mkdirSync(join(share, 'Transmission/Shows/Gone/Season 1'), { recursive: true });
+  writeFileSync(join(share, 'Transmission/Shows/Gone/.DS_Store'), 'x');
+  file('Transmission/Shows/Kept/notes.txt', 'keep me');
+  mkdirSync(join(share, 'Transmission/Schedules'), { recursive: true });
+  mkdirSync(join(share, 'Transmission/Promos'), { recursive: true });
+  const dry = await nas.removeEmptyDirs({ dryRun: true });
+  assert.ok(dry.removed.includes(`${share}/Transmission/Shows/Gone`));
+  assert.ok(existsSync(join(share, 'Transmission/Shows/Gone')), 'dry run removes nothing');
+  const r = await nas.removeEmptyDirs({ dryRun: false });
+  assert.ok(!existsSync(join(share, 'Transmission/Shows/Gone')));
+  assert.ok(existsSync(join(share, 'Transmission/Shows/Kept/notes.txt')));
+  assert.ok(existsSync(join(share, 'Transmission/Schedules')) && existsSync(join(share, 'Transmission/Promos')));
+  assert.ok(existsSync(join(share, 'Transmission')), 'top-level folders stay');
+  for (const p of db.prepare('SELECT path FROM MediaRoot').all()) {
+    if (existsSync(dirname(p.path))) assert.ok(!r.removed.includes(p.path), `root ${p.path} kept`);
+  }
+});
