@@ -382,7 +382,7 @@ const SWEEP_SOURCES = [
   ['Transmission/Grade 6', 'Lessons/Grade 6'],
   ['Transmission/The Art of Teaching Mathematics', 'Lessons/The Art of Teaching Mathematics'],
   ['Transmission/Daily', 'Lessons/Daily'],
-  ['Transmission/Downloads', 'Movies/Downloads'],
+  ['Transmission/Downloads', 'Downloads'],   // raw downloads, films AND series: sorted by hand
   ['Transmission', 'TV Shows/Local Shows'],
   ['Videos for Broadcast', 'TV Shows/Local Shows'],
   ['Broadcast/OldLeightronixArchive', 'TV Shows/Old Leightronix Archive'],
