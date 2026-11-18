@@ -176,7 +176,8 @@ function startEncoder() {
   const args = [
     '-hide_banner', '-loglevel', 'error',
     '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${W}x${H}`, '-r', String(FPS), '-i', 'pipe:0',
-    ...venc, '-b:v', BITRATE, '-maxrate', BITRATE, '-bufsize', '12M',
+    // Main, like the dreamtv ladder the TVs already play: some TV browsers refuse High.
+    ...venc, '-profile:v', 'main', '-level', '4.0', '-b:v', BITRATE, '-maxrate', BITRATE, '-bufsize', '12M',
     '-g', String(FPS * 2), '-keyint_min', String(FPS * 2), '-bf', '0',
     '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+independent_segments+temp_file',
@@ -228,9 +229,41 @@ function status() {
     })),
   };
 }
+// Who is watching: per client IP, what it last asked for, and what its page reported
+// (POST /client-log from the wall: hls.js errors, "no MSE", first frame). /clients.json.
+const clients = new Map();
+function seen(req, what) {
+  const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  const c = clients.get(ip) || { ip, ua: '', status: null, playlist: null, segment: null, segments: 0, events: [] };
+  c.ua = req.headers['user-agent'] || c.ua;
+  if (what) { c[what] = new Date().toISOString(); if (what === 'segment') c.segments++; }
+  clients.set(ip, c);
+  return c;
+}
 createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (path === '/client-log' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (d) => { if (body.length < 4000) body += d; });
+    req.on('end', () => {
+      const c = seen(req);
+      const line = body.slice(0, 500);
+      c.events.push(`${new Date().toISOString()} ${line}`);
+      if (c.events.length > 20) c.events.shift();
+      log(`[client ${c.ip}] ${line} | ${c.ua}`);
+      res.end('ok');
+    });
+    return;
+  }
+  if (path === '/clients.json') {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify([...clients.values()], null, 1));
+  }
+  if (path === '/status.json') seen(req, 'status');
+  else if (path.endsWith('.m3u8')) seen(req, 'playlist');
+  else if (path.endsWith('.ts')) seen(req, 'segment');
   if (path === '/status.json') {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json');

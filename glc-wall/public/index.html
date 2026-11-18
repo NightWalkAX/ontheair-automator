@@ -368,7 +368,21 @@
 
   // ---- mosaic: one video under the tiles + per-feed state from status.json ----
   let mosaic = null;
+  // Tells the LGX what this screen did (shown in its log and /clients.json): which TV is
+  // stuck "connecting" and why. text/plain body, so no CORS preflight.
+  let reports = 0;
+  function report(ev, detail) {
+    if (reports++ > 40) return;
+    try { fetch(`${MOSAIC}/client-log`, { method: 'POST', body: JSON.stringify({ ev, detail, w: innerWidth, h: innerHeight }) }).catch(() => {}); } catch (_) {}
+  }
   function startMosaic() {
+    const mse = window.MediaSource || window.ManagedMediaSource;
+    report('start', {
+      hlsjs: !!(window.Hls && Hls.isSupported()),
+      native: !!document.createElement('video').canPlayType('application/vnd.apple.mpegurl'),
+      main40: !!(mse && mse.isTypeSupported('video/mp4; codecs="avc1.4d4028"')),
+      high40: !!(mse && mse.isTypeSupported('video/mp4; codecs="avc1.640028"')),
+    });
     const v = document.createElement('video');
     v.className = 'mosaic-video';
     v.muted = true; v.playsInline = true; v.autoplay = true;
@@ -377,6 +391,7 @@
     v.addEventListener('timeupdate', () => {
       if (v.currentTime !== mosaic.lastTime) {
         mosaic.lastTime = v.currentTime; mosaic.lastProgress = Date.now();
+        if (!mosaic.live) report('live', { videoWidth: v.videoWidth, videoHeight: v.videoHeight });
         mosaic.live = true; mosaic.retry = 0;
       }
     });
@@ -397,17 +412,20 @@
       m.hls = hls;
       let recovered = false;
       hls.on(Hls.Events.ERROR, (_e, data) => {
+        report(data.fatal ? 'hls-fatal' : 'hls-error', { type: data.type, details: data.details, reason: data.reason || (data.error && String(data.error.message || data.error)) });
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) { recovered = true; hls.recoverMediaError(); return; }
         mosaicDown();
       });
       hls.loadSource(src);
       hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch((e) => report('play-refused', String(e && e.message))); });
     } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
       v.src = src;
-      v.addEventListener('error', mosaicDown, { once: true });
-      v.play().catch(() => {});
+      v.addEventListener('error', () => { report('native-error', v.error && v.error.code); mosaicDown(); }, { once: true });
+      v.play().catch((e) => report('play-refused', String(e && e.message)));
+    } else {
+      report('unsupported', 'no MSE and no native HLS');
     }
   }
   function mosaicDown() {
