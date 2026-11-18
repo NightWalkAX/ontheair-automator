@@ -420,6 +420,11 @@ until `monitor.enabled` (the switch on the tab); started from `src/app.js` after
   Worker deploys) served by `src/app.js`, linked as "Playout ↗" in the header. Over the
   automator's plain http it reads `live.dreamtv.gy` directly (the CDN sends CORS `*`); only the
   https Worker needs its `/hls` proxy. Edit the wall in `glc-wall/`, never a copy in `public/`.
+  **Mosaic (2026-11-18):** served by the automator, the wall plays ONE stream — the seven feeds
+  composed on the WinLGX PC by `glc-wall/mosaic/mosaic.mjs` (h264_qsv, `:8088`) — because the TVs
+  can't decode seven videos; `/playout` injects `window.GLC_MOSAIC` from `playout.mosaicUrl`
+  (default `http://172.20.0.30:8088`, `""` = seven feeds, `?mosaic=0` per screen). Tile labels come
+  from its `status.json`; single view plays the channel's own feed with audio.
 - **Resync before alerting, for a channel we control.** A black/frozen incident on a feed with a
   `channelId` first gets `GET /scheduler/resynchronize` on that OTAV and the alert is HELD
   (`incident.held`, UI state `resyncing`) for `resync.waitSeconds` (60) — the public feed runs

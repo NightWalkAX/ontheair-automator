@@ -8,6 +8,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 import { requestLogger, log, logPath, tailLog } from './logger.js';
 import { ensureAnalogChannel, initSchema } from './db.js';
@@ -91,9 +92,18 @@ app.get('/api/log', (req, res) => {
 // GET /playout — the CCTV wall of the seven public GLC feeds. One file, shared
 // with the Cloudflare deploy in glc-wall/: served here over plain http, the page
 // reads the CDN directly (it answers with CORS *), so no /hls proxy is needed.
+// Here it plays the MOSAIC built on the LGX PC (glc-wall/mosaic): one video instead
+// of seven, which is what the TVs can decode. config `playout.mosaicUrl` ("" = the
+// seven separate feeds); the Cloudflare copy gets no injection and stays as it was.
+const DEFAULT_MOSAIC_URL = 'http://172.20.0.30:8088';
 app.get('/playout', (req, res) => {
   res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
-  res.sendFile(join(ROOT, 'glc-wall', 'public', 'index.html'));
+  const url = loadConfig().playout?.mosaicUrl ?? DEFAULT_MOSAIC_URL;
+  const file = join(ROOT, 'glc-wall', 'public', 'index.html');
+  if (!url) return res.sendFile(file);
+  const html = readFileSync(file, 'utf8')
+    .replace('<script', `<script>window.GLC_MOSAIC = ${JSON.stringify(String(url)).replace(/</g, '\\u003c')};</script>\n<script`);
+  res.type('html').send(html);
 });
 
 // MCP for GLC AI (AnythingLLM): /mcp (Streamable HTTP) and /sse + /messages

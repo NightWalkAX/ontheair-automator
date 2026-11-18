@@ -141,6 +141,26 @@
     .wall.solo .tile.max { aspect-ratio: auto; }
     .help { display: none; }
   }
+
+  /* Mosaic mode: ONE video (the 3x3 mosaic built on the LGX PC) under transparent tiles.
+     The tiles keep their labels and NO SIGNAL card (from the mosaic's status.json); the
+     grid must match the mosaic's thirds exactly, so no seams and no portrait layout. */
+  .mosaic-video {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+    object-fit: fill; background: #000; z-index: 0;
+  }
+  .wall.mosaic { position: relative; z-index: 1; gap: 0; background: transparent; }
+  .wall.mosaic .tile { background: transparent; }
+  .wall.mosaic .tile:not(.max) video { display: none; }
+  .wall.mosaic .info { background: transparent; }
+  @media (max-aspect-ratio: 1/1) {
+    html.mosaic, html.mosaic body { overflow: hidden; }
+    .wall.mosaic { height: 100dvh; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
+    .wall.mosaic .tile, .wall.mosaic .info { aspect-ratio: auto; }
+    .wall.mosaic .info { grid-column: span 2; }
+  }
+  /* Single view in mosaic mode plays that channel's own feed, over the mosaic. */
+  .wall.mosaic.solo .tile.max { background: #000; }
 </style>
 </head>
 <body>
@@ -186,6 +206,14 @@
   const STALL_SECONDS = 25;   // no progress this long = reconnect
   const RETRY_MAX_MS = 30000;
 
+  // Mosaic mode: the wall plays ONE stream, the seven feeds composed on the LGX PC
+  // (glc-wall/mosaic), because a TV cannot decode seven videos at once. Its base URL is
+  // injected by the automator (config playout.mosaicUrl) or given as ?mosaic=<url>;
+  // ?mosaic=0 forces the seven separate feeds. Single view still plays the channel's
+  // own feed, with its audio.
+  const qMosaic = new URLSearchParams(location.search).get('mosaic');
+  const MOSAIC = (qMosaic === '0' || qMosaic === 'off') ? '' : String(qMosaic || window.GLC_MOSAIC || '').replace(/\/+$/, '');
+
   const wall = document.getElementById('wall');
   const info = document.getElementById('info');
   const tiles = [];
@@ -218,7 +246,7 @@
       hls: null, retry: 0, retryTimer: null,
       lastTime: 0, lastProgress: Date.now(),
     };
-    el.addEventListener('click', () => toggleAudio(t));
+    el.addEventListener('click', () => (MOSAIC ? solo(t) : toggleAudio(t)));
     el.addEventListener('dblclick', () => solo(t));
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') solo(t); });
     t.video.addEventListener('playing', () => setState(t, 'live'));
@@ -231,7 +259,7 @@
       }
     });
     tiles.push(t);
-    start(t);
+    if (!MOSAIC) start(t);
   }
 
   function setState(t, state) {
@@ -241,6 +269,7 @@
   }
 
   function stop(t) {
+    t.active = false;
     clearTimeout(t.retryTimer);
     if (t.hls) { t.hls.destroy(); t.hls = null; }
     t.video.removeAttribute('src');
@@ -249,6 +278,7 @@
 
   function start(t) {
     stop(t);
+    t.active = true;
     setState(t, 'loading');
     t.lastProgress = Date.now();
     const src = srcFor(t.ch.key);
@@ -297,7 +327,7 @@
   setInterval(() => {
     const now = Date.now();
     for (const t of tiles) {
-      if (t.el.dataset.state === 'down') continue;
+      if (!t.active || t.el.dataset.state === 'down') continue;
       if (now - t.lastProgress > STALL_SECONDS * 1000) down(t);
     }
   }, 5000);
@@ -324,11 +354,83 @@
     if (already) return;
     t.el.classList.add('max');
     wall.classList.add('solo');
+    if (MOSAIC) start(t);
     if (t.video.muted) toggleAudio(t);
   }
   function exitSolo() {
     wall.classList.remove('solo');
-    for (const o of tiles) o.el.classList.remove('max');
+    for (const o of tiles) {
+      o.el.classList.remove('max');
+      if (MOSAIC && o.active) { stop(o); o.video.muted = true; o.el.classList.remove('unmuted'); }
+    }
+    if (MOSAIC) pollStatus();
+  }
+
+  // ---- mosaic: one video under the tiles + per-feed state from status.json ----
+  let mosaic = null;
+  function startMosaic() {
+    const v = document.createElement('video');
+    v.className = 'mosaic-video';
+    v.muted = true; v.playsInline = true; v.autoplay = true;
+    document.body.insertBefore(v, wall);
+    mosaic = { v, hls: null, retry: 0, timer: null, lastTime: 0, lastProgress: Date.now(), live: false };
+    v.addEventListener('timeupdate', () => {
+      if (v.currentTime !== mosaic.lastTime) {
+        mosaic.lastTime = v.currentTime; mosaic.lastProgress = Date.now();
+        mosaic.live = true; mosaic.retry = 0;
+      }
+    });
+    loadMosaic();
+    setInterval(() => {
+      if (Date.now() - mosaic.lastProgress > STALL_SECONDS * 1000) mosaicDown();
+    }, 5000);
+    pollStatus();
+    setInterval(pollStatus, 3000);
+  }
+  function loadMosaic() {
+    const m = mosaic, v = m.v, src = `${MOSAIC}/mosaic.m3u8`;
+    clearTimeout(m.timer);
+    if (m.hls) { m.hls.destroy(); m.hls = null; }
+    m.lastProgress = Date.now();
+    if (window.Hls && Hls.isSupported()) {
+      const hls = new Hls({ maxBufferLength: 10, backBufferLength: 6, liveSyncDurationCount: 3 });
+      m.hls = hls;
+      let recovered = false;
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) { recovered = true; hls.recoverMediaError(); return; }
+        mosaicDown();
+      });
+      hls.loadSource(src);
+      hls.attachMedia(v);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = src;
+      v.addEventListener('error', mosaicDown, { once: true });
+      v.play().catch(() => {});
+    }
+  }
+  function mosaicDown() {
+    const m = mosaic;
+    m.live = false;
+    if (m.hls) { m.hls.destroy(); m.hls = null; }
+    clearTimeout(m.timer);
+    m.timer = setTimeout(loadMosaic, Math.min(RETRY_MAX_MS, 2000 * 2 ** m.retry++));
+    m.lastProgress = Date.now();
+    pollStatus();
+  }
+  async function pollStatus() {
+    let feeds = null;
+    try {
+      const r = await fetch(`${MOSAIC}/status.json`, { cache: 'no-store' });
+      if (r.ok) feeds = (await r.json()).feeds;
+    } catch (_) { /* LGX unreachable: every tile reads NO SIGNAL */ }
+    for (const t of tiles) {
+      if (t.active) continue;   // single view judges its own feed
+      const f = feeds && feeds.find((x) => x.key === t.ch.key);
+      const state = !feeds ? 'down' : !mosaic.live ? 'loading' : (f ? f.state : 'down');
+      if (t.el.dataset.state !== state) setState(t, state);
+    }
   }
 
   // ---- info panel ----
@@ -340,7 +442,8 @@
     const live = tiles.filter((t) => t.el.dataset.state === 'live').length;
     const downList = tiles.filter((t) => t.el.dataset.state === 'down').map((t) => `CH${pad(t.i + 1)}`);
     summaryEl.innerHTML = `<b>${live}</b> / ${tiles.length} feeds live` +
-      (downList.length ? ` · <span class="bad">down: ${downList.join(', ')}</span>` : '');
+      (downList.length ? ` · <span class="bad">down: ${downList.join(', ')}</span>` : '') +
+      (MOSAIC ? ' · mosaic' : '');
   }
 
   function tick() {
@@ -378,6 +481,7 @@
   // A hidden tab keeps decoding seven feeds for nothing; a visible one resumes them.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
+    if (mosaic) { mosaic.lastProgress = Date.now(); mosaic.v.play().catch(() => {}); }
     for (const t of tiles) {
       t.lastProgress = Date.now();
       t.video.play().catch(() => {});
@@ -386,7 +490,15 @@
 
   // Tiles fill edge to edge by default; "Fit tiles" shows the whole picture instead.
   try { if (localStorage.getItem('glcwall.cover') === '0') toggleFit(); } catch (_) {}
+  if (MOSAIC) {
+    document.documentElement.classList.add('mosaic');
+    wall.classList.add('mosaic');
+    fitBtn.style.display = 'none';   // the mosaic is already composed edge to edge
+    document.querySelector('.help').innerHTML =
+      'Click a tile / <kbd>1</kbd>–<kbd>7</kbd> = that channel alone, with audio · <kbd>Esc</kbd> back · <kbd>F</kbd> fullscreen';
+  }
   CHANNELS.forEach(makeTile);
+  if (MOSAIC) startMosaic();
   tick();
   setInterval(tick, 1000);
 })();
