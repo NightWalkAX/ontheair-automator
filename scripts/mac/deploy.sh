@@ -22,6 +22,10 @@ loop=$(cat data/run-automator.pid 2>/dev/null || true)
 if [ -z "$loop" ] || ! kill -0 "$loop" 2>/dev/null; then
   echo "auto-restart loop is not running: open scripts/mac/run-automator.command first"; exit 3
 fi
+# Air Spec / guide / analog encoders are children of node: killing node alone leaves them
+# encoding for nobody (2026-11-18: two orphans re-encoding the same clip at 700% CPU). Stop them
+# first; resetStaleRunning() re-queues the clip that was mid-conversion at the next start.
+[ -n "$pid" ] && pkill -TERM -P "$pid" ffmpeg 2>/dev/null || true
 [ -n "$pid" ] && kill "$pid"
 for i in {1..30}; do
   sleep 1
