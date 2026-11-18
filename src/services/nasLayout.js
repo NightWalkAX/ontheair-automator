@@ -626,4 +626,53 @@ export async function runSweep({ moveLoose = true, limit = null, today = localDa
   return report;
 }
 
+/**
+ * Catalogue rows whose file was already gone before the organize ("ghosts":
+ * 8.3 alias folders, films moved by hand) while the sweep found a copy with the
+ * same name and length — that copy is the real file, not a duplicate. Move the
+ * first one ([DUP 1]) to where the catalogued file belongs and re-point every row
+ * at it. Only for ghosts no OTAV playlist names (a missing file in a playlist is
+ * the watchdog's job). Returns { rescued: [...], stillMissing: n }.
+ */
+export async function rescueGhosts({ today = localDate() } = {}) {
+  const busy = busyReason();
+  if (busy) throw new Error(busy);
+  const cfg = layoutConfig();
+  const names = typeNames();
+  const ghosts = [];
+  for (const r of db.prepare('SELECT file_path, MIN(show_type_id) AS t FROM Resource GROUP BY file_path').all()) {
+    if (String(r.file_path).startsWith(`${cfg.root}/`)) continue;
+    if (await sizeOf(r.file_path) != null) continue;
+    ghosts.push({ path: r.file_path, type: names.get(r.t) });
+  }
+  const refs = await referencedUrls(today);
+  const dupOf = db.prepare(`SELECT old_path, new_path FROM FileMove WHERE source = 'sweep' AND undone_at IS NULL
+    AND new_path LIKE ? ESCAPE '\\' ORDER BY id`);
+  const esc = (x) => x.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const rescued = [];
+  let stillMissing = 0;
+  for (const g of ghosts) {
+    // Its duplicates were filed under the ghost's own name: "<stem> [DUP n]".
+    const raw = targetFor(g.path, g.type, cfg);
+    // Exactly where runSweep filed duplicates of an original outside the root.
+    const under = `Other/${g.path.slice(cfg.share.length + 1)}`;
+    const stem = basename(under, extname(under));
+    const prefix = `${cfg.root}/Duplicates/${dirname(under)}/${stem} [DUP `;
+    const cands = dupOf.all(`${esc(prefix)}%`).filter((m) => m.new_path.startsWith(prefix));
+    const live = [];
+    for (const c of cands) if (await sizeOf(c.new_path) != null) live.push(c);
+    if (!live.length || refs.has(g.path.toLowerCase())) { stillMissing++; continue; }
+    const pick = live[0].new_path;
+    const to = raw ? (cfg.cleanNames ? cleanedPath(`${dirname(raw)}/${basename(raw, extname(raw))}${extname(pick)}`, g.type) : `${dirname(raw)}/${basename(raw, extname(raw))}${extname(pick)}`)
+      : `${cfg.root}/${g.type ? TYPE_FOLDER[g.type] || 'Other' : 'Other'}/${basename(g.path, extname(g.path))}${extname(pick)}`;
+    if (await sizeOf(to) != null) { stillMissing++; continue; }
+    await mkdir(dirname(localizePath(to)), { recursive: true });
+    await rename(localizePath(pick), localizePath(to));
+    withTx(() => { movePath(g.path, to, null, { sameFile: true }); renameRows(g.path, to); journal(pick, to, 'rescue'); journal(g.path, to, 'rescue'); });
+    rescued.push({ ghost: g.path, from: pick, to });
+    l.info(`rescued ${g.path} → ${to} (was ${pick})`);
+  }
+  return { ghosts: ghosts.length, rescued, stillMissing };
+}
+
 export { DEFAULT_MAP, SWEEP_SOURCES };

@@ -331,3 +331,21 @@ test('sweep never moves a file an OTAV playlist names', async () => {
   assert.ok(rep.skippedOnAir.includes(promo), JSON.stringify(rep));
   assert.ok(existsSync(promo));
 });
+
+test('rescue: a catalogued file gone before the organize takes back its copy from Duplicates', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'Rescue');
+  const ghost = `${share}/Broadcast/Movies/Ghost_Film_Carol.mpg`;      // catalogued, not on disk
+  catalogue(ch, ghost, 'Movies', 60);
+  const copy = file('Broadcast/Christmas Movies/Ghost_Film_Carol.mpg', 'real');  // the real one, elsewhere
+  const sw = await nas.runSweep({ probe: true });
+  assert.ok(!sw.error, sw.error);
+  const dup = `${share}/GLC On Air/Duplicates/Other/Broadcast/Movies/Ghost_Film_Carol [DUP 1].mpg`;
+  assert.ok(existsSync(dup), 'the sweep filed it as a duplicate of the ghost');
+  const r = await nas.rescueGhosts();
+  const to = `${share}/GLC On Air/Movies/Ghost Film Carol.mpg`;
+  assert.ok(r.rescued.find((x) => x.to === to), JSON.stringify(r));
+  assert.ok(existsSync(to) && !existsSync(dup) && !existsSync(copy));
+  assert.equal(db.prepare('SELECT file_path FROM Resource WHERE file_path = ?').get(to)?.file_path, to);
+  assert.ok(!db.prepare('SELECT 1 FROM Resource WHERE file_path = ?').get(ghost));
+});
