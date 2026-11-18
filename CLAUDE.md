@@ -830,4 +830,20 @@ air; future days wait while a push runs; nothing when the share is unmounted or 
 now wraps it too (`wrapCurrentItem`). (2) The port on a channel row is not always the instance
 airing that channel (Junior/TeenEd/Elementary measured rotated on 2026-11-17; the `.xpls` files are
 shared, so edits still land), so "on air" is asked of EVERY instance (`onAirUrls()`).
+**File names are cleaned on the move** (`cleanStem()`, `nasLayout.cleanNames`, default on): underscores →
+spaces, `(1)`/`(Final Render)`/`(HD)`/`- Copy` off, `Grade 2- English-` → `Grade 2 - English -`, and for TV
+shows `4X13`/`S1E3` → `S04E13`/`S01E03` (episodeParse reads the same episode — tested). Folders keep their
+names (a folder is a subject). A cleaned name two files would share falls back to the original names.
+`Resource.name` follows the file name.
+
+**Sweep of uncatalogued content** (`runSweep()`, `POST /api/nas/sweep/run {dryRun | confirm, moveLoose,
+limit, probe}`, `GET /api/nas/sweep/status`, MCP `nas_sweep` / `nas_sweep_status`): every video under
+`SWEEP_SOURCES` that the catalogue doesn't hold is a DUPLICATE of a catalogued file (same name key —
+current name or any journalled old name — and same size, else same length ±max(3s,1%)) or of another
+uncatalogued file (keeper = earliest sweep folder) → `<root>/Duplicates/<the original's folders>/<original
+name> [DUP n].<ext>` + `Duplicates/_manifest.csv`; or UNIQUE → `<root>/_Not Catalogued/<content
+folder>/…` — inside the one folder but outside every media root, so raw downloads never reach the
+catalogue or Air Spec's queue by themselves. Never: `Broadcast/Channel Guide`, `Transmission/Schedules`,
+`_transcode`, or a file any OTAV playlist names from today on (read from OTAV; unreadable OTAV = no
+sweep). Journalled (`source = 'sweep'`, undone by the same undo). Nothing is deleted.
 Tests: `test/nasLayout.test.mjs`.

@@ -578,6 +578,28 @@ export const TOOLS = [
     },
   },
   {
+    name: 'nas_sweep',
+    write: true,
+    description: 'Sweep uncatalogued content: copies of catalogued files (same name + same size or length) → GLC On Air/Duplicates/<folder>/<original> [DUP n] with Duplicates/_manifest.csv; unique uncatalogued files → GLC On Air/_Not Catalogued/<content folder>/. Never moves a file any OTAV playlist names from today on; deletes nothing. dry_run=true only plans (no confirm needed, plan JSON in the log folder). Background job: follow with nas_sweep_status.',
+    inputSchema: S({
+      dry_run: { type: 'boolean' },
+      move_loose: { type: 'boolean', description: 'Default true; false = only the duplicates.' },
+      limit: { type: 'integer' },
+      probe: { type: 'boolean', description: 'Measure lengths when sizes differ (default true, slower).' },
+      confirm: { type: 'boolean' },
+    }),
+    run: (api, a) => {
+      if (!a.dry_run && a.confirm !== true) throw new ToolError('run with dry_run=true first, show the operator, then confirm=true');
+      return api.post('/api/nas/sweep/run', { dryRun: a.dry_run === true, confirm: a.confirm === true, moveLoose: a.move_loose !== false, limit: a.limit, probe: a.probe !== false }, { allowStatus: [409, 400] });
+    },
+  },
+  {
+    name: 'nas_sweep_status',
+    description: 'Progress of the running sweep and the report of the last one (counts, samples on a dry run, moved, skipped because a playlist names them, collisions, manifest path).',
+    inputSchema: S(),
+    run: (api) => api.get('/api/nas/sweep/status'),
+  },
+  {
     name: 'nas_organize_undo',
     write: true,
     destructive: true,

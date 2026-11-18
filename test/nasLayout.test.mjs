@@ -113,7 +113,7 @@ test('organize moves files, re-points exported OTAV days, the catalogue and the 
   const r = await nas.runOrganize({ only: '/Bluey/' });
   assert.equal(r.moved, 2, JSON.stringify(r));
   assert.equal(r.patched, 1);
-  const na = `${share}/GLC On Air/TV Shows/Bluey/Bluey_S01E01.mov`;
+  const na = `${share}/GLC On Air/TV Shows/Bluey/Bluey S01E01.mov`;
   assert.ok(existsSync(na) && !existsSync(a), 'the file moved');
   assert.equal((await clipsOf(f, pl))[0].url, na, 'OTAV names the new path');
   assert.equal(db.prepare('SELECT file_path FROM Resource WHERE id = ?').get(ra).file_path, na);
@@ -252,4 +252,82 @@ test('undo puts organised files back and re-points OTAV again', async () => {
   assert.ok(existsSync(p));
   assert.equal((await clipsOf(f, pl))[0].url, p);
   assert.equal(db.prepare('SELECT file_path FROM Resource WHERE id = ?').get(r).file_path, p);
+});
+
+test('cleanStem tidies names without changing what the episode parser reads', async () => {
+  const { statedEpisode } = await import('../src/services/episodeParse.js');
+  const cases = [
+    ['Family_Matters_4X13_The_Way_The_Ball_Bounces_(1)', 'TV Shows', 'Family Matters S04E13 The Way The Ball Bounces'],
+    ['Saved_By_The_Bell_S1E11', 'TV Shows', 'Saved By The Bell S01E11'],
+    ['Grade  8- English Language- Alliteration', 'Lessons', 'Grade 8 - English Language - Alliteration'],
+    ['Dragon_Tales_S01E26_Crash_Landings_The_Big_Cake_Mix-Up', 'TV Shows', 'Dragon Tales S01E26 Crash Landings The Big Cake Mix-Up'],
+    ['Monster Trucks 4x4', 'Movies', 'Monster Trucks 4x4'],
+    ['Teen English E12', 'Lessons', 'Teen English E12'],
+  ];
+  for (const [raw, type, want] of cases) {
+    const got = nas.cleanStem(raw, type);
+    assert.equal(got, want);
+    assert.equal(statedEpisode(got, raw.split(/_| /)[0]), statedEpisode(raw, raw.split(/_| /)[0]), `episode of ${raw}`);
+  }
+});
+
+test('organize cleans the file name and the catalogue row follows', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'Clean');
+  const p = file('Broadcast/Shows/Family Matters/Family_Matters_4X13_The_Way_(1).mov');
+  const r = catalogue(ch, p, 'TV Shows');
+  db.prepare('UPDATE Resource SET name = ? WHERE id = ?').run('Family_Matters_4X13_The_Way_(1)', r);
+  const rep = await nas.runOrganize({ only: 'Family_Matters_4X13' });
+  assert.equal(rep.moved, 1);
+  const to = `${share}/GLC On Air/TV Shows/Family Matters/Family Matters S04E13 The Way.mov`;
+  assert.ok(existsSync(to));
+  const row = db.prepare('SELECT name, file_path FROM Resource WHERE id = ?').get(r);
+  assert.equal(row.file_path, to);
+  assert.equal(row.name, 'Family Matters S04E13 The Way');
+});
+
+test('sweep: copies of catalogued files go to Duplicates numbered, uncatalogued uniques to _Not Catalogued', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'Sweep');
+  // A catalogued episode already organised.
+  const orig = file('GLC On Air/TV Shows/Bluey/Bluey S01E07 Bike.mov', 'same-bytes');
+  catalogue(ch, orig, 'TV Shows');
+  // Two copies elsewhere under other names/folders (same name key, same size).
+  const c1 = file('Transmission/Shows/Bluey/Bluey_S01E07_Bike.mov', 'same-bytes');
+  const c2 = file('Transmission/New Shows/Bluey S01E07 Bike.mov', 'same-bytes');
+  // An uncatalogued unique and a copy of it.
+  const u = file('Transmission/Mov/Some_Film_Nobody_Catalogued.mov', 'film');
+  const u2 = file('Transmission/Downloads/Some Film Nobody Catalogued.mov', 'film');
+  // Never swept.
+  const sched = file('Transmission/Schedules/whatever.mov', 'x');
+
+  const rep = await nas.runSweep({ probe: false });
+  assert.ok(!rep.error, rep.error);
+  const dupDir = `${share}/GLC On Air/Duplicates/TV Shows/Bluey`;
+  assert.ok(existsSync(`${dupDir}/Bluey S01E07 Bike [DUP 1].mov`), 'first copy numbered 1');
+  assert.ok(existsSync(`${dupDir}/Bluey S01E07 Bike [DUP 2].mov`), 'second copy numbered 2');
+  assert.ok(!existsSync(c1) && !existsSync(c2));
+  assert.ok(existsSync(orig), 'the original stays');
+  assert.ok(existsSync(`${share}/GLC On Air/_Not Catalogued/Movies/Some Film Nobody Catalogued.mov`), 'unique kept, cleaned, classified');
+  assert.ok(existsSync(`${share}/GLC On Air/Duplicates/_Not Catalogued/Movies/Some Film Nobody Catalogued [DUP 1].mov`), 'its copy is a duplicate');
+  assert.ok(!existsSync(u) && !existsSync(u2));
+  assert.ok(existsSync(sched), 'Schedules is never swept');
+  const manifest = readFileSync(`${share}/GLC On Air/Duplicates/_manifest.csv`, 'utf8');
+  assert.match(manifest, /Bluey S01E07 Bike \[DUP 2\]/);
+  assert.ok(db.prepare("SELECT 1 FROM FileMove WHERE source = 'sweep' AND old_path = ?").get(c1));
+});
+
+test('sweep never moves a file an OTAV playlist names', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'SweepAir');
+  // An uncatalogued promo someone dropped into a playlist by hand.
+  const promo = file('Transmission/Promos/Hand_Added_Promo.mov', 'p');
+  const host = file('Broadcast/Filler/Host_Clip.mov', 'h');
+  const r = catalogue(ch, host, 'Fillers');
+  const pl = await exportDay(f, ch, r, localDate(), host);
+  await fetch(`http://127.0.0.1:${f.port}/playlists/${encodeURIComponent(pl)}/items`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clip_type: 0, url: promo, name: 'promo' }) });
+  const rep = await nas.runSweep({ probe: false });
+  assert.ok(rep.skippedOnAir.includes(promo), JSON.stringify(rep));
+  assert.ok(existsSync(promo));
 });

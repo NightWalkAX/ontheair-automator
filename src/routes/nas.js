@@ -3,7 +3,9 @@
 
 import express from 'express';
 import { db } from '../db.js';
-import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig } from '../services/nasLayout.js';
+import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig, runSweep, sweepState } from '../services/nasLayout.js';
+import { dirname, join } from 'node:path';
+import { logPath } from '../logger.js';
 import { tick, watchState, watchConfig, setWatchConfig } from '../services/playlistWatch.js';
 
 export const router = express.Router();
@@ -76,4 +78,19 @@ router.post('/organize/undo', async (req, res) => {
 router.get('/moves', (req, res) => {
   const limit = Math.min(1000, Number(req.query.limit) || 100);
   res.json(db.prepare('SELECT * FROM FileMove ORDER BY id DESC LIMIT ?').all(limit));
+});
+
+// ---- sweep: duplicates + uncatalogued content ----
+router.get('/sweep/status', (req, res) => res.json({ ...sweepState(), busy: busyReason() }));
+router.post('/sweep/run', (req, res) => {
+  const dryRun = req.body?.dryRun === true;
+  if (!dryRun && req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'confirm: true is required — this moves files on the share (or dryRun: true)' });
+  const busy = dryRun ? null : busyReason();
+  if (busy) return res.status(409).json({ ok: false, error: busy });
+  if (sweepState().running || organizeState().running) return res.status(409).json({ ok: false, error: 'an organize/sweep run is already going' });
+  const planFile = join(dirname(logPath()), `sweep-plan-${Date.now()}.json`);
+  runSweep({ dryRun, planFile, moveLoose: req.body?.moveLoose !== false,
+    limit: Number(req.body?.limit) > 0 ? Number(req.body.limit) : null,
+    probe: req.body?.probe !== false }).catch(() => {});
+  res.status(202).json({ ok: true, started: true, dryRun, planFile: dryRun ? planFile : null });
 });
