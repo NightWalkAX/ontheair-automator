@@ -180,6 +180,22 @@
   </section>
 </main>
 
+<script>
+// ES5 on purpose: runs (and reports) even where the main script cannot parse.
+(function () {
+  var sent = 0;
+  function send(ev, detail) {
+    if (!window.GLC_MOSAIC || sent++ > 10) return;
+    try {
+      var x = new XMLHttpRequest();
+      x.open('POST', String(window.GLC_MOSAIC).replace(/\/+$/, '') + '/client-log');
+      x.send(JSON.stringify({ ev: ev, detail: detail }));
+    } catch (e) {}
+  }
+  window.onerror = function (msg, src, line, col) { send('js-error', msg + ' @' + line + ':' + col); };
+  send('boot', navigator.userAgent);
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js"></script>
 <script>
 (() => {
@@ -218,7 +234,11 @@
   const info = document.getElementById('info');
   const tiles = [];
 
-  const pad = (n) => String(n).padStart(2, '0');
+  // play() returns a promise only on newer browsers; on old TVs it returns nothing.
+  const play = (v, onFail) => {
+    try { const p = v.play(); if (p && p.catch) p.catch(onFail || (() => {})); } catch (e) { if (onFail) onFail(e); }
+  };
+  const pad = (n) => (n < 10 ? '0' : '') + n;
 
   function makeTile(ch, i) {
     const el = document.createElement('section');
@@ -305,12 +325,12 @@
       });
       hls.loadSource(src);
       hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { play(v, () => {}); });
     } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari / iOS: native HLS.
       v.src = src;
       v.addEventListener('error', () => down(t), { once: true });
-      v.play().catch(() => {});
+      play(v, () => {});
     } else {
       setState(t, 'down');
     }
@@ -319,7 +339,7 @@
   function down(t) {
     stop(t);
     setState(t, 'down');
-    const wait = Math.min(RETRY_MAX_MS, 2000 * 2 ** t.retry++);
+    const wait = Math.min(RETRY_MAX_MS, 2000 * Math.pow(2, t.retry++));
     t.retryTimer = setTimeout(() => start(t), wait);
   }
 
@@ -340,7 +360,7 @@
       t.video.muted = false;
       t.video.volume = 1;
       t.el.classList.add('unmuted');
-      t.video.play().catch(() => {});
+      play(t.video, () => {});
     }
   }
   function muteAll() {
@@ -373,7 +393,11 @@
   let reports = 0;
   function report(ev, detail) {
     if (reports++ > 40) return;
-    try { fetch(`${MOSAIC}/client-log`, { method: 'POST', body: JSON.stringify({ ev, detail, w: innerWidth, h: innerHeight }) }).catch(() => {}); } catch (_) {}
+    try {
+      const x = new XMLHttpRequest();
+      x.open('POST', `${MOSAIC}/client-log`);
+      x.send(JSON.stringify({ ev: ev, detail: detail, w: innerWidth, h: innerHeight }));
+    } catch (_) {}
   }
   function startMosaic() {
     const mse = window.MediaSource || window.ManagedMediaSource;
@@ -419,11 +443,11 @@
       });
       hls.loadSource(src);
       hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch((e) => report('play-refused', String(e && e.message))); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { play(v, (e) => report('play-refused', String(e && e.message))); });
     } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
       v.src = src;
       v.addEventListener('error', () => { report('native-error', v.error && v.error.code); mosaicDown(); }, { once: true });
-      v.play().catch((e) => report('play-refused', String(e && e.message)));
+      play(v, (e) => report('play-refused', String(e && e.message)));
     } else {
       report('unsupported', 'no MSE and no native HLS');
     }
@@ -433,16 +457,24 @@
     m.live = false;
     if (m.hls) { m.hls.destroy(); m.hls = null; }
     clearTimeout(m.timer);
-    m.timer = setTimeout(loadMosaic, Math.min(RETRY_MAX_MS, 2000 * 2 ** m.retry++));
+    m.timer = setTimeout(loadMosaic, Math.min(RETRY_MAX_MS, 2000 * Math.pow(2, m.retry++)));
     m.lastProgress = Date.now();
     pollStatus();
   }
-  async function pollStatus() {
-    let feeds = null;
-    try {
-      const r = await fetch(`${MOSAIC}/status.json`, { cache: 'no-store' });
-      if (r.ok) feeds = (await r.json()).feeds;
-    } catch (_) { /* LGX unreachable: every tile reads NO SIGNAL */ }
+  // XHR, not fetch/async: the wall must parse on old TV browsers (LG webOS).
+  function pollStatus() {
+    const x = new XMLHttpRequest();
+    x.open('GET', `${MOSAIC}/status.json?t=${Date.now()}`);
+    x.timeout = 8000;
+    x.onload = () => {
+      let feeds = null;
+      try { if (x.status === 200) feeds = JSON.parse(x.responseText).feeds; } catch (_) {}
+      applyStatus(feeds);
+    };
+    x.onerror = x.ontimeout = () => applyStatus(null);   // LGX unreachable: NO SIGNAL
+    x.send();
+  }
+  function applyStatus(feeds) {
     for (const t of tiles) {
       if (t.active) continue;   // single view judges its own feed
       const f = feeds && feeds.find((x) => x.key === t.ch.key);
@@ -475,8 +507,12 @@
 
   // ---- controls ----
   function toggleFullscreen() {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else document.documentElement.requestFullscreen?.().catch(() => {});
+    if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else {
+      const el = document.documentElement;
+      const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (fn) { const p = fn.call(el); if (p && p.catch) p.catch(() => {}); }
+    }
   }
   const fitBtn = document.getElementById('btn-fit');
   function toggleFit() {
@@ -499,10 +535,10 @@
   // A hidden tab keeps decoding seven feeds for nothing; a visible one resumes them.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    if (mosaic) { mosaic.lastProgress = Date.now(); mosaic.v.play().catch(() => {}); }
+    if (mosaic) { mosaic.lastProgress = Date.now(); play(mosaic.v, () => {}); }
     for (const t of tiles) {
       t.lastProgress = Date.now();
-      t.video.play().catch(() => {});
+      play(t.video, () => {});
     }
   });
 
