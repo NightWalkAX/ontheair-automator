@@ -504,7 +504,12 @@ class OtavClient {
   itemStartTimes(ref) { return this.request('GET', `/playlists/${OtavClient.ref(ref)}/start_times`); }
 
   /** The clip on air right now, whichever playlist it came from. */
-  currentItem() { return this.request('GET', '/playback/current_item'); }
+  // The real OTAV (4.2.7) wraps this one reply as { value: <Playlist Item> } —
+  // the other item routes answer bare. Unwrapped here so every caller reads .url.
+  async currentItem() {
+    const r = await this.request('GET', '/playback/current_item');
+    return r && typeof r === 'object' && r.value && typeof r.value === 'object' && !('url' in r) ? r.value : r;
+  }
 
   /**
    * Resolve a day's playlist WITHOUT touching its contents.
@@ -1279,6 +1284,14 @@ export function repointExportedDays(oldPath, newPath, {
       plans.push({ row, playlistName, ref, clips, how: 'repush' });
     }
 
+    // The OTAV instances share their playlist files, and the port a channel row
+    // names is not always the instance that airs it (2026-11-17: Junior, TeenEd
+    // and Elementary were rotated) — so "on air" is asked of EVERY instance.
+    if (plans.some((p) => p.how !== 'absent')) {
+      const airing = await onAirUrls();
+      if (airing.some((u) => samePath(u, oldPath))) blocked.push(`${oldPath}: that clip is on air right now`);
+    }
+
     if (blocked.length) throw new Error(blocked.join('; '));
 
     const todo = plans.filter((p) => p.how !== 'absent');
@@ -1344,6 +1357,47 @@ export function repointExportedDays(oldPath, newPath, {
     };
   });
 }
+
+/**
+ * Read one channel's day playlist as OTAV holds it — read-only, for the
+ * playlist watchdog. Returns { client, ref, name, items } (items = OTAV's own
+ * Playlist Item objects), or throws when the instance or playlist can't be read.
+ */
+export async function readDayPlaylist(channel, date) {
+  const client = new OtavClient(channel);
+  await client.authorize();
+  let reported = null;
+  if (!channel.schedule_path) {
+    const sched = await client.request('GET', '/scheduler').catch(() => null);
+    reported = typeof sched?.schedule_path === 'string' ? sched.schedule_path : null;
+  }
+  const name = dayPlaylistName(channel, date);
+  const found = await client.findDayPlaylist(name, dayPlaylistFile(channel, name, reported));
+  const items = await client.playlistItems(found.ref);
+  return { client, ref: found.ref, name, items: Array.isArray(items) ? items : (items?.items ?? []) };
+}
+
+/** Urls on air right now on every OTAV instance (distinct ip:port), unreachable ones skipped. */
+export async function onAirUrls() {
+  const rows = db.prepare(`SELECT * FROM ChannelType WHERE COALESCE(playout, 'otav') = 'otav'
+    AND api_ip IS NOT NULL AND api_ip != ''`).all();
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const k = `${row.api_ip}:${row.api_port}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    try {
+      const c = new OtavClient(row);
+      await c.authorize();
+      const cur = await c.currentItem();
+      if (cur?.url) out.push(cur.url);
+    } catch { /* an instance that can't answer has nothing of ours on air to protect */ }
+  }
+  return out;
+}
+
+export { samePath };
 
 const summarize = (p) => ({
   channel: p.row.channel_name,

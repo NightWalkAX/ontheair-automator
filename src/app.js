@@ -29,6 +29,8 @@ import { router as holidays } from './routes/holidays.js';
 import { router as analog } from './routes/analog.js';
 import { router as faults } from './routes/faults.js';
 import { router as guide } from './routes/guide.js';
+import { router as nas } from './routes/nas.js';
+import { startPlaylistWatch } from './services/playlistWatch.js';
 import { startGuideRenderer, FRAMES_DIR } from './services/guideRender.js';
 import { resetStaleRunning } from './services/transcode.js';
 import { startMonitor, handoverLines } from './services/signalMonitor.js';
@@ -69,6 +71,7 @@ app.use('/api/holidays', holidays);
 app.use('/api/analog', analog);
 app.use('/api/faults', faults);
 app.use('/api/guide', guide);
+app.use('/api/nas', nas);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, time: new Date().toISOString(), pid: process.pid,
@@ -125,6 +128,8 @@ const httpServer = app.listen(PORT, () => {
   // Keeps Air Spec converting: restarts an idle queue, rescans daily, alerts on failures.
   try { startTranscodeWatchdog(); } catch (err) { log('watchdog').error('Air Spec watchdog did not start', err); }
   // Renders the channel guide clips for the next days; idle unless guide.enabled.
+  // Today's playlists of the six OTAV channels: every clip's file, re-pointed when it moves.
+  try { startPlaylistWatch(); } catch (err) { log('watch').error('playlist watchdog did not start', err); }
   try { startGuideRenderer(); } catch (err) { log('guide').error('channel guide renderer did not start', err); }
 });
 // A port already taken is the classic "it didn't start and I don't know why".

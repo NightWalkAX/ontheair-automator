@@ -759,6 +759,20 @@ function playbackFaultSchema() {
       seconds     REAL,
       rendered_at TEXT
     );
+
+    -- Every file the automator moved on the share (src/services/nasLayout.js,
+    -- and the playlist watchdog when it finds a clip moved by hand). The
+    -- watchdog follows old -> new here first when an OTAV playlist names a
+    -- path that is gone; it is also the undo list.
+    CREATE TABLE IF NOT EXISTS FileMove (
+      id        INTEGER PRIMARY KEY,
+      old_path  TEXT NOT NULL,
+      new_path  TEXT NOT NULL,
+      moved_at  TEXT NOT NULL,
+      source    TEXT NOT NULL,             -- organize | watchdog
+      undone_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS FileMove_old ON FileMove(old_path);
   `);
   addColumnIfMissing('SignalEvent', 'culprit', 'TEXT');
   // Did an Air Spec conversion fix a clip that played badly? (playbackFaults.verifyReencoded)

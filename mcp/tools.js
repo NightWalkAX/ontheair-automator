@@ -532,6 +532,62 @@ export const TOOLS = [
       return api.post('/api/analog/vol1/cleanup', { confirm: true }, { allowStatus: [409] });
     },
   },
+  // ---- On-air folder + playlist watchdog (2026-11-18) ----
+  {
+    name: 'playlist_watch',
+    description: 'The playlist watchdog: per OTAV channel, today\'s (and tomorrow\'s exported) playlist as OTAV holds it — clip count, files missing, clips it re-pointed after a move, unresolved ones. With channel_id + date: every clip with start (seconds into the day), path and whether the file exists. tick=true checks now.',
+    inputSchema: S({
+      channel_id: { type: 'integer' },
+      date: { type: 'string', description: 'YYYY-MM-DD (with channel_id).' },
+      tick: { type: 'boolean', description: 'Run a check pass first.' },
+    }),
+    run: async (api, a) => {
+      if (a.tick) await api.post('/api/nas/watch/tick', {});
+      if (a.channel_id) {
+        const d = await api.get(`/api/nas/watch${qs({ channel: int(a.channel_id, 'channel_id'), date: date(a.date, 'date') })}`, { allowStatus: [404] });
+        return d;
+      }
+      return api.get('/api/nas/watch');
+    },
+  },
+  {
+    name: 'nas_organize_plan',
+    description: 'Read-only plan for moving every catalogued file into the one on-air folder (Lessons / TV Shows / Movies / Documentaries / Fillers / Promos): counts per folder, how many are on days already on OTAV, media roots that follow, collisions, a sample of moves, and whether something (Air Spec, a push) blocks a run.',
+    inputSchema: S({ full: { type: 'boolean' } }),
+    run: (api, a) => api.get(`/api/nas/organize/plan${a.full ? '?full=1' : ''}`),
+  },
+  {
+    name: 'nas_organize_status',
+    description: 'Progress of the running organize job and the report of the last one (moved, OTAV clips re-pointed, deferred because on air / starting soon, collisions, missing, roots moved).',
+    inputSchema: S(),
+    run: (api) => api.get('/api/nas/organize/status'),
+  },
+  {
+    name: 'nas_organize_run',
+    write: true,
+    description: 'Move files into the on-air folder (background job). Each move re-points every exported OTAV day naming the file in the same step; the clip on air or starting within 10 min is deferred. Refused while Air Spec converts or a push runs. limit = files this run; only = substring of the path to restrict to; on_air_too=false skips files on days already pushed. Requires confirm=true after the operator saw nas_organize_plan.',
+    inputSchema: S({
+      limit: { type: 'integer' },
+      only: { type: 'string' },
+      on_air_too: { type: 'boolean' },
+      confirm: { type: 'boolean' },
+    }, ['confirm']),
+    run: (api, a) => {
+      if (a.confirm !== true) throw new ToolError('show the operator nas_organize_plan first, then call with confirm=true');
+      return api.post('/api/nas/organize/run', { confirm: true, limit: a.limit, only: a.only, onAirToo: a.on_air_too !== false }, { allowStatus: [409, 400] });
+    },
+  },
+  {
+    name: 'nas_organize_undo',
+    write: true,
+    destructive: true,
+    description: 'Put back every file the organize job moved since `since` (ISO time), re-pointing OTAV and the catalogue again. Requires confirm=true.',
+    inputSchema: S({ since: { type: 'string' }, confirm: { type: 'boolean' } }, ['since', 'confirm']),
+    run: (api, a) => {
+      if (a.confirm !== true) throw new ToolError('undoing moves needs the operator\'s confirmation: call again with confirm=true');
+      return api.post('/api/nas/organize/undo', { confirm: true, since: a.since }, { allowStatus: [409, 400] });
+    },
+  },
   {
     name: 'analog_delete_files',
     write: true,
@@ -655,7 +711,7 @@ export function automatorApi(baseUrl, { pushWaitMs = 20_000 } = {}) {
   }
   return {
     pushWaitMs,
-    get: (p) => call('GET', p),
+    get: (p, opts) => call('GET', p, undefined, opts),
     text: (p) => call('GET', p, undefined, { asText: true }),
     post: (p, body, opts) => call('POST', p, body, opts),
     put: (p, body) => call('PUT', p, body),

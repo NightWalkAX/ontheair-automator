@@ -789,3 +789,45 @@ MCP ops tools added the same day (`mcp/tools.js`): `transcode_watchdog`, `transc
 `analog_cleanup`, `analog_delete_files`, `analog_week_routine`, `analog_routine_cancel`,
 `update_template`, `create_template`. Every destructive one requires `confirm: true`.
 
+
+## On-air folder + playlist watchdog (operator, 2026-11-18)
+
+**One folder for everything that airs.** `src/services/nasLayout.js` moves every CATALOGUED file
+into `nasLayout.root` (default `/Volumes/Public/GLC On Air`) by what the file IS in the catalogue
+(show type from the deepest root): `Lessons`, `TV Shows`, `Movies`, `Documentaries`, `Fillers`,
+plus `Promos` (a folder only — `Completed Projects/TRANSMISSION FOLDER 2026`, still typed TV Shows,
+so scheduling doesn't change). The old-folder → new-folder table is `DEFAULT_MAP` (override with
+`nasLayout.map`; `{type}` = the file's content folder, used for the mixed `Local Shows` folders).
+Subjects, chapters and display names are NOT touched (a scan keeps the operator's subject), so
+the guide titles are a separate job.
+Air safety: each file goes through `repointExportedDays()` — rename + catalogue (`movePath(...,
+{ sameFile: true })`: every channel's row, AnalogFile/AnalogConversion/AnalogDeviceFile, Air
+Spec's row keeps its verdict and its rollback target follows) → PUT url on every exported OTAV
+day from today → read back; any failure renames the file back. Deferred (retried next run): the
+clip on air on ANY instance, one starting within 10 min. Refused while Air Spec converts, an
+analog upload/push or an OTAV push runs. An existing target is a collision, never overwritten;
+two sources for one target (the same show under Broadcast/ and Transmission/) are left for the
+operator. Every move is journalled in `FileMove` (undo: `POST /api/nas/organize/undo {since}`).
+A media root follows (same channels, same type) once nothing catalogued is left under it.
+`GET /api/nas/organize/plan` (dry run), `POST /api/nas/organize/run {confirm, limit, only,
+onAirToo}` (background), `GET /api/nas/organize/status`, `GET /api/nas/moves`.
+
+**Playlist watchdog** (`src/services/playlistWatch.js`, `playlistWatch.*` config, on by default,
+every 5 min, today + `daysAhead` exported days): reads each OTAV channel's day playlist FROM OTAV
+(`readDayPlaylist()`), stats every clip's file, and re-points a clip whose file moved — found via
+the `FileMove` journal first, else by name key + length (±max(3s,1%)) under the on-air root and the
+folders above the media roots; several candidates = ambiguous (one inside the on-air root wins).
+Fix = PUT url + read back + catalogue follows + journal (`source = 'watchdog'`). Never the clip on
+air; future days wait while a push runs; nothing when the share is unmounted or most of a day is
+"missing" at once. Unresolved clips in TODAY's playlist are e-mailed once each.
+`GET /api/nas/watch` (summary) / `?channel=&date=` (every clip: start, path, exists),
+`POST /api/nas/watch/tick`, `GET|PUT /api/nas/watch/config`. MCP: `playlist_watch`,
+`nas_organize_plan`, `nas_organize_status`, `nas_organize_run`, `nas_organize_undo`.
+
+**Two OTAV facts found doing this:** (1) the real 4.2.7 answers `GET /playback/current_item` as
+`{ value: <item> }` (the other item routes are bare) — `currentItem()` unwraps it; before, the
+"clip on air" guard of `repointExportedDays()` never fired in production. `test/fake-otav.mjs`
+now wraps it too (`wrapCurrentItem`). (2) The port on a channel row is not always the instance
+airing that channel (Junior/TeenEd/Elementary measured rotated on 2026-11-17; the `.xpls` files are
+shared, so edits still land), so "on air" is asked of EVERY instance (`onAirUrls()`).
+Tests: `test/nasLayout.test.mjs`.

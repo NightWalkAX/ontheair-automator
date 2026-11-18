@@ -19,6 +19,7 @@ export function startFakeOtav({
   startTimes = {},            // clip unique_id -> seconds into the day, for /start_times
   keepClipUrl = false,        // accept a PUT of "url" but keep the old value (a liar)
   playing = null,             // GET /playback/playing body (item_path, item_elapsed…); settable as state.playing
+  wrapCurrentItem = true,     // the real 4.2.7 answers current_item as { value: <item> } (2026-11-18)
 } = {}) {
   // playlists: name -> { unique_id, items: [] }
   // scheduled: playlist FILES the OTAV schedule points at, e.g.
@@ -145,7 +146,8 @@ export function startFakeOtav({
       }
       if (req.method === 'GET' && path === '/playback/current_item') {
         if (!state.onAirUrl) return send(404, { success: false, error: 'nothing is playing' });
-        return send(200, { unique_id: 'on-air', clip_type: 0, url: state.onAirUrl });
+        const item = { unique_id: 'on-air', clip_type: 0, url: state.onAirUrl };
+        return send(200, wrapCurrentItem ? { value: item } : item);
       }
       if (req.method === 'GET' && path === '/scheduler') {
         return send(200, {

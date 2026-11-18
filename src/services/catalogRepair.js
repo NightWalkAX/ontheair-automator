@@ -175,8 +175,14 @@ function exportedDaysNaming(paths) {
   return [...out.values()].sort((a, b) => a.target_date.localeCompare(b.target_date) || String(a.channel).localeCompare(b.channel));
 }
 
-/** Move every catalogue row from `from` to `to`, merging into an existing row per channel. */
-function movePath(from, to, duration) {
+/**
+ * Move every catalogue row from `from` to `to`, merging into an existing row per channel.
+ * `sameFile`: the bytes did not change, only the folder/name (nasLayout's organize, the
+ * playlist watchdog following a move) — Air Spec keeps its verdict instead of re-queuing,
+ * its rollback target follows the file, and the analog bookkeeping follows too.
+ * Call inside withTx.
+ */
+export function movePath(from, to, duration, { sameFile = false } = {}) {
   const rows = db.prepare('SELECT * FROM Resource WHERE file_path = ?').all(from);
   const target = db.prepare('SELECT * FROM Resource WHERE channel_id = ? AND file_path = ?');
   let moved = 0, merged = 0;
@@ -202,6 +208,22 @@ function movePath(from, to, duration) {
   moveFlags(from, to);
   // The analog device's copy is the same programme wherever the share keeps it.
   db.prepare('UPDATE OR IGNORE AnalogFile SET file_path = ? WHERE file_path = ?').run(to, from);
+  if (sameFile) {
+    db.prepare('UPDATE AnalogConversion SET file_path = ? WHERE file_path = ?').run(to, from);
+    db.prepare('UPDATE AnalogDeviceFile SET share_path = ? WHERE share_path = ?').run(to, from);
+    if (db.prepare('SELECT 1 FROM TranscodeItem WHERE file_path = ?').get(to)) {
+      db.prepare('DELETE FROM TranscodeItem WHERE file_path = ?').run(from);
+    } else {
+      // A rollback puts the archived original back at orig_path: beside the file, wherever it is now.
+      const t = db.prepare('SELECT id, orig_path FROM TranscodeItem WHERE file_path = ?').get(from);
+      if (t) {
+        const orig = t.orig_path && dirname(t.orig_path) === dirname(from)
+          ? `${dirname(to)}/${basename(t.orig_path)}` : t.orig_path;
+        db.prepare('UPDATE TranscodeItem SET file_path = ?, orig_path = ? WHERE id = ?').run(to, orig, t.id);
+      }
+    }
+    return { moved, merged };
+  }
   // The stale Air Spec row describes a file that is not there; the found path
   // has (or will get, on the next Air Spec scan) a row of its own.
   if (db.prepare('SELECT 1 FROM TranscodeItem WHERE file_path = ?').get(to)) {
