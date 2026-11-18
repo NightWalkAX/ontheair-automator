@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { db } from '../db.js';
-import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig, runSweep, sweepState, rescueGhosts, planUnlabeled, runUnlabeled, unlabeledState, removeEmptyDirs } from '../services/nasLayout.js';
+import { planOrganize, runOrganize, organizeState, undoMoves, busyReason, layoutConfig, runSweep, sweepState, rescueGhosts, planUnlabeled, runUnlabeled, unlabeledState, removeEmptyDirs, runRenames, renameState } from '../services/nasLayout.js';
 import { dirname, join } from 'node:path';
 import { logPath } from '../logger.js';
 import { tick, watchState, watchConfig, setWatchConfig } from '../services/playlistWatch.js';
@@ -118,4 +118,14 @@ router.post('/empty-dirs', async (req, res) => {
     const r = await removeEmptyDirs({ dryRun });
     res.json({ ok: true, dryRun, count: r.removed.length, litter: r.litter, removed: r.removed.slice(0, 300) });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ---- a list of renames decided outside (OCR'd lesson topics), same safety as organize ----
+router.get('/rename/status', (req, res) => res.json(renameState()));
+router.post('/rename/run', (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ ok: false, error: 'confirm: true is required' });
+  const moves = Array.isArray(req.body?.moves) ? req.body.moves : [];
+  if (!moves.length) return res.status(400).json({ ok: false, error: 'moves: [{ from, to }] is required' });
+  runRenames(moves).catch(() => {});
+  res.status(202).json({ ok: true, started: true, count: moves.length });
 });

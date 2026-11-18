@@ -397,3 +397,16 @@ test('empty folders: only truly empty ones go (OS litter counts as empty), never
     if (existsSync(dirname(p.path))) assert.ok(!r.removed.includes(p.path), `root ${p.path} kept`);
   }
 });
+
+test('runRenames moves a given list with OTAV re-pointed and refuses paths outside the root', async () => {
+  const f = await fake();
+  const ch = await channelWith(f, 'Ren');
+  const from = file('GLC On Air/Unlabeled/Lessons/X/Teen English E18.mov');
+  const r = catalogue(ch, from, 'Lessons');
+  const pl = await exportDay(f, ch, r, addDays(localDate(), 1), from);
+  const to = `${share}/GLC On Air/Lessons/X/Grade 9 - English Language - Comprehension - E18.mov`;
+  const rep = await nas.runRenames([{ from, to }, { from, to: '/etc/passwd.mov' }]);
+  assert.equal(rep.moved, 1); assert.equal(rep.rejected, 1);
+  assert.ok(existsSync(to));
+  assert.equal((await clipsOf(f, pl))[0].url, to);
+});

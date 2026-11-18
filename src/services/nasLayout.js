@@ -824,4 +824,36 @@ export async function removeEmptyDirs({ dryRun = true } = {}) {
   return { dryRun, removed, litter: litter.length };
 }
 
+// Renames decided outside (e.g. lesson topics read from the video by OCR, 2026-11-18):
+// a list of { from, to } moved one by one through moveFile — same air safety, journalled.
+const renRun = { active: null, last: null };
+export function renameState() { return { running: renRun.active, last: renRun.last }; }
+export async function runRenames(moves, { today = localDate() } = {}) {
+  if (run.active || sweepRun.active || unlRun.active || renRun.active) throw new Error('another NAS job is running');
+  const busy = busyReason();
+  if (busy) throw new Error(busy);
+  const cfg = layoutConfig();
+  const ok = moves.filter((m) => m && typeof m.from === 'string' && typeof m.to === 'string'
+    && m.from.startsWith(`${cfg.root}/`) && m.to.startsWith(`${cfg.root}/`) && extname(m.from) === extname(m.to));
+  const report = { startedAt: new Date().toISOString(), planned: ok.length, rejected: moves.length - ok.length, moved: 0, patched: 0, deferred: [], other: [] };
+  renRun.active = { startedAt: report.startedAt, planned: ok.length, done: 0 };
+  try {
+    for (const m of ok) {
+      const reason = busyReason();
+      if (reason) { report.stopped = reason; break; }
+      const r = await moveFile(m.from, m.to, { source: 'organize', today });
+      renRun.active.done++;
+      if (r.status === 'moved') { report.moved++; report.patched += r.patched || 0; }
+      else if (r.status === 'deferred') report.deferred.push({ from: m.from, to: m.to, error: r.error });
+      else report.other.push({ from: m.from, to: m.to, status: r.status });
+    }
+  } finally {
+    report.finishedAt = new Date().toISOString();
+    renRun.last = report;
+    renRun.active = null;
+    l.info(`renames: moved ${report.moved} (${report.patched} OTAV clip(s)), ${report.deferred.length} deferred, ${report.other.length} other`);
+  }
+  return report;
+}
+
 export { DEFAULT_MAP, SWEEP_SOURCES };
