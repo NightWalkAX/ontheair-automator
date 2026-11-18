@@ -101,9 +101,43 @@ app.get('/playout', (req, res) => {
   const url = loadConfig().playout?.mosaicUrl ?? DEFAULT_MOSAIC_URL;
   const file = join(ROOT, 'glc-wall', 'public', 'index.html');
   if (!url) return res.sendFile(file);
+  // The page reads the mosaic THROUGH this server (/playout/mosaic/…): some TVs reach this
+  // Mac but not the LGX PC (other subnets, 2026-11-18), so the wall only needs this host.
   const html = readFileSync(file, 'utf8')
-    .replace('<script', `<script>window.GLC_MOSAIC = ${JSON.stringify(String(url)).replace(/</g, '\\u003c')};</script>\n<script`);
+    .replace('<script', `<script>window.GLC_MOSAIC = "/playout/mosaic";</script>\n<script`);
   res.type('html').send(html);
+});
+
+// /playout/mosaic/<mosaic.m3u8 | segN.ts | status.json | client-log> → the LGX mosaic.
+// A plain pass-through (~6 Mb/s per screen); the screen's IP goes along in X-Forwarded-For.
+app.all(/^\/playout\/mosaic\/(mosaic\.m3u8|seg\d+\.ts|status\.json|client-log)$/, async (req, res) => {
+  const base = String(loadConfig().playout?.mosaicUrl ?? DEFAULT_MOSAIC_URL).replace(/\/+$/, '');
+  if (!base) return res.status(404).end();
+  const name = req.params[0];
+  const post = req.method === 'POST' && name === 'client-log';
+  if (req.method !== 'GET' && !post) return res.status(405).end();
+  try {
+    let body;
+    if (post) {
+      const chunks = [];
+      for await (const c of req) { chunks.push(c); if (chunks.length > 20) break; }
+      body = Buffer.concat(chunks);
+    }
+    const up = await fetch(`${base}/${name}`, {
+      method: post ? 'POST' : 'GET',
+      body,
+      headers: {
+        'x-forwarded-for': (req.ip || '').replace(/^::ffff:/, ''),
+        'user-agent': req.get('user-agent') || '',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    res.status(up.status);
+    for (const h of ['content-type', 'cache-control']) if (up.headers.get(h)) res.set(h, up.headers.get(h));
+    res.send(Buffer.from(await up.arrayBuffer()));
+  } catch (e) {
+    res.status(502).type('text/plain').send(`mosaic unreachable: ${e.message}`);
+  }
 });
 
 // MCP for GLC AI (AnythingLLM): /mcp (Streamable HTTP) and /sse + /messages

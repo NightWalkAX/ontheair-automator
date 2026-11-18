@@ -233,7 +233,8 @@ function status() {
 // (POST /client-log from the wall: hls.js errors, "no MSE", first frame). /clients.json.
 const clients = new Map();
 function seen(req, what) {
-  const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip = fwd ? `${fwd} via ${(req.socket.remoteAddress || '').replace(/^::ffff:/, '')}` : (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   const c = clients.get(ip) || { ip, ua: '', status: null, playlist: null, segment: null, segments: 0, events: [] };
   c.ua = req.headers['user-agent'] || c.ua;
   if (what) { c[what] = new Date().toISOString(); if (what === 'segment') c.segments++; }
