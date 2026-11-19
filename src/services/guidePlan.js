@@ -101,9 +101,53 @@ export function prettyName(name) {
   s = s.replace(/\s+/g, ' ').trim();
   return s.replace(/ ((?:19|20)\d\d)$/, ' ($1)'); // "Scrooged 1988" → "Scrooged (1988)"
 }
+// The NAS organize of 2026-11-18 renamed the files ('_' -> ' ', 'S8E09' -> 'S08E09'), so known titles are
+// also looked up by a normalised key ('Over The Hedge' finds 'Over_The_Hedge').
+const normKey = (t) => String(t || '').replace(/\.(mp4|mov|mpg|mxf)$/i, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+let normMap = null;
+const EXTRA_TITLES = {
+  'Beauty And The Beast 2017': 'Beauty and the Beast', 'Peter Pan (2003)': 'Peter Pan', 'Over The Hedge': 'Over the Hedge',
+  'ET The Extra Terrestrial': 'E.T. the Extra-Terrestrial', 'Ralph Breaks The Internet': 'Ralph Breaks the Internet',
+  'The Super Mario Bros Movie': 'The Super Mario Bros. Movie', 'Into The Spider Verse': 'Spider-Man: Into the Spider-Verse',
+  // shows and documentaries as the public knows them (operator 2026-11-17/18: no misspelt names on the panels)
+  'Blues Clues': "Blue's Clues", 'Mythbusters': 'MythBusters', 'Brain Child': 'Brainchild', 'YGAY': 'Your Government & You',
+  'Cosmos A Space Time Odyssey': 'Cosmos: A Spacetime Odyssey', 'Human the World Within': 'Human: The World Within',
+  'Our Planet Frozen Worlds': 'Our Planet: Frozen Worlds', 'Live Shows': 'Launch of the TVET EMIS Platform',
+  'Aladdin (2019)': 'Aladdin', 'Aladdin 2019': 'Aladdin', 'Mr Rogers': "Mister Rogers' Neighborhood", 'StillWater': 'Stillwater',
+  'Little Einstein': 'Little Einsteins', 'Octonauts Above and Beyond': 'Octonauts: Above & Beyond', 'Seven Worlds One Planet': 'Seven Worlds, One Planet',
+  'Escape Planet Earth': 'Escape from Planet Earth',
+};
 function fixTitle(t) {
   const extra = guideConfig().titles || {};
-  return extra[t] ?? TITLE_FIX[t] ?? t;
+  const hit = extra[t] ?? TITLE_FIX[t] ?? EXTRA_TITLES[t];
+  if (hit) return hit;
+  normMap ??= new Map(Object.entries({ ...TITLE_FIX, ...EXTRA_TITLES }).map(([k, v]) => [normKey(k), v]));
+  return normMap.get(normKey(t)) ?? spell(t);
+}
+// Whole titles and words the DB carries misspelt (same list as the stories, guia-render/day.py).
+const SPELL_TITLES = {
+  'Life Process of Animal': 'Life Processes of Animals', 'Identify Living and Non-living Things in the Environment': 'Living and Non-Living Things in the Environment',
+  'The Plant Kingdom: Flowering and Non: Flowering Plants': 'The Plant Kingdom: Flowering and Non-Flowering Plants', 'Bar Graph': 'Bar Graphs',
+  'Subtraction of Mixed Numbers with Regrouping & Without Regrouping': 'Subtracting Mixed Numbers With & Without Regrouping',
+  'Naming 2 Dimensional and 3 Dimensional Shapes in the Environment': 'Naming 2D and 3D Shapes in the Environment',
+  'What is a Sentence': 'What Is a Sentence?', 'Verb': 'Verbs', 'Non Biodegradable': 'Non-Biodegradable Materials',
+  'Grade 2 Consonants and Vowels Sounds': 'Consonant and Vowel Sounds', 'Consonants & Vowels Sounds': 'Consonant and Vowel Sounds',
+  'Relationship Among Organisms in the Eco System': 'Relationships Among Organisms in the Ecosystem',
+  'Animals Sounds': 'Animal Sounds', 'People Around us': 'People Around Us', 'The Life Cycle of A Frog': 'The Life Cycle of a Frog',
+};
+const SPELL_WORDS = [[/\bSahding\b/g, 'Shading'], [/\bMonocotlyedons\b/g, 'Monocotyledons'], [/\bEco ?Systems\b/g, 'Ecosystems'], [/\bEco System\b/g, 'Ecosystem'],
+  [/Unlike Denominator\b(?!s)/g, 'Unlike Denominators'], [/\bUNLIKE\b/g, 'Unlike'], [/\bPart (\d)\b/g, 'Pt. $1'], [/\bPt\.?\s*(\d)/g, 'Pt. $1'],
+  [/\bDecimlas\b/g, 'Decimals'], [/\bEquivelant\b/g, 'Equivalent'], [/\bParagrah\b/g, 'Paragraph'], [/\bDiagraphs\b/g, 'Digraphs'], [/\bClimactic\b/g, 'Climatic'],
+  [/^YGAY\b/, 'Your Government & You'], [/^Your Government & You E(\d+)\b.*$/, 'Your Government & You · Ep $1'],
+  [/^(Junior (?:English|Mathematics|Social Studies|Science))\s*E(\d+)$/, '$1 · Ep $2'],
+  [/^(?:English Language|Literacy)\s*–\s*/, '']];
+function spell(t) {
+  let s = SPELL_TITLES[t] ?? t;
+  if (s.length > 12 && s === s.toUpperCase() && /[A-Z]{6}/.test(s)) {
+    s = s.split(' ').map((w, i) => (i && SMALL_WORDS.has(w.toLowerCase()) ? w.toLowerCase() : w.length > 5 ? w.charAt(0) + w.slice(1).toLowerCase() : w)).join(' ');
+  }
+  for (const [a, b] of SPELL_WORDS) s = s.replace(a, b);
+  return SPELL_TITLES[s] ?? s;
 }
 
 
@@ -116,6 +160,10 @@ export function tidyTopic(t) {
   t = t.replace(/^\d+\.\s*/, '');
   t = t.replace(/^(?:[A-Za-z-]+_)?(?:lesson\s*)?\d+\s*_\s*|^[A-Za-z-]+_lesson\s*\d+\s*[-–:]\s*/i, '');  // 'Science_Lesson 1_X', 'Maths_16_X' (DEU 2026)
   t = t.replace(/\s*_+\s*/g, ' ').trim();
+  t = t.replace(/\s*[-–:]\s*E\d+$/, '');   // OCR rename 2026-11-18: 'Grade 2 - English Language - Nouns - E26'
+  t = t.replace(/\s+re$/, '');                // 'Celebration in our Community re' (re-edit marker)
+  t = t.replace(/^[-–\s]+/, '').replace(/^(?:English Language|Literacy|Maths)\s*[-–]\s*/, '').replace(/^Maths\s+\d+\s+/, '');
+  t = t.replace(/^(?:social[- ]studies|studies|science|english(?: language)?|mathematics|maths)?\s*(?:lesson|lession)\s*\d+\s*[-–:]?\s*/i, '');
   t = t.replace(/^Structure, Function and Information Processing\s*[-–:]\s*/i, '');
   t = t.replace(/^[-–\s]*grade\s*\d+\s*[-–]\s*/i, '');
   t = t.replace(/^grade\s*\d+\s*(english language|english|mathematics|maths|science|social studies)\s*[-–:]?\s*/i, '');
@@ -152,7 +200,7 @@ const FILLER_WORDS = new Set(['program', 'programme', 'read', 'enjoy', 'discover
  * "Math_Intervention_Program_045_Algebra_and_Measurement_Part_1" → { title: 'Algebra and Measurement Part 1', tag: 'Math Intervention' }.
  */
 export function lessonParts(c) {
-  const base = String(c.display_name || c.name || '').replace(/\.(mp4|mov|mpg|mxf|avi|mkv)$/i, '').trim();
+  const base = String(c.display_name || c.name || '').replace(/\.(mp4|mov|mpg|mxf|avi|mkv)$/i, '').trim().replace(/Social-Studies/gi, 'Social Studies');
   const subjectRaw = String(c.subject || '').trim();
   const grade = /^(?:grade|garde)\s*(\d+)/i.exec(base)?.[1] ?? /^grade\s*(\d+)/i.exec(subjectRaw)?.[1] ?? null;
   let subj = subjectRaw.replace(/^grade\s*\d+\s*/i, '').trim();
@@ -175,7 +223,16 @@ export function lessonParts(c) {
     else if (ep) topic = prettyName(base);                                     // "Junior Literacy E39": the name is all there is
   }
   topic = tidyTopic(topic.replace(/\s+/g, ' ').replace(/[:\s]+$/, '').trim()) || prettyName(base);
-  const tag = grade ? `Grade ${grade}${subj ? ` · ${subj}` : ''}` : (subj || 'Lesson');
+  let tag = grade ? `Grade ${grade}${subj ? ` · ${subj}` : ''}` : (subj || 'Lesson');
+  const fileSubj = /^grade\s*\d+\s*-\s*(science|mathematics|english(?: language)?|social studies)\s*-/i.exec(base)?.[1];
+  if (fileSubj && grade) {   // a Science lesson filed under Mathematics: the file name's subject wins
+    tag = `Grade ${grade} · ${SUBJECT_SHORT[fileSubj.toLowerCase()] ?? fileSubj.replace(/\b\w/g, (m) => m.toUpperCase())}`;
+    topic = topic.replace(/^(?:Science|Maths|Mathematics|English|Social Studies):\s*/, '');
+  }
+  // 'Local Academic New/Junior' spans grades 1-3 (MoE Central airs it for Grade 3): name the series, never a grade
+  const series = /\/Local Academic New\/(Junior|Elementary|Teen)/.exec(String(c.file_path || ''))?.[1];
+  if (series) tag = `${series === 'Teen' ? 'TeenEd' : series} · ${subj || 'Lesson'}`;
+  if (tag === 'R.E.A.D') tag = 'R.E.A.D.';
   // 'Beatin_Da_Maths_S2Ep1': the show is the title, the episode the tag (operator 2026-11-17)
   if (/^Season \d+ · Ep \d+$/.test(topic) && !tag.startsWith('Grade')) return { title: fixTitle(tag), tag: topic };
   return { title: fixTitle(topic), tag };
@@ -185,7 +242,7 @@ export function lessonParts(c) {
 // ("TRANSMISSION FOLDER 2026", operator 2026-11-17: it aired in the stories as a programme name).
 // Such a subject names where the file sits, not what it is: print the clip's own name instead.
 export function isFolderSubject(s) {
-  return /\b(?:folder|completed projects|transmission|new folder|untitled|final renders?)\b/i.test(String(s || ''));
+  return /\b(?:folder|completed projects|transmission|new folder|untitled|final renders?|live shows)\b/i.test(String(s || ''));
 }
 /** A one-off clip's file name made printable: "TVET EMIS.jpg.mp4" → "TVET EMIS", "WHIZ KIDS AD FINAL 2" → "Whiz Kids Ad". */
 export function cleanFileTitle(name) {
