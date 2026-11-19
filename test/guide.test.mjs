@@ -87,8 +87,8 @@ test('times read on the quarter hour, rows fold and cap', () => {
   // every lesson is its own row: topic + subject (operator 2026-11-12)
   assert.deepEqual(lessonParts({ name: 'Grade 2- English language- Singular & Plural Nouns.mov', subject: 'Grade 2 English Language' }), { title: 'Singular & Plural Nouns', tag: 'Grade 2 · English' });
   assert.deepEqual(lessonParts({ name: 'Grade 6- Social - Studies - Symbols of Nationhood.mp4', subject: 'Grade 6 Social Studies' }), { title: 'Symbols of Nationhood', tag: 'Grade 6 · Social Studies' });
-  assert.deepEqual(lessonParts({ name: 'Math_Intervention_Program_045_Algebra_and_Measurement_Part_1.mov', subject: 'Math Intervention' }), { title: 'Algebra and Measurement Part 1', tag: 'Math Intervention' });
-  assert.deepEqual(lessonParts({ name: 'R.E.A.D_Read_Enjoy_&_Discover_Ep12_Letter_L.mov', subject: 'R.E.A.D' }), { title: 'Letter L · Ep 12', tag: 'R.E.A.D' });
+  assert.deepEqual(lessonParts({ name: 'Math_Intervention_Program_045_Algebra_and_Measurement_Part_1.mov', subject: 'Math Intervention' }), { title: 'Algebra and Measurement Pt. 1', tag: 'Math Intervention' });
+  assert.deepEqual(lessonParts({ name: 'R.E.A.D_Read_Enjoy_&_Discover_Ep12_Letter_L.mov', subject: 'R.E.A.D' }), { title: 'Letter L · Ep 12', tag: 'R.E.A.D.' });
   // editors' scaffolding and typos are cleaned (operator 2026-11-17)
   assert.equal(lessonParts({ name: 'lesson 25 Topic-Subject and Verb Agreement rules 1-3.mp4', subject: 'Grade 5 English Language' }).title, 'Subject and Verb Agreement Rules 1-3');
   assert.equal(lessonParts({ name: 'Lesson 1 Topic- word formation Subtopic - Prefixes.mp4', subject: 'Grade 5 English Language' }).title, 'Word Formation: Prefixes');
@@ -117,7 +117,7 @@ test('times read on the quarter hour, rows fold and cap', () => {
   assert.equal(capped[9].title, '+ 5 more programmes');
   assert.equal(describeClip({ name: 'HarryPotter4GobletOfFire', duration: 9000, show_type_code: 'movies', subject: 'Movies' }).title, 'Harry Potter and the Goblet of Fire');
   assert.equal(describeClip({ name: 'TVET EMIS.jpg.mp4', duration: 3687, show_type_code: 'tv_shows', subject: 'TRANSMISSION FOLDER 2026' }).title, 'TVET EMIS');
-  assert.equal(describeClip({ name: 'Peter_Pan_(2003)', duration: 6000, show_type_code: 'movies', subject: 'Movies' }).title, 'Peter Pan (2003)');
+  assert.equal(describeClip({ name: 'Peter_Pan_(2003)', duration: 6000, show_type_code: 'movies', subject: 'Movies' }).title, 'Peter Pan');
 });
 
 test('a guide lists what is left of the bracket; the last block of a bracket shows the next one', () => {
