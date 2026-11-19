@@ -13,7 +13,7 @@
 const AS = '/guide/assets';
 const MASCOT = `${AS}/mascot.png`;
 // Operator 2026-11-17: every guide, on air and on social media, says at the bottom that it can change.
-export const NOTICE = 'Schedule subject to change without notice';
+export const NOTICE = 'Programme Guide is subject to change without notice';
 const LOGO = {
   discover: `${AS}/logo-discover.png`, jr: `${AS}/logo-jr.png`, teen: `${AS}/logo-teen.png`,
   elevate: `${AS}/logo-elevate.png`, elementary: `${AS}/logo-elementary.png`, moe: `${AS}/logo-moe.png`,

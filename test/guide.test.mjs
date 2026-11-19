@@ -148,7 +148,7 @@ test('every look renders every bracket', () => {
       assert.match(html, /id="stage"/);
       assert.match(html, /Turbo/);
       assert.ok(html.includes('Bluey &lt;b&gt;'), `${style}/${bk} escapes titles`);
-      assert.ok(html.includes('Schedule subject to change without notice'), `${style}/${bk} carries the notice`);
+      assert.ok(html.includes('Programme Guide is subject to change without notice'), `${style}/${bk} carries the notice`);
     }
     assert.match(identHtml(style, 20), /STAY WITH US/);
   }
