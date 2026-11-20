@@ -76,6 +76,10 @@
   .audio { visibility: hidden; color: var(--ok); }
   .tile.unmuted .audio { visibility: visible; }
   .tile.unmuted { outline: 2px solid var(--ok); outline-offset: -2px; }
+  /* Audio alert from the automator's signal monitor (/playout/alerts.json). */
+  .alert { display: none; padding: 2px 8px; border-radius: 3px; font-weight: 700; background: #dc2626; color: #fff; text-shadow: none; white-space: nowrap; }
+  .tile[data-audio="choppy"] .alert, .tile[data-audio="silent"] .alert { display: inline-block; animation: blink 1.6s steps(1) infinite; }
+  .tile[data-audio="choppy"], .tile[data-audio="silent"] { box-shadow: inset 0 0 0 3px #dc2626; }
 
   /* NO SIGNAL card with analogue snow, shown while a feed is loading or down. */
   .nosig {
@@ -255,6 +259,7 @@
       </div>
       <div class="osd bottom">
         <span class="ts"></span>
+        <span class="alert"></span>
         <span class="audio">♪ AUDIO</span>
       </div>`;
     wall.insertBefore(el, info);
@@ -262,6 +267,7 @@
       ch, el, i,
       video: el.querySelector('video'),
       label: el.querySelector('.label'),
+      alert: el.querySelector('.alert'),
       ts: el.querySelector('.ts'),
       hls: null, retry: 0, retryTimer: null,
       lastTime: 0, lastProgress: Date.now(),
@@ -483,6 +489,33 @@
     }
   }
 
+  // ---- audio alerts from the automator's signal monitor ----
+  // Only where the page is served by the automator (/playout): elsewhere the request
+  // fails and nothing is shown.
+  const ALERT_LABEL = { choppy: '♪ CHOPPY AUDIO', silent: '♪ NO AUDIO' };
+  function pollAlerts() {
+    if (!/^\/playout\/?$/.test(location.pathname)) return;
+    const x = new XMLHttpRequest();
+    x.open('GET', `/playout/alerts.json?t=${Date.now()}`);
+    x.timeout = 8000;
+    x.onload = () => {
+      let feeds = [];
+      try { if (x.status === 200) feeds = JSON.parse(x.responseText).feeds || []; } catch (_) {}
+      for (const t of tiles) {
+        const f = feeds.find((y) => y.key === t.ch.key);
+        const a = f && f.audio ? f.audio : '';
+        if ((t.el.dataset.audio || '') === a) continue;
+        if (a) t.el.dataset.audio = a; else delete t.el.dataset.audio;
+        t.alert.textContent = ALERT_LABEL[a] || '';
+        t.alert.title = (f && f.detail) || '';
+      }
+      updateSummary();
+    };
+    x.send();
+  }
+  setInterval(pollAlerts, 10000);
+  setTimeout(pollAlerts, 1500);
+
   // ---- info panel ----
   const clockEl = document.getElementById('clock');
   const dateEl = document.getElementById('date');
@@ -491,8 +524,10 @@
   function updateSummary() {
     const live = tiles.filter((t) => t.el.dataset.state === 'live').length;
     const downList = tiles.filter((t) => t.el.dataset.state === 'down').map((t) => `CH${pad(t.i + 1)}`);
+    const choppyList = tiles.filter((t) => t.el.dataset.audio).map((t) => `CH${pad(t.i + 1)}`);
     summaryEl.innerHTML = `<b>${live}</b> / ${tiles.length} feeds live` +
       (downList.length ? ` · <span class="bad">down: ${downList.join(', ')}</span>` : '') +
+      (choppyList.length ? ` · <span class="bad">audio: ${choppyList.join(', ')}</span>` : '') +
       (MOSAIC ? ' · mosaic' : '');
   }
 

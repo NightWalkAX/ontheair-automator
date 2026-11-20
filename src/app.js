@@ -34,7 +34,7 @@ import { router as nas } from './routes/nas.js';
 import { startPlaylistWatch } from './services/playlistWatch.js';
 import { startGuideRenderer, FRAMES_DIR } from './services/guideRender.js';
 import { resetStaleRunning } from './services/transcode.js';
-import { startMonitor, handoverLines } from './services/signalMonitor.js';
+import { startMonitor, handoverLines, monitorStatus } from './services/signalMonitor.js';
 import { startShiftNotifier } from './services/shiftRoster.js';
 import { startFaultSync } from './services/playbackFaults.js';
 import { startTranscodeWatchdog } from './services/transcodeWatchdog.js';
@@ -106,6 +106,23 @@ app.get('/playout', (req, res) => {
   const html = readFileSync(file, 'utf8')
     .replace('<script', `<script>window.GLC_MOSAIC = "/playout/mosaic";</script>\n<script`);
   res.type('html').send(html);
+});
+
+// GET /playout/alerts.json — what the signal monitor sees per feed, small enough for the
+// TVs to poll: { feeds: [{ key, audio: 'choppy'|'silent'|null, detail }] }. `key` is the
+// CDN stream name (…/c2eds/<key>/HLS/…), the same key the wall page uses.
+app.get('/playout/alerts.json', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const st = monitorStatus();
+  const feeds = st.sources.map((s) => {
+    const key = (String(s.url || '').match(/\/c2eds\/([^/]+)\//) || [])[1] || s.id;
+    const a = s.audio || {};
+    const audio = !st.running || !s.enabled ? null
+      : a.state === 'silent' ? 'silent' : a.choppy?.state === 'choppy' ? 'choppy' : null;
+    const detail = audio === 'choppy' ? a.choppy.incident?.detail || null : audio === 'silent' ? a.incident?.detail || null : null;
+    return { key, audio, detail };
+  });
+  res.json({ running: st.running, feeds });
 });
 
 // /playout/mosaic/<mosaic.m3u8 | segN.ts | status.json | client-log> → the LGX mosaic.
