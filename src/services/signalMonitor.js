@@ -135,6 +135,9 @@ export function monitorConfig(raw = loadConfig().monitor) {
     },
     choppy: {
       enabled: (m.choppy || {}).enabled !== false,
+      // Jose 2026-11-20: choppy flaps mailed ~300 times and used up the alert Gmail's daily
+      // quota; it stays on the wall and in the log, e-mail only when this is set to true.
+      email: (m.choppy || {}).email === true,
       windowSeconds: clampNum((m.choppy || {}).windowSeconds, 10, 600, 60),
       minDropouts: clampNum((m.choppy || {}).minDropouts, 2, 1000, 10),
       recoverAfterSeconds: clampNum((m.choppy || {}).recoverAfterSeconds, 10, 3600, 60),
@@ -780,6 +783,7 @@ let outbox = [];
 let outboxTimer = null;
 
 export function enqueueMail(ev) {
+  if (ev.kind === 'choppy' && !monitorConfig().choppy.email) return;
   outbox.push(ev);
   if (outboxTimer) return;
   const wait = monitorConfig().batchSeconds * 1000;
