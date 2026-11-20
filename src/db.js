@@ -227,7 +227,7 @@ export function initSchema() {
       id          INTEGER PRIMARY KEY,
       source_id   TEXT NOT NULL,
       source_name TEXT NOT NULL,
-      kind        TEXT NOT NULL,               -- black | frozen | down
+      kind        TEXT NOT NULL,               -- black | frozen | down | silent | choppy
       started_at  TEXT NOT NULL,               -- when the picture actually went
       alerted_at  TEXT NOT NULL,               -- when the threshold was crossed
       ended_at    TEXT,                        -- NULL while it is still going on

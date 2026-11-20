@@ -32,6 +32,15 @@
 //            ffmpeg on the feed's audio rendition, so a broken audio reader never
 //            stops the black detection. 1s windows of 8kHz mono s16 — RMS in
 //            dBFS per window, counted in stream time like the frames.
+//   choppy — the AUDIO again, on the same reader: the sound keeps cutting out.
+//            Each 1s window is split into 10ms slices; a DROPOUT is 20–450ms of
+//            near digital silence (< choppy.holeDb) with programme-level sound
+//            (> choppy.loudDb) right before and right after it — a hole in the
+//            middle of speech or music, which a real pause never looks like.
+//            ≥ choppy.minDropouts of them inside choppy.windowSeconds = choppy;
+//            back to normal after choppy.recoverAfterSeconds without one.
+//            Seen 2026-11-19 on TeenEd/Junior/Elementary: holes of 10–450ms
+//            every 1–2s with clean masters (scripts/audio_gaps.py in glc-ops).
 // Before alerting on black or frozen, a feed linked to a channel we control
 // (source.channelId) gets ONE OTAV scheduler resync (GET /scheduler/resynchronize
 // — "stop playing what it is currently playing and start playing what was
@@ -124,6 +133,14 @@ export function monitorConfig(raw = loadConfig().monitor) {
       recoverAfterSeconds: clampNum((m.silence || {}).recoverAfterSeconds, 1, 600, 3),
       noAudioAfterSeconds: clampNum((m.silence || {}).noAudioAfterSeconds, 10, 3600, 60),
     },
+    choppy: {
+      enabled: (m.choppy || {}).enabled !== false,
+      windowSeconds: clampNum((m.choppy || {}).windowSeconds, 10, 600, 60),
+      minDropouts: clampNum((m.choppy || {}).minDropouts, 2, 1000, 10),
+      recoverAfterSeconds: clampNum((m.choppy || {}).recoverAfterSeconds, 10, 3600, 60),
+      holeDb: clampNum((m.choppy || {}).holeDb, -90, -40, -60),
+      loudDb: clampNum((m.choppy || {}).loudDb, -60, -10, -35),
+    },
     down: {
       alertAfterSeconds: clampNum(d.alertAfterSeconds, 10, 3600, 60),
       stallRestartSeconds: clampNum(d.stallRestartSeconds, 10, 600, 45),
@@ -185,6 +202,63 @@ export function audioLevelDb(buf) {
   return rms > 0 ? 20 * Math.log10(rms) : -Infinity;
 }
 
+export const SLICE_SAMPLES = AUDIO_RATE / 100;    // 10ms
+const HOLE_MIN_SLICES = 2;                          // 20ms
+const HOLE_MAX_SLICES = 45;                         // 450ms
+const CONTEXT_SLICES = 20;                          // 200ms of sound around a hole
+
+/**
+ * Streaming dropout counter (see "choppy" above). Fed 1s s16le windows in
+ * order; holes that straddle two windows are still found. Pure apart from its
+ * own state — tested directly.
+ */
+export class DropoutCounter {
+  constructor({ holeDb = -60, loudDb = -35 } = {}) {
+    this.holeDb = holeDb;
+    this.loudDb = loudDb;
+    this.recent = [];       // last CONTEXT_SLICES slice levels (before a hole)
+    this.run = 0;           // current run of silent slices
+    this.runBefore = -Infinity;
+    this.pending = [];      // holes waiting for the sound after them
+  }
+
+  /** Feed one window; returns the dropouts confirmed while reading it. */
+  push(buf) {
+    let found = 0;
+    const slices = Math.floor(buf.length / 2 / SLICE_SAMPLES);
+    for (let k = 0; k < slices; k++) {
+      let sum = 0;
+      const off = k * SLICE_SAMPLES * 2;
+      for (let i = 0; i < SLICE_SAMPLES; i++) { const v = buf.readInt16LE(off + i * 2); sum += v * v; }
+      const rms = Math.sqrt(sum / SLICE_SAMPLES);
+      found += this.slice(rms > 0 ? 20 * Math.log10(rms / 32768) : -120);
+    }
+    return found;
+  }
+
+  slice(db) {
+    let found = 0;
+    for (const p of this.pending) {
+      p.seen++;
+      if (db > this.loudDb) { p.done = true; found++; } else if (p.seen >= CONTEXT_SLICES) p.done = true;
+    }
+    if (this.pending.length) this.pending = this.pending.filter((p) => !p.done);
+    if (db < this.holeDb) {
+      if (this.run === 0) this.runBefore = this.recent.length ? Math.max(...this.recent) : -Infinity;
+      this.run++;
+    } else {
+      if (this.run >= HOLE_MIN_SLICES && this.run <= HOLE_MAX_SLICES && this.runBefore > this.loudDb) {
+        if (db > this.loudDb) found++;
+        else this.pending.push({ seen: 1 });
+      }
+      this.run = 0;
+    }
+    this.recent.push(db);
+    if (this.recent.length > CONTEXT_SLICES) this.recent.shift();
+    return found;
+  }
+}
+
 // --- Per-feed state machine -------------------------------------------------
 //
 // Deliberately free of I/O and timers: frames and ticks come in, events come
@@ -218,15 +292,54 @@ export class FeedWatch {
     this.soundRun = 0;
     this.audioSeconds = 0;
     this.audioError = null;
+    // Choppy audio: dropouts per second of stream, last choppy.windowSeconds.
+    this.choppyIncident = null;
+    this.dropouts = new DropoutCounter(cfg.choppy);
+    this.dropWindow = [];
+    this.sinceDropout = 0;       // seconds of audio since the last dropout
+    this.dropoutsTotal = 0;
   }
 
-  onAudioSecond(db, now = Date.now()) {
+  // `buf` (the raw window) feeds the dropout counter; `dropouts` overrides it (tests).
+  onAudioSecond(db, now = Date.now(), { buf = null, dropouts = null } = {}) {
     this.lastDb = db;
     this.lastAudioAt = now;
     this.audioSeconds++;
     this.audioError = null;
     if (db <= this.cfg.silence.thresholdDb) { this.quietRun++; this.soundRun = 0; } else { this.soundRun++; this.quietRun = 0; }
+    const n = dropouts ?? (buf ? this.dropouts.push(buf) : 0);
+    this.dropWindow.push(n);
+    if (this.dropWindow.length > this.cfg.choppy.windowSeconds) this.dropWindow.shift();
+    this.dropoutsTotal += n;
+    this.sinceDropout = n ? 0 : this.sinceDropout + 1;
     this.evaluateAudio(now);
+    this.evaluateChoppy(now);
+  }
+
+  get recentDropouts() { return this.dropWindow.reduce((a, b) => a + b, 0); }
+
+  evaluateChoppy(now) {
+    const c = this.cfg.choppy;
+    const inc = this.choppyIncident;
+    // Down or silent already say the sound is gone; choppy on top would be noise.
+    if (!this.cfg.silence.enabled || !c.enabled || this.incident?.kind === 'down' || this.audioIncident) {
+      if (inc) this.close(now, c.enabled ? 'sound lost' : null, 'choppyIncident');
+      return;
+    }
+    if (inc) {
+      if (this.sinceDropout >= c.recoverAfterSeconds) this.close(now, null, 'choppyIncident');
+      else {
+        inc.detail = `${this.recentDropouts} dropouts in the last ${this.dropWindow.length}s`;
+        this.remind(now, 'choppyIncident');
+      }
+      return;
+    }
+    const count = this.recentDropouts;
+    if (count >= c.minDropouts) {
+      const first = this.dropWindow.findIndex((x) => x > 0);
+      this.open('choppy', now, now - (this.dropWindow.length - first) * 1000, 'choppyIncident',
+        { detail: `${count} dropouts in the last ${this.dropWindow.length}s` });
+    }
   }
 
   evaluateAudio(now) {
@@ -275,6 +388,7 @@ export class FeedWatch {
   tick(now = Date.now()) {
     this.evaluate(now);
     this.evaluateAudio(now);
+    if (this.choppyIncident && (this.incident?.kind === 'down' || this.audioIncident)) this.evaluateChoppy(now);
   }
 
   evaluate(now) {
@@ -387,6 +501,15 @@ export class FeedWatch {
         },
         error: this.audioError,
         url: this.audioUrl || null,
+        choppy: this.cfg.choppy.enabled ? {
+          state: this.choppyIncident ? 'choppy' : this.recentDropouts ? 'dropouts' : 'ok',
+          recent: this.recentDropouts,
+          windowSeconds: this.cfg.choppy.windowSeconds,
+          total: this.dropoutsTotal,
+          incident: this.choppyIncident && {
+            kind: 'choppy', startedAt: this.choppyIncident.startedAt, detail: this.choppyIncident.detail || null,
+          },
+        } : null,
       },
       frames: this.frames,
       error: this.error,
@@ -599,7 +722,7 @@ async function alertNow(ev) {
 
 // --- E-mail ------------------------------------------------------------------
 
-const KIND_LABEL = { black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', silent: 'SILENT' };
+const KIND_LABEL = { black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', silent: 'SILENT', choppy: 'CHOPPY AUDIO' };
 
 export function formatDuration(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -794,7 +917,7 @@ const TRACKS = {
   audio: {
     args: (url) => ffmpegAudioArgs(url),
     unit: AUDIO_WINDOW_BYTES,
-    feed: (watch, buf) => watch.onAudioSecond(audioLevelDb(buf)),
+    feed: (watch, buf) => watch.onAudioSecond(audioLevelDb(buf), Date.now(), { buf }),
     setError: (watch, msg) => { watch.audioError = msg; },
     what: 'audio',
   },
@@ -950,7 +1073,7 @@ export function handoverLines() {
   if (!monitorConfig().enabled) return ['', 'Note: the signal monitor is OFF right now, so no alerts will be sent.'];
   const lines = [];
   for (const w of running?.watches?.values() || []) {
-    for (const inc of [w.incident, w.audioIncident]) {
+    for (const inc of [w.incident, w.audioIncident, w.choppyIncident]) {
       if (inc) lines.push(`• ${w.source.name}: ${KIND_LABEL[inc.kind] || inc.kind} since ${localTime(inc.startedAt)}`);
     }
   }

@@ -10,9 +10,9 @@ const MON_STATE = {
   ok: 'OK', dimming: 'going dark', black: 'BLACK', frozen: 'FROZEN', down: 'NO SIGNAL', resyncing: 'resync sent…',
   starting: 'connecting…', disabled: 'off', off: 'monitor off',
 };
-const MON_KIND = { black: 'Black', frozen: 'Frozen', down: 'No signal', silent: 'Silent' };
+const MON_KIND = { black: 'Black', frozen: 'Frozen', down: 'No signal', silent: 'Silent', choppy: 'Choppy audio' };
 const MON_AUDIO = { ok: 'sound', quiet: 'going quiet', silent: 'SILENT', starting: 'connecting…', off: 'not watched', disabled: 'off' };
-const monTrouble = (s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state) || s.audio?.state === 'silent';
+const monTrouble = (s) => ['black', 'down', 'frozen', 'resyncing'].includes(s.state) || s.audio?.state === 'silent' || s.audio?.choppy?.state === 'choppy';
 let monFeeds = [];
 let monChannels = [];
 let monTimer = null;
@@ -55,7 +55,7 @@ function renderMonStatus(st) {
   const grid = $('#monGrid');
   grid.innerHTML = '';
   for (const s of st.sources) {
-    const worst = s.state === 'ok' && s.audio?.state === 'silent' ? 'silent' : s.state;
+    const worst = s.state !== 'ok' ? s.state : s.audio?.state === 'silent' ? 'silent' : s.audio?.choppy?.state === 'choppy' ? 'black' : s.state;
     const card = el('div', { className: `mon-card st-${worst}` });
     const canvas = el('canvas', { width: st.frame.width, height: st.frame.height });
     monDrawFrame(canvas, s.frame, st.frame.width, st.frame.height);
@@ -79,6 +79,14 @@ function renderMonStatus(st) {
       if (s.audio.db !== null && s.audio.db !== undefined) a.append(` ${s.audio.db <= -120 ? 'digital silence' : `${s.audio.db} dB`}`);
       if (s.audio.incident) a.append(` · since ${monTime(s.audio.incident.startedAt)}${s.audio.incident.detail ? ` (${s.audio.incident.detail})` : ''}`);
       body.append(a);
+      const c = s.audio.choppy;
+      if (c && s.audio.state === 'ok') {
+        const cl = el('div', { className: 'mon-meta mon-audio' });
+        cl.append(el('span', { className: `tx-badge st-${c.state === 'choppy' ? 'black' : c.state === 'dropouts' ? 'dimming' : 'ok'}`, textContent: c.state === 'choppy' ? '♪ CHOPPY' : c.state === 'dropouts' ? '♪ dropouts' : '♪ smooth' }));
+        cl.append(` ${c.recent} dropout(s) in ${c.windowSeconds}s`);
+        if (c.incident) cl.append(` · since ${monTime(c.incident.startedAt)}`);
+        body.append(cl);
+      }
       if (s.audio.error) body.append(el('div', { className: 'mon-err', textContent: `audio: ${s.audio.error}` }));
     }
     const ch = monChannels.find((c) => c.id === s.channelId);
@@ -244,6 +252,9 @@ export async function loadMonitorTab() {
   rf.silenceEnabled.checked = monitor.silence.enabled;
   rf.silenceDb.value = monitor.silence.thresholdDb;
   rf.silenceAfter.value = monitor.silence.alertAfterSeconds;
+  rf.choppyEnabled.checked = monitor.choppy.enabled;
+  rf.choppyMin.value = monitor.choppy.minDropouts;
+  rf.choppyWindow.value = monitor.choppy.windowSeconds;
   rf.freezeAfter.value = monitor.freeze.alertAfterSeconds;
   rf.resyncEnabled.checked = monitor.resync.enabled;
   rf.resyncWait.value = monitor.resync.waitSeconds;
@@ -423,6 +434,10 @@ $('#monRulesForm').addEventListener('submit', (e) => {
       silence: {
         enabled: f.silenceEnabled.checked, thresholdDb: Number(f.silenceDb.value),
         alertAfterSeconds: Number(f.silenceAfter.value),
+      },
+      choppy: {
+        enabled: f.choppyEnabled.checked, minDropouts: Number(f.choppyMin.value),
+        windowSeconds: Number(f.choppyWindow.value),
       },
       resync: {
         enabled: f.resyncEnabled.checked, waitSeconds: Number(f.resyncWait.value),

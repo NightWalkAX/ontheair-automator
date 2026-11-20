@@ -487,3 +487,55 @@ test('end to end: a silent audio rendition becomes a SILENT e-mail; silence neve
     await otav.close();
   }
 });
+
+// --- Choppy audio ---------------------------------------------------------------
+
+// One second of 8kHz s16le tone with digital-silence holes [startMs, lenMs].
+function toneWith(holes = [], amp = 8000) {
+  const b = Buffer.alloc(16000);
+  for (let i = 0; i < 8000; i++) {
+    const ms = i / 8;
+    const hole = holes.some(([s, l]) => ms >= s && ms < s + l);
+    b.writeInt16LE(hole ? 0 : Math.round(amp * Math.sin((2 * Math.PI * 300 * i) / 8000)), i * 2);
+  }
+  return b;
+}
+
+test('dropouts: holes inside speech count, pauses and long gaps do not', () => {
+  const dc = new mon.DropoutCounter();
+  assert.equal(dc.push(toneWith()), 0, 'continuous sound');
+  assert.equal(dc.push(toneWith([[300, 100], [700, 30]])), 2, 'a 100ms and a 30ms hole in the middle of sound');
+  assert.equal(dc.push(toneWith([[200, 800]])), 0, 'a long pause is not a dropout (and not confirmed yet)');
+  assert.equal(dc.push(toneWith()), 0, 'sound comes back after the pause — still not a dropout');
+  // A hole that straddles two windows is found once.
+  assert.equal(dc.push(toneWith([[950, 50]])) + dc.push(toneWith([[0, 60]])), 1);
+  // A hole in quiet material (no loud sound around it) is not a dropout.
+  assert.equal(dc.push(toneWith([[400, 100]], 200)), 0);
+});
+
+test('choppy: ≥ minDropouts in the window opens CHOPPY AUDIO; a clean minute closes it', () => {
+  const { w, events } = listener({ choppy: { minDropouts: 10, windowSeconds: 60, recoverAfterSeconds: 60 } });
+  let t = Date.parse('2026-09-23T12:00:00Z');
+  const hear = (n, dropouts) => { for (let i = 0; i < n; i++) { t += 1000; w.onFrame(picture(), t); w.onAudioSecond(-25, t, { dropouts }); w.tick(t); } };
+  hear(30, 0);
+  hear(9, 1);
+  assert.deepEqual(events, [], 'nine dropouts is not enough');
+  hear(1, 1);
+  assert.deepEqual(kinds(events), ['open:choppy']);
+  assert.match(events[0].incident.detail, /10 dropouts/);
+  assert.equal(w.snapshot().audio.choppy.state, 'choppy');
+  assert.equal(w.audioState, 'ok', 'choppy is not silent');
+  hear(59, 0);
+  assert.equal(events.length, 1);
+  hear(1, 0);
+  assert.deepEqual(kinds(events), ['open:choppy', 'close:choppy']);
+  assert.equal(mon.describeEvent({ ...events[0], at: t }).includes('CHOPPY AUDIO'), true);
+});
+
+test('choppy: off in config = never raised', () => {
+  const { w, events } = listener({ choppy: { enabled: false } });
+  let t = Date.parse('2026-09-23T12:00:00Z');
+  for (let i = 0; i < 60; i++) { t += 1000; w.onFrame(picture(), t); w.onAudioSecond(-25, t, { dropouts: 3 }); w.tick(t); }
+  assert.deepEqual(events, []);
+  assert.equal(w.snapshot().audio.choppy, null);
+});
